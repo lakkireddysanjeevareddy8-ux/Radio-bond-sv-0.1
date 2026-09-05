@@ -6,12 +6,12 @@ import { useAppStore } from '../store/useAppStore';
 import { LoginScreen } from '../screens/LoginScreen';
 import { Text } from 'react-native';
 // Placeholder icons
-const Home = (props) => <Text style={{color: props.color}}>{'🏠'}</Text>;
-const Cpu = (props) => <Text style={{color: props.color}}>{'🖥️'}</Text>;
-const List = (props) => <Text style={{color: props.color}}>{'📋'}</Text>;
-const Phone = (props) => <Text style={{color: props.color}}>{'📞'}</Text>;
-const Settings = (props) => <Text style={{color: props.color}}>{'⚙️'}</Text>;
-const FlaskConical = (props) => <Text style={{color: props.color}}>{'⚗️'}</Text>;
+const Home = (props: { color: string; size?: number }) => <Text style={{color: props.color}}>{'🏠'}</Text>;
+const Cpu = (props: { color: string; size?: number }) => <Text style={{color: props.color}}>{'🖥️'}</Text>;
+const List = (props: { color: string; size?: number }) => <Text style={{color: props.color}}>{'📋'}</Text>;
+const Phone = (props: { color: string; size?: number }) => <Text style={{color: props.color}}>{'📞'}</Text>;
+const Settings = (props: { color: string; size?: number }) => <Text style={{color: props.color}}>{'⚙️'}</Text>;
+const FlaskConical = (props: { color: string; size?: number }) => <Text style={{color: props.color}}>{'⚗️'}</Text>;
 
 import { DashboardScreen } from '../screens/DashboardScreen';
 import { DevicesScreen } from '../screens/DevicesScreen';

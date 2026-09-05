@@ -9,12 +9,9 @@ export const LoginScreen = () => {
   const { setUser, setSession } = useAppStore();
 
   const handleGoogleSignIn = async () => {
-    const { data, error } = await AuthService.signInWithGoogle();
+    const { error } = await AuthService.signInWithGoogle();
     if (error) {
       Alert.alert('Login Error', error.message);
-    } else if (data?.session) {
-      setUser(data.session.user);
-      setSession(data.session);
     }
   };
 
