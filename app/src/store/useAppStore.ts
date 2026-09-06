@@ -24,12 +24,17 @@ interface AppState {
   voicePrompt: string | null;
   setVoicePrompt: (prompt: string | null) => void;
 
+  // Mode
+  isSimulatorMode: boolean;
+  setIsSimulatorMode: (isSimulator: boolean) => void;
+
   // Auth
   user: User | null;
   session: Session | null;
   setUser: (user: User | null) => void;
   setSession: (session: Session | null) => void;
   initializeSupabase: () => void;
+  signOut: () => Promise<void>;
 }
 
 const defaultConfig: DeviceConfig = {
@@ -65,6 +70,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   voicePrompt: null,
   setVoicePrompt: (voicePrompt) => set({ voicePrompt }),
 
+  // Mode
+  isSimulatorMode: true,
+  setIsSimulatorMode: (isSimulatorMode) => set({ isSimulatorMode }),
+
   // Auth
   user: null,
   session: null,
@@ -90,5 +99,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ deviceConfig: { ...current, deviceId: deviceUuid } });
       }
     }
+  },
+  signOut: async () => {
+    await supabase.auth.signOut();
+    set({ user: null, session: null });
   },
 }));

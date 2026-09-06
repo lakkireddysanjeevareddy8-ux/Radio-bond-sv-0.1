@@ -6,12 +6,24 @@ import { colors, typography, spacing, borderRadius } from '../utils/theme';
 import { Play, Pause, UserPlus, UserMinus, Activity, Volume2, WifiOff, Wifi } from 'lucide-react-native';
 
 export const DemoScreen: React.FC = () => {
-  const { voicePrompt, telemetry } = useAppStore();
+  const { voicePrompt, telemetry, isSimulatorMode, setIsSimulatorMode } = useAppStore();
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.title}>Device Simulator</Text>
       <Text style={styles.subtitle}>Use these controls to test the hardware behavior without the physical ESP32 device.</Text>
+
+      {!isSimulatorMode && (
+        <View style={styles.liveBanner}>
+          <Text style={styles.liveBannerTitle}>📡 Live ESP32 Mode is currently Active</Text>
+          <Text style={styles.liveBannerText}>
+            The app is listening for real hardware on Supabase. Controls below will only affect the UI if you switch to Simulator Mode.
+          </Text>
+          <TouchableOpacity style={styles.switchModeBtn} onPress={() => setIsSimulatorMode(true)}>
+            <Text style={styles.switchModeBtnText}>Switch to Simulator Mode</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {voicePrompt && (
         <View style={styles.voicePromptCard}>
@@ -171,5 +183,37 @@ const styles = StyleSheet.create({
     ...typography.body1,
     color: '#0284C7',
     fontWeight: '600',
-  }
+  },
+  liveBanner: {
+    backgroundColor: '#EFF6FF',
+    borderColor: '#3B82F6',
+    borderWidth: 1,
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  liveBannerTitle: {
+    fontWeight: '700',
+    fontSize: 14,
+    color: '#1D4ED8',
+    marginBottom: 4,
+  },
+  liveBannerText: {
+    fontSize: 12,
+    color: '#475569',
+    lineHeight: 18,
+    marginBottom: spacing.sm,
+  },
+  switchModeBtn: {
+    backgroundColor: '#3B82F6',
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.sm,
+    alignSelf: 'flex-start',
+  },
+  switchModeBtnText: {
+    color: '#FFF',
+    fontWeight: '700',
+    fontSize: 12,
+  },
 });
