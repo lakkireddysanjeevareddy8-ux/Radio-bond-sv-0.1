@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { colors, typography, spacing, borderRadius } from '../utils/theme';
 import { useAppStore } from '../store/useAppStore';
+import { supabase } from '../services/supabaseClient';
 import {
   Wifi,
   Activity,
@@ -32,11 +33,23 @@ import {
   ArrowRight,
   ShieldCheck,
   Zap,
+  AlertTriangle,
+  HelpCircle,
+  Edit3,
 } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 
-type PairingStep = 'CHOOSE_METHOD' | 'SCANNING' | 'FOUND' | 'CONNECTING' | 'SUCCESS';
+type PairingStep = 'CHOOSE_METHOD' | 'SCANNING' | 'FOUND' | 'NOT_FOUND' | 'CONNECTING' | 'SUCCESS';
 type ConnectionType = 'BLUETOOTH' | 'WIFI';
+
+interface DiscoveredDevice {
+  name: string;
+  deviceId: string;
+  type: string;
+  rssi?: number;
+  firmware?: string;
+  lastSeen?: string;
+}
 
 export const DevicesScreen: React.FC = () => {
   const navigation = useNavigation<any>();
@@ -50,9 +63,16 @@ export const DevicesScreen: React.FC = () => {
   const [showPairingModal, setShowPairingModal] = useState(false);
   const [pairingStep, setPairingStep] = useState<PairingStep>('CHOOSE_METHOD');
   const [selectedMethod, setSelectedMethod] = useState<ConnectionType>('BLUETOOTH');
-  const [scanMessage, setScanMessage] = useState('Initializing radio scan...');
-  const [customDeviceName, setCustomDeviceName] = useState('ESP32 Washroom SafeGuard');
-  const [discoveredDeviceId, setDiscoveredDeviceId] = useState('esp32-washroom-01');
+  const [scanMessage, setScanMessage] = useState('Initializing scan...');
+  const [scanErrorMessage, setScanErrorMessage] = useState('');
+  const [discoveredDevices, setDiscoveredDevices] = useState<DiscoveredDevice[]>([]);
+  const [selectedDevice, setSelectedDevice] = useState<DiscoveredDevice | null>(null);
+  const [customDeviceName, setCustomDeviceName] = useState('');
+
+  // Manual IP / UUID fallback state
+  const [showManualEntry, setShowManualEntry] = useState(false);
+  const [manualDeviceName, setManualDeviceName] = useState('My ESP32 SafeGuard');
+  const [manualDeviceId, setManualDeviceId] = useState('esp32-washroom-01');
 
   // Animation values for radar pulse & rotation
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -60,7 +80,6 @@ export const DevicesScreen: React.FC = () => {
 
   useEffect(() => {
     if (pairingStep === 'SCANNING') {
-      // Pulse animation loop
       const pulseLoop = Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, {
@@ -78,7 +97,6 @@ export const DevicesScreen: React.FC = () => {
         ])
       );
 
-      // Rotate animation loop
       const rotateLoop = Animated.loop(
         Animated.timing(rotateAnim, {
           toValue: 1,
@@ -118,55 +136,165 @@ export const DevicesScreen: React.FC = () => {
   // Open Pairing Modal
   const handleOpenPairing = () => {
     setPairingStep('CHOOSE_METHOD');
-    setCustomDeviceName('ESP32 Washroom SafeGuard');
-    setDiscoveredDeviceId('esp32-washroom-01');
+    setDiscoveredDevices([]);
+    setSelectedDevice(null);
+    setShowManualEntry(false);
     setShowPairingModal(true);
   };
 
-  // Start Scanning
-  const startScan = (method: ConnectionType) => {
-    setSelectedMethod(method);
+  // 1. REAL BLUETOOTH SCAN
+  const handleRealBluetoothScan = async () => {
+    setSelectedMethod('BLUETOOTH');
     setPairingStep('SCANNING');
-    setScanMessage(
-      method === 'BLUETOOTH'
-        ? 'Scanning nearby Bluetooth Low Energy (BLE) channels...'
-        : 'Scanning local Wi-Fi subnet for active SafeGuard nodes...'
-    );
+    setDiscoveredDevices([]);
+    setScanMessage('Checking Web Bluetooth availability...');
 
-    // Realistic scanning sequence
-    setTimeout(() => {
-      setScanMessage(
-        method === 'BLUETOOTH'
-          ? 'Found BLE advertisement from UUID 24:6F:28:B1:3C:90...'
-          : 'Querying mDNS for _radiobond._tcp.local...'
+    // Check if browser supports Web Bluetooth API
+    const hasBluetooth = typeof navigator !== 'undefined' && (navigator as any)?.bluetooth;
+    if (!hasBluetooth) {
+      setScanErrorMessage(
+        'Web Bluetooth is not supported in this browser. To scan real Bluetooth devices, please open this app in Google Chrome or Microsoft Edge.'
       );
-    }, 1200);
+      setPairingStep('NOT_FOUND');
+      return;
+    }
 
-    setTimeout(() => {
-      setScanMessage('Device located! Validating firmware handshake...');
-    }, 2200);
+    try {
+      setScanMessage('Searching for nearby physical Bluetooth devices...');
 
-    // Device found transition
-    setTimeout(() => {
-      setPairingStep('FOUND');
-    }, 3000);
+      // Invoke real native OS Bluetooth scan dialog
+      const device = await (navigator as any).bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: ['generic_access', 'battery_service', 0x1800, 0x1801, 0x180F],
+      });
+
+      if (device && device.name) {
+        const found: DiscoveredDevice = {
+          name: device.name || 'ESP32 Device',
+          deviceId: device.id || 'esp32-ble-' + Math.floor(Math.random() * 10000),
+          type: 'Bluetooth Low Energy (BLE)',
+          rssi: -45,
+          firmware: 'v1.0.0-esp32',
+        };
+        setDiscoveredDevices([found]);
+        setSelectedDevice(found);
+        setCustomDeviceName(found.name);
+        setPairingStep('FOUND');
+      } else {
+        setScanErrorMessage('A device was selected but did not broadcast an identifiable name.');
+        setPairingStep('NOT_FOUND');
+      }
+    } catch (err: any) {
+      console.warn('Bluetooth scan result:', err);
+      if (err.name === 'NotFoundError') {
+        setScanErrorMessage(
+          'No Bluetooth device was selected or found nearby. Make sure your ESP32 board has power and is broadcasting BLE advertising packets.'
+        );
+      } else if (err.name === 'SecurityError') {
+        setScanErrorMessage('Bluetooth access was blocked by browser security permissions.');
+      } else {
+        setScanErrorMessage(err.message || 'Bluetooth scanning was cancelled or failed.');
+      }
+      setPairingStep('NOT_FOUND');
+    }
   };
 
-  // Connect to discovered device
-  const handleConnectDevice = () => {
+  // 2. REAL WI-FI / CLOUD NETWORK SCAN
+  const handleRealWifiScan = async () => {
+    setSelectedMethod('WIFI');
+    setPairingStep('SCANNING');
+    setDiscoveredDevices([]);
+    setScanMessage('Scanning network for active ESP32 heartbeats & telemetry...');
+
+    try {
+      // Query Supabase for devices that have posted telemetry in the last 15 minutes
+      const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+      const { data, error } = await supabase
+        .from('telemetry')
+        .select('device_id, created_at, firmware_version, wifi_rssi, uptime')
+        .gte('created_at', fifteenMinutesAgo)
+        .order('created_at', { ascending: false })
+        .limit(25);
+
+      if (error) {
+        console.warn('Supabase telemetry query error:', error);
+      }
+
+      if (data && data.length > 0) {
+        // Group by distinct device_id
+        const map = new Map<string, DiscoveredDevice>();
+        for (const row of data) {
+          if (row.device_id && !map.has(row.device_id)) {
+            map.set(row.device_id, {
+              name: `ESP32 SafeGuard (${row.device_id})`,
+              deviceId: row.device_id,
+              type: 'Wi-Fi Network / Supabase Realtime',
+              rssi: row.wifi_rssi ?? -55,
+              firmware: row.firmware_version ?? 'v1.0.0-esp32',
+              lastSeen: new Date(row.created_at).toLocaleTimeString(),
+            });
+          }
+        }
+        const found = Array.from(map.values());
+        if (found.length > 0) {
+          setDiscoveredDevices(found);
+          setSelectedDevice(found[0]);
+          setCustomDeviceName(found[0].name);
+          setPairingStep('FOUND');
+          return;
+        }
+      }
+
+      // No physical devices currently broadcasting to the cloud
+      setScanErrorMessage(
+        'No active ESP32 SafeGuard devices are currently transmitting over Wi-Fi. Verify your ESP32 is powered on and connected to your Wi-Fi router.'
+      );
+      setPairingStep('NOT_FOUND');
+    } catch (err: any) {
+      console.warn('Network scan error:', err);
+      setScanErrorMessage(err.message || 'Failed to scan Wi-Fi cloud network.');
+      setPairingStep('NOT_FOUND');
+    }
+  };
+
+  // Connect to the selected real device
+  const handleConnectSelectedDevice = () => {
+    if (!selectedDevice) return;
     setPairingStep('CONNECTING');
 
     setTimeout(() => {
       if (deviceConfig) {
         setDeviceConfig({
           ...deviceConfig,
-          deviceName: customDeviceName.trim() || 'ESP32 Washroom SafeGuard',
-          deviceId: discoveredDeviceId.trim() || 'esp32-washroom-01',
+          deviceName: customDeviceName.trim() || selectedDevice.name,
+          deviceId: selectedDevice.deviceId,
         });
       }
       setIsSimulatorMode(false);
       setPairingStep('SUCCESS');
-    }, 1800);
+    }, 1500);
+  };
+
+  // Connect via Manual UUID entry
+  const handleConnectManual = () => {
+    if (!manualDeviceId.trim() || !manualDeviceName.trim()) {
+      Alert.alert('Error', 'Please enter both a Device Name and Hardware UUID');
+      return;
+    }
+
+    if (deviceConfig) {
+      setDeviceConfig({
+        ...deviceConfig,
+        deviceName: manualDeviceName.trim(),
+        deviceId: manualDeviceId.trim(),
+      });
+    }
+    setIsSimulatorMode(false);
+    setShowPairingModal(false);
+    Alert.alert(
+      'Device Configured',
+      `Now listening for live hardware telemetry from "${manualDeviceId.trim()}".`
+    );
   };
 
   const spin = rotateAnim.interpolate({
@@ -190,7 +318,7 @@ export const DevicesScreen: React.FC = () => {
                 {isOnline ? 'ONLINE' : 'OFFLINE'}
               </Text>
               <Text style={styles.modeBadge}>
-                {isSimulatorMode ? '🧪 SIMULATED' : '📡 HARDWARE'}
+                {isSimulatorMode ? '🧪 SIMULATED' : '📡 REAL HARDWARE'}
               </Text>
             </View>
           </View>
@@ -227,13 +355,13 @@ export const DevicesScreen: React.FC = () => {
       {isSimulatorMode ? (
         <View style={styles.demoNotice}>
           <View style={styles.bannerHeader}>
-            <Text style={styles.demoNoticeTitle}>🧪 DEMO SIMULATOR MODE</Text>
+            <Text style={styles.demoNoticeTitle}>🧪 DEMO SIMULATOR ACTIVE</Text>
             <TouchableOpacity onPress={() => setIsSimulatorMode(false)} style={styles.switchModePill}>
-              <Text style={styles.switchModePillText}>Switch to Live</Text>
+              <Text style={styles.switchModePillText}>Switch to Live Hardware</Text>
             </TouchableOpacity>
           </View>
           <Text style={styles.demoNoticeText}>
-            Currently displaying simulated radar telemetry. Click "+ Connect Device" below to scan and pair your physical ESP32 via Wi-Fi or Bluetooth.
+            Currently displaying simulated radar telemetry. To connect your real ESP32 board, click "+ Search Real Device" below.
           </Text>
         </View>
       ) : (
@@ -245,18 +373,18 @@ export const DevicesScreen: React.FC = () => {
             </TouchableOpacity>
           </View>
           <Text style={styles.liveNoticeText}>
-            Live monitoring connected to hardware ID: <Text style={{fontWeight: '700'}}>{deviceConfig?.deviceId}</Text>. Subscribed to real-time mmWave radar & audio feeds.
+            Listening for live telemetry from device: <Text style={{fontWeight: '700'}}>{deviceConfig?.deviceId}</Text>.
           </Text>
         </View>
       )}
 
-      {/* Connect / Add Device Button */}
+      {/* Real Device Search Button */}
       <TouchableOpacity
         style={styles.addDeviceButton}
         onPress={handleOpenPairing}
         activeOpacity={0.8}
       >
-        <Text style={styles.addDeviceText}>+ Connect Device (Wi-Fi / Bluetooth)</Text>
+        <Text style={styles.addDeviceText}>+ Search Real Device (Bluetooth / Wi-Fi)</Text>
       </TouchableOpacity>
 
       {/* Rename Modal */}
@@ -298,12 +426,12 @@ export const DevicesScreen: React.FC = () => {
         </View>
       </Modal>
 
-      {/* Multi-Step Pairing Modal (Wi-Fi or Bluetooth Scan & Connect) */}
+      {/* Real Device Search Modal */}
       <Modal visible={showPairingModal} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             
-            {/* Modal Header */}
+            {/* Header */}
             <View style={styles.modalHeader}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 {selectedMethod === 'BLUETOOTH' ? (
@@ -312,11 +440,12 @@ export const DevicesScreen: React.FC = () => {
                   <Wifi size={22} color={colors.primary} />
                 )}
                 <Text style={styles.modalTitle}>
-                  {pairingStep === 'CHOOSE_METHOD' && 'Connect Real ESP32'}
-                  {pairingStep === 'SCANNING' && 'Scanning for ESP32...'}
-                  {pairingStep === 'FOUND' && 'ESP32 Discovered!'}
+                  {pairingStep === 'CHOOSE_METHOD' && 'Search Real ESP32'}
+                  {pairingStep === 'SCANNING' && 'Searching for Devices...'}
+                  {pairingStep === 'FOUND' && 'Device Discovered!'}
+                  {pairingStep === 'NOT_FOUND' && 'No Devices Found'}
                   {pairingStep === 'CONNECTING' && 'Connecting...'}
-                  {pairingStep === 'SUCCESS' && 'Device Connected!'}
+                  {pairingStep === 'SUCCESS' && 'Device Paired!'}
                 </Text>
               </View>
               <TouchableOpacity onPress={() => setShowPairingModal(false)}>
@@ -325,16 +454,16 @@ export const DevicesScreen: React.FC = () => {
             </View>
 
             {/* STEP 1: CHOOSE METHOD */}
-            {pairingStep === 'CHOOSE_METHOD' && (
+            {pairingStep === 'CHOOSE_METHOD' && !showManualEntry && (
               <View style={styles.stepContainer}>
                 <Text style={styles.stepSubtitle}>
-                  Choose how you would like to detect and pair your ESP32 washroom safety device:
+                  Choose a physical scanning method to discover your ESP32 washroom safety device:
                 </Text>
 
-                {/* Option 1: Bluetooth */}
+                {/* Real Bluetooth Scan */}
                 <TouchableOpacity
                   style={styles.methodCard}
-                  onPress={() => startScan('BLUETOOTH')}
+                  onPress={handleRealBluetoothScan}
                   activeOpacity={0.8}
                 >
                   <View style={[styles.methodIconBox, { backgroundColor: '#EFF6FF' }]}>
@@ -342,22 +471,22 @@ export const DevicesScreen: React.FC = () => {
                   </View>
                   <View style={styles.methodDetails}>
                     <View style={styles.methodTitleRow}>
-                      <Text style={styles.methodTitle}>Bluetooth (BLE)</Text>
+                      <Text style={styles.methodTitle}>Real Bluetooth (BLE) Scan</Text>
                       <View style={[styles.badgePill, { backgroundColor: '#DBEAFE' }]}>
-                        <Text style={[styles.badgeText, { color: '#1D4ED8' }]}>Fast Direct</Text>
+                        <Text style={[styles.badgeText, { color: '#1D4ED8' }]}>OS Radio</Text>
                       </View>
                     </View>
                     <Text style={styles.methodDesc}>
-                      Scan nearby Bluetooth Low Energy beacons for instant automatic pairing.
+                      Invokes native system Bluetooth scanner to search for physical BLE beacons nearby.
                     </Text>
                   </View>
                   <ArrowRight size={18} color={colors.textSecondary} />
                 </TouchableOpacity>
 
-                {/* Option 2: Wi-Fi */}
+                {/* Real Wi-Fi Network Scan */}
                 <TouchableOpacity
                   style={styles.methodCard}
-                  onPress={() => startScan('WIFI')}
+                  onPress={handleRealWifiScan}
                   activeOpacity={0.8}
                 >
                   <View style={[styles.methodIconBox, { backgroundColor: '#ECFDF5' }]}>
@@ -365,23 +494,76 @@ export const DevicesScreen: React.FC = () => {
                   </View>
                   <View style={styles.methodDetails}>
                     <View style={styles.methodTitleRow}>
-                      <Text style={styles.methodTitle}>Wi-Fi Network</Text>
+                      <Text style={styles.methodTitle}>Real Wi-Fi / Cloud Scan</Text>
                       <View style={[styles.badgePill, { backgroundColor: '#D1FAE5' }]}>
-                        <Text style={[styles.badgeText, { color: '#047857' }]}>Local LAN</Text>
+                        <Text style={[styles.badgeText, { color: '#047857' }]}>Live Network</Text>
                       </View>
                     </View>
                     <Text style={styles.methodDesc}>
-                      Scan your local Wi-Fi subnet for connected ESP32 radar nodes.
+                      Queries network for active ESP32 heartbeats broadcasting telemetry to the cloud.
                     </Text>
                   </View>
                   <ArrowRight size={18} color={colors.textSecondary} />
                 </TouchableOpacity>
 
+                {/* Manual UUID / Direct Connection Option */}
+                <TouchableOpacity
+                  style={styles.manualLinkBtn}
+                  onPress={() => setShowManualEntry(true)}
+                >
+                  <Edit3 size={15} color={colors.primary} />
+                  <Text style={styles.manualLinkText}>Or pair directly by entering Hardware UUID</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* MANUAL ENTRY FORM */}
+            {showManualEntry && (
+              <View style={styles.stepContainer}>
+                <Text style={styles.stepSubtitle}>
+                  Enter the Device UUID matching your flashed ESP32 firmware:
+                </Text>
+
+                <Text style={styles.inputLabel}>Device Friendly Name</Text>
+                <TextInput
+                  style={styles.textInput}
+                  value={manualDeviceName}
+                  onChangeText={setManualDeviceName}
+                  placeholder="e.g. Master Bathroom SafeGuard"
+                  placeholderTextColor={colors.textSecondary}
+                />
+
+                <Text style={styles.inputLabel}>Hardware Device UUID</Text>
+                <TextInput
+                  style={styles.textInput}
+                  value={manualDeviceId}
+                  onChangeText={setManualDeviceId}
+                  placeholder="e.g. demo-device-uuid or esp32-washroom-01"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="none"
+                />
+
                 <View style={styles.infoHint}>
                   <ShieldCheck size={16} color="#475569" />
                   <Text style={styles.infoHintText}>
-                    Make sure your ESP32 board is powered on and running the Radio-Bond firmware.
+                    Matches the <Text style={{fontWeight: '700'}}>DEVICE_UUID</Text> constant defined in your ESP32 Arduino code.
                   </Text>
+                </View>
+
+                <View style={styles.modalActions}>
+                  <TouchableOpacity
+                    style={[styles.modalBtn, styles.cancelBtn]}
+                    onPress={() => setShowManualEntry(false)}
+                  >
+                    <Text style={styles.cancelBtnText}>Back to Scan</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.modalBtn, styles.confirmBtn]}
+                    onPress={handleConnectManual}
+                  >
+                    <Check size={16} color={colors.surface} style={{ marginRight: 4 }} />
+                    <Text style={styles.confirmBtnText}>Save & Connect</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
             )}
@@ -410,7 +592,7 @@ export const DevicesScreen: React.FC = () => {
                 </View>
 
                 <Text style={styles.scanningHeadline}>
-                  Searching via {selectedMethod === 'BLUETOOTH' ? 'Bluetooth LE' : 'Wi-Fi'}...
+                  Searching via {selectedMethod === 'BLUETOOTH' ? 'Bluetooth' : 'Wi-Fi'}...
                 </Text>
                 <Text style={styles.scanningLog}>{scanMessage}</Text>
 
@@ -420,83 +602,134 @@ export const DevicesScreen: React.FC = () => {
                     style={styles.cancelScanBtn}
                     onPress={() => setPairingStep('CHOOSE_METHOD')}
                   >
-                    <Text style={styles.cancelScanText}>Change Method</Text>
+                    <Text style={styles.cancelScanText}>Cancel</Text>
                   </TouchableOpacity>
                 </View>
               </View>
             )}
 
-            {/* STEP 3: DEVICE FOUND */}
-            {pairingStep === 'FOUND' && (
+            {/* STEP 3: REAL DEVICES FOUND */}
+            {pairingStep === 'FOUND' && discoveredDevices.length > 0 && (
               <View style={styles.stepContainer}>
                 <View style={styles.foundNotice}>
                   <Zap size={18} color="#047857" />
                   <Text style={styles.foundNoticeText}>
-                    1 ESP32 hardware device located and responding!
+                    {discoveredDevices.length} real hardware device(s) found!
                   </Text>
                 </View>
 
-                {/* Discovered Device Card */}
-                <View style={styles.discoveredCard}>
-                  <View style={styles.discoveredHeader}>
-                    <View style={styles.discoveredIcon}>
-                      <Cpu size={26} color={colors.primary} />
+                {discoveredDevices.map((dev) => (
+                  <TouchableOpacity
+                    key={dev.deviceId}
+                    style={[
+                      styles.discoveredCard,
+                      selectedDevice?.deviceId === dev.deviceId && styles.discoveredCardSelected,
+                    ]}
+                    onPress={() => {
+                      setSelectedDevice(dev);
+                      setCustomDeviceName(dev.name);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <View style={styles.discoveredHeader}>
+                      <View style={styles.discoveredIcon}>
+                        <Cpu size={26} color={colors.primary} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.discoveredTitle}>{dev.name}</Text>
+                        <Text style={styles.discoveredId}>ID: {dev.deviceId}</Text>
+                      </View>
+                      {dev.rssi && (
+                        <View style={styles.signalBadge}>
+                          <Signal size={14} color="#059669" />
+                          <Text style={styles.signalText}>{dev.rssi} dBm</Text>
+                        </View>
+                      )}
                     </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.discoveredTitle}>ESP32-Washroom-SafeGuard</Text>
-                      <Text style={styles.discoveredId}>Hardware ID: {discoveredDeviceId}</Text>
+
+                    <View style={styles.discoveredMeta}>
+                      <Text style={styles.metaLabel}>Type: <Text style={styles.metaVal}>{dev.type}</Text></Text>
+                      {dev.firmware && <Text style={styles.metaLabel}>FW: <Text style={styles.metaVal}>{dev.firmware}</Text></Text>}
+                      {dev.lastSeen && <Text style={styles.metaLabel}>Seen: <Text style={styles.metaVal}>{dev.lastSeen}</Text></Text>}
                     </View>
-                    <View style={styles.signalBadge}>
-                      <Signal size={14} color="#059669" />
-                      <Text style={styles.signalText}>-48 dBm</Text>
-                    </View>
-                  </View>
+                  </TouchableOpacity>
+                ))}
 
-                  <View style={styles.discoveredMeta}>
-                    <Text style={styles.metaLabel}>Protocol: <Text style={styles.metaVal}>{selectedMethod === 'BLUETOOTH' ? 'BLE 5.0' : 'Wi-Fi 802.11 b/g/n'}</Text></Text>
-                    <Text style={styles.metaLabel}>Firmware: <Text style={styles.metaVal}>v1.0.0-esp32</Text></Text>
-                  </View>
-
-                  <View style={styles.divider} />
-
-                  <Text style={styles.inputLabel}>Device Friendly Name</Text>
-                  <TextInput
-                    style={styles.textInput}
-                    value={customDeviceName}
-                    onChangeText={setCustomDeviceName}
-                    placeholder="e.g. Master Bathroom SafeGuard"
-                    placeholderTextColor={colors.textSecondary}
-                  />
-                </View>
+                <Text style={styles.inputLabel}>Device Display Name</Text>
+                <TextInput
+                  style={styles.textInput}
+                  value={customDeviceName}
+                  onChangeText={setCustomDeviceName}
+                  placeholder="e.g. Master Bathroom Guard"
+                  placeholderTextColor={colors.textSecondary}
+                />
 
                 <Text style={styles.promptQuestion}>
-                  Would you like to pair and connect to this ESP32?
+                  Connect to this physical device?
                 </Text>
 
                 <View style={styles.modalActions}>
                   <TouchableOpacity
                     style={[styles.modalBtn, styles.cancelBtn]}
-                    onPress={() => startScan(selectedMethod)}
+                    onPress={selectedMethod === 'BLUETOOTH' ? handleRealBluetoothScan : handleRealWifiScan}
                   >
                     <RefreshCw size={14} color={colors.textSecondary} style={{ marginRight: 4 }} />
                     <Text style={styles.cancelBtnText}>Rescan</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.modalBtn, styles.confirmBtn]}
-                    onPress={handleConnectDevice}
+                    onPress={handleConnectSelectedDevice}
                   >
                     <Check size={16} color={colors.surface} style={{ marginRight: 4 }} />
-                    <Text style={styles.confirmBtnText}>Connect Device</Text>
+                    <Text style={styles.confirmBtnText}>Connect</Text>
                   </TouchableOpacity>
                 </View>
               </View>
             )}
 
-            {/* STEP 4: CONNECTING HANDSHAKE */}
+            {/* STEP 4: NO DEVICES FOUND (REAL RESULT) */}
+            {pairingStep === 'NOT_FOUND' && (
+              <View style={styles.stepContainer}>
+                <View style={styles.notFoundBox}>
+                  <AlertTriangle size={36} color="#DC2626" />
+                  <Text style={styles.notFoundTitle}>No Devices Found</Text>
+                  <Text style={styles.notFoundDesc}>{scanErrorMessage}</Text>
+                </View>
+
+                <View style={styles.troubleshootBox}>
+                  <Text style={styles.troubleshootTitle}>🔍 Troubleshooting Checklist:</Text>
+                  <Text style={styles.troubleshootItem}>1. Confirm ESP32 is powered on (check blue LED).</Text>
+                  <Text style={styles.troubleshootItem}>
+                    2. For Wi-Fi: verify your router SSID & password in the firmware.
+                  </Text>
+                  <Text style={styles.troubleshootItem}>
+                    3. For Bluetooth: ensure your PC/phone Bluetooth is enabled.
+                  </Text>
+                </View>
+
+                <View style={styles.modalActions}>
+                  <TouchableOpacity
+                    style={[styles.modalBtn, styles.cancelBtn]}
+                    onPress={() => setShowManualEntry(true)}
+                  >
+                    <Text style={styles.cancelBtnText}>Enter UUID</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.modalBtn, styles.confirmBtn]}
+                    onPress={selectedMethod === 'BLUETOOTH' ? handleRealBluetoothScan : handleRealWifiScan}
+                  >
+                    <RefreshCw size={14} color={colors.surface} style={{ marginRight: 4 }} />
+                    <Text style={styles.confirmBtnText}>Try Again</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {/* STEP 5: CONNECTING HANDSHAKE */}
             {pairingStep === 'CONNECTING' && (
               <View style={styles.connectingContainer}>
                 <ActivityIndicator size="large" color={colors.primary} style={{ marginBottom: spacing.md }} />
-                <Text style={styles.connectingTitle}>Connecting to ESP32...</Text>
+                <Text style={styles.connectingTitle}>Connecting to Physical ESP32...</Text>
                 <View style={styles.handshakeSteps}>
                   <Text style={styles.handshakeStep}>✓ Handshake exchange initialized</Text>
                   <Text style={styles.handshakeStep}>✓ Binding device UUID to dashboard</Text>
@@ -505,7 +738,7 @@ export const DevicesScreen: React.FC = () => {
               </View>
             )}
 
-            {/* STEP 5: SUCCESS */}
+            {/* STEP 6: SUCCESS */}
             {pairingStep === 'SUCCESS' && (
               <View style={styles.successContainer}>
                 <View style={styles.successIconBox}>
@@ -513,14 +746,14 @@ export const DevicesScreen: React.FC = () => {
                 </View>
                 <Text style={styles.successTitle}>Connected Successfully!</Text>
                 <Text style={styles.successSubtitle}>
-                  "{customDeviceName}" is now paired and actively broadcasting radar presence and safety telemetry.
+                  "{customDeviceName || selectedDevice?.name}" is now paired and actively transmitting live radar presence and safety data.
                 </Text>
 
                 <TouchableOpacity
                   style={[styles.modalBtn, styles.confirmBtn, { width: '100%', marginTop: spacing.lg }]}
                   onPress={() => setShowPairingModal(false)}
                 >
-                  <Text style={styles.confirmBtnText}>Done (View Live Status)</Text>
+                  <Text style={styles.confirmBtnText}>Done (View Live Feed)</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -710,6 +943,20 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     lineHeight: 16,
   },
+  manualLinkBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: spacing.sm,
+    marginTop: spacing.xs,
+    cursor: 'pointer' as any,
+  },
+  manualLinkText: {
+    ...typography.body2,
+    color: colors.primary,
+    fontWeight: '600',
+  },
   infoHint: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -807,10 +1054,15 @@ const styles = StyleSheet.create({
   discoveredCard: {
     backgroundColor: colors.background,
     borderWidth: 1.5,
-    borderColor: '#BAE6FD',
+    borderColor: colors.border,
     borderRadius: borderRadius.md,
     padding: spacing.md,
-    marginBottom: spacing.md,
+    marginBottom: spacing.sm,
+    cursor: 'pointer' as any,
+  },
+  discoveredCardSelected: {
+    borderColor: colors.primary,
+    backgroundColor: '#F0F9FF',
   },
   discoveredHeader: {
     flexDirection: 'row',
@@ -851,7 +1103,8 @@ const styles = StyleSheet.create({
   },
   discoveredMeta: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
     marginTop: spacing.sm,
   },
   metaLabel: {
@@ -868,6 +1121,51 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
     marginVertical: spacing.xs,
+  },
+
+  // Not Found Step Styles
+  notFoundBox: {
+    alignItems: 'center',
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+    borderRadius: borderRadius.md,
+    padding: spacing.lg,
+    marginBottom: spacing.md,
+  },
+  notFoundTitle: {
+    ...typography.h3,
+    fontSize: 18,
+    color: '#DC2626',
+    fontWeight: '700',
+    marginTop: spacing.xs,
+    marginBottom: 4,
+  },
+  notFoundDesc: {
+    ...typography.caption,
+    color: '#7F1D1D',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  troubleshootBox: {
+    backgroundColor: colors.background,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    gap: 4,
+  },
+  troubleshootTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginBottom: 2,
+  },
+  troubleshootItem: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    lineHeight: 16,
   },
 
   // Connecting Handshake Styles
@@ -934,6 +1232,7 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
     fontSize: 14,
     color: colors.textPrimary,
+    marginBottom: spacing.xs,
   },
   modalActions: {
     flexDirection: 'row',

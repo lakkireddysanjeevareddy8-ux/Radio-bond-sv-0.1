@@ -247,6 +247,24 @@ export const LoginScreen = () => {
             )}
           </TouchableOpacity>
 
+          {/* Local Preview Mode Button (Instant Access for localhost testing) */}
+          <TouchableOpacity
+            style={styles.localDevButton}
+            onPress={() => {
+              setUser({
+                id: 'local-test-user',
+                email: 'developer@safeguard.local',
+                app_metadata: { provider: 'local' },
+                user_metadata: { name: 'Local Test Administrator' },
+                aud: 'authenticated',
+                created_at: new Date().toISOString(),
+              } as any);
+            }}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.localDevButtonText}>⚡ Local Preview Mode (Instant Access)</Text>
+          </TouchableOpacity>
+
           {/* Institutional Compliance Badges */}
           <View style={styles.complianceFooter}>
             <View style={styles.complianceBadgeRow}>
@@ -510,6 +528,23 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     letterSpacing: 0.3,
+  },
+  localDevButton: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    paddingVertical: 12,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+    cursor: 'pointer' as any,
+  },
+  localDevButtonText: {
+    color: '#0284C7',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
   complianceFooter: {
     paddingTop: 18,
