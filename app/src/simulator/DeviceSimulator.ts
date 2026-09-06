@@ -29,6 +29,7 @@ export class DeviceSimulator {
   }
 
   public start() {
+    this.stop();
     this.tickInterval = setInterval(() => this.tick(), 1000);
   }
 

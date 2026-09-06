@@ -29,20 +29,22 @@ export class DeviceCommunicationService {
   }
 
   // Demo Simulator Mode
-  public async connectToDemoDevice(config: DeviceConfig) {
-    this.disconnect();
-    this.setStatus('CONNECTING');
+  public connectToDemoDevice(config: DeviceConfig) {
+    if (this.channel) {
+      supabase.removeChannel(this.channel);
+      this.channel = null;
+    }
+
+    if (!this.simulator) {
+      this.simulator = new DeviceSimulator(config);
+      this.simulator.setCallbacks(
+        (telemetry) => this.onTelemetryUpdate?.(telemetry),
+        (event) => this.onEmergencyEvent?.(event),
+        (message) => this.onVoicePrompt?.(message)
+      );
+      this.simulator.start();
+    }
     
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    this.simulator = new DeviceSimulator(config);
-    this.simulator.setCallbacks(
-      (telemetry) => this.onTelemetryUpdate?.(telemetry),
-      (event) => this.onEmergencyEvent?.(event),
-      (message) => this.onVoicePrompt?.(message)
-    );
-    
-    this.simulator.start();
     this.setStatus('CONNECTED');
   }
 

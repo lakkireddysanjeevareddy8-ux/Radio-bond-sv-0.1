@@ -48,7 +48,7 @@ export default function App() {
     return () => {
       deviceService.disconnect();
     };
-  }, [deviceConfig, isSimulatorMode]);
+  }, [deviceConfig?.deviceId, isSimulatorMode]);
 
   return (
     <>
