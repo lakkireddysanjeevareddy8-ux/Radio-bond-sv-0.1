@@ -1,13 +1,49 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { useAppStore } from '../store/useAppStore';
+import { useDeviceStore } from '../store/useDeviceStore';
+import { DeviceConnectionService } from '../services/deviceConnectionService';
 import { colors, typography, spacing, borderRadius } from '../utils/theme';
 import { SafetyStatusCard } from '../components/SafetyStatusCard';
 import { EmergencyScreen } from './EmergencyScreen';
-import { Shield, Wifi, User, Activity, Clock, Mic, Volume2 } from 'lucide-react-native';
+import { Shield, Wifi, User, Activity, Clock, Mic, Volume2, RefreshCw } from 'lucide-react-native';
 
 export const DashboardScreen: React.FC = () => {
-  const { deviceConfig, telemetry, isOnline, activeEmergency, voicePrompt } = useAppStore();
+  const { deviceConfig, telemetry, isOnline, activeEmergency, voicePrompt, setIsOnline, setTelemetry } = useAppStore();
+  const { getActiveDevice } = useDeviceStore();
+  const activeDevice = getActiveDevice();
+  const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
+
+  // Live Wi-Fi telemetry polling
+  useEffect(() => {
+    if (activeDevice && activeDevice.connectionType === 'WIFI' && activeDevice.ipAddress) {
+      const unsubscribe = DeviceConnectionService.subscribe(activeDevice.ipAddress, {
+        onStatusChange: (status) => {
+          setIsOnline(status === 'CONNECTED');
+          if (status === 'CONNECTED') {
+            setIsReconnecting(false);
+          }
+        },
+        onTelemetry: (t) => {
+          setTelemetry(t);
+        },
+      });
+
+      return () => {
+        unsubscribe();
+      };
+    }
+  }, [activeDevice?.deviceId, activeDevice?.ipAddress]);
+
+  const handleManualReconnect = async () => {
+    if (!activeDevice?.ipAddress) return;
+    setIsReconnecting(true);
+    const success = await DeviceConnectionService.reconnect(activeDevice.ipAddress);
+    setIsReconnecting(false);
+    if (success) {
+      setIsOnline(true);
+    }
+  };
 
   let safetyStatus: 'SAFE' | 'MONITORING' | 'CHECKING' | 'EMERGENCY' | 'OFFLINE' = 'SAFE';
 
@@ -58,12 +94,31 @@ export const DashboardScreen: React.FC = () => {
           </View>
         )}
 
-        {/* Offline Warning */}
+        {/* Offline Warning with Controlled Reconnect */}
         {!isOnline && (
           <View style={styles.offlineCard}>
-            <Text style={styles.offlineTitle}>⚠️ Device Status Unavailable</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <Text style={styles.offlineTitle}>⚠️ Device Status Unavailable</Text>
+              {activeDevice?.ipAddress && (
+                <TouchableOpacity
+                  style={styles.reconnectBtn}
+                  onPress={handleManualReconnect}
+                  disabled={isReconnecting}
+                  activeOpacity={0.8}
+                >
+                  {isReconnecting ? (
+                    <ActivityIndicator size="small" color="#DC2626" style={{ marginRight: 4 }} />
+                  ) : (
+                    <RefreshCw size={14} color="#DC2626" style={{ marginRight: 4 }} />
+                  )}
+                  <Text style={styles.reconnectBtnText}>
+                    {isReconnecting ? 'Reconnecting...' : 'Reconnect'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
             <Text style={styles.offlineText}>
-              The device is offline. Safety cannot be confirmed. Last seen: just now.
+              The device is offline. Safety monitoring cannot be confirmed. Subtle indicator active; no false alarm triggered.
             </Text>
           </View>
         )}
@@ -164,7 +219,20 @@ const styles = StyleSheet.create({
     backgroundColor: '#FEF2F2', borderRadius: borderRadius.md, padding: spacing.md,
     marginBottom: spacing.md, borderWidth: 1, borderColor: '#FCA5A5',
   },
-  offlineTitle: { ...typography.body2, color: colors.emergency, fontWeight: '700', marginBottom: 4 },
+  offlineTitle: { ...typography.body2, color: colors.emergency, fontWeight: '700' },
+  reconnectBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: borderRadius.full,
+    backgroundColor: '#FEE2E2',
+  },
+  reconnectBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#DC2626',
+  },
   offlineText: { ...typography.body2, color: '#991B1B' },
   section: { marginTop: spacing.md },
   sectionTitle: { ...typography.h3, color: colors.textPrimary, marginBottom: spacing.md },

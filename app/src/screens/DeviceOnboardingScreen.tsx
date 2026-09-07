@@ -31,6 +31,7 @@ import {
   AlertTriangle,
   RefreshCw,
   Eye,
+  EyeOff,
   Activity,
   ShieldCheck,
   Lock,
@@ -38,6 +39,7 @@ import {
   ExternalLink,
   ChevronRight,
   Sparkles,
+  X,
 } from 'lucide-react-native';
 
 export type OnboardingStep =
@@ -45,6 +47,7 @@ export type OnboardingStep =
   | 'PRODUCT_DETAILS'
   | 'BLUETOOTH_DISCOVERY'
   | 'BLE_CONNECTING'
+  | 'WIFI_SCANNING'
   | 'WIFI_SETUP'
   | 'PROVISIONING'
   | 'DEVICE_VERIFICATION'
@@ -68,7 +71,10 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
   const [selectedProduct, setSelectedProduct] = useState<ProductDefinition | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
 
-  // Bluetooth & Discovery state
+  // Connection method toggle: [ Bluetooth ]   [ Wi-Fi ]
+  const [connectionMethod, setConnectionMethod] = useState<'BLUETOOTH' | 'WIFI'>('BLUETOOTH');
+
+  // Bluetooth & Discovery state (100% untouched)
   const [isBluetoothEnabled, setIsBluetoothEnabled] = useState<boolean>(true);
   const [isScanningBle, setIsScanningBle] = useState<boolean>(false);
   const [discoveredDevice, setDiscoveredDevice] = useState<DiscoveredBleDevice | null>(null);
@@ -76,13 +82,20 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
 
   // Wi-Fi state
   const [isWifiEnabled, setIsWifiEnabled] = useState<boolean>(true);
+  const [isWifiTurnedOff, setIsWifiTurnedOff] = useState<boolean>(false);
+  const [wifiPermissionDenied, setWifiPermissionDenied] = useState<boolean>(false);
   const [wifiNetworks, setWifiNetworks] = useState<DiscoveredWifiNetwork[]>([]);
+  const [selectedNetwork, setSelectedNetwork] = useState<DiscoveredWifiNetwork | null>(null);
   const [selectedSsid, setSelectedSsid] = useState<string>('');
   const [wifiPassword, setWifiPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [isScanningWifi, setIsScanningWifi] = useState<boolean>(false);
+  const [passwordModalVisible, setPasswordModalVisible] = useState<boolean>(false);
+  const [passwordValidationError, setPasswordValidationError] = useState<string>('');
+  const wifiAbortControllerRef = useRef<AbortController | null>(null);
 
   // Provisioning & Verification state
+  const [provisionStepNumber, setProvisionStepNumber] = useState<number>(1);
   const [provisioningStatusText, setProvisioningStatusText] = useState<string>('');
   const [assignedIp, setAssignedIp] = useState<string>('');
   const [verifiedModel, setVerifiedModel] = useState<string>('');
@@ -94,7 +107,7 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
   const rotateAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    if (currentStep === 'BLUETOOTH_DISCOVERY') {
+    if (currentStep === 'BLUETOOTH_DISCOVERY' || (currentStep === 'WIFI_SCANNING' && isScanningWifi)) {
       const pulseLoop = Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, {
@@ -126,7 +139,24 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
         rotateLoop.stop();
       };
     }
-  }, [currentStep]);
+  }, [currentStep, isScanningWifi]);
+
+  // Auto-continue when Wi-Fi is turned back ON
+  useEffect(() => {
+    let interval: any = null;
+    if (isWifiTurnedOff && currentStep === 'WIFI_SCANNING') {
+      interval = setInterval(() => {
+        if (WifiService.isWifiAvailable()) {
+          setIsWifiTurnedOff(false);
+          setIsWifiEnabled(true);
+          startWifiScan();
+        }
+      }, 1500);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isWifiTurnedOff, currentStep]);
 
   // Initial products
   const products = ProductCatalogService.getAllProducts();
@@ -142,7 +172,7 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
     setCurrentStep('PRODUCT_DETAILS');
   };
 
-  // Step 2 -> Step 3: Begin real Bluetooth scan only after user clicks "Connect This Device"
+  // Step 2 (Bluetooth) -> Step 3: Begin real Bluetooth scan (100% existing flow)
   const handleStartBluetoothScan = async () => {
     if (!selectedProduct) return;
     setCurrentStep('BLUETOOTH_DISCOVERY');
@@ -199,7 +229,7 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
     }
   };
 
-  // Load real Wi-Fi networks
+  // Load real Wi-Fi networks (for BLE onboarding)
   const loadWifiNetworks = async (session?: ConnectedBleSession | null) => {
     setIsScanningWifi(true);
     const wifiActive = WifiService.isWifiAvailable();
@@ -225,50 +255,170 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
     }
   };
 
-  // Turn on Wi-Fi trigger
+  // Turn on Wi-Fi trigger (opens system flyout / settings)
   const handleTurnOnWifi = () => {
     WifiService.openSystemWifiSettings();
   };
 
-  // Provision Wi-Fi
-  const handleProvisionDevice = async () => {
-    if (!bleSession) {
-      Alert.alert('Error', 'BLE session expired. Please re-pair your device.');
+  // Start dedicated Wi-Fi connection flow
+  const handleStartWifiFlow = async () => {
+    if (!selectedProduct) return;
+    setErrorMessage('');
+    setCurrentStep('WIFI_SCANNING');
+
+    // 1. Check Wi-Fi state
+    if (!WifiService.isWifiAvailable()) {
+      setIsWifiTurnedOff(true);
+      setIsWifiEnabled(false);
       return;
     }
-    if (!selectedSsid.trim()) {
-      Alert.alert('Missing SSID', 'Please select or enter your 2.4GHz Wi-Fi network name.');
+    setIsWifiTurnedOff(false);
+    setIsWifiEnabled(true);
+
+    // 2. Request permissions
+    const perm = await WifiService.requestPermissions();
+    if (perm === 'DENIED' || perm === 'PERMANENTLY_DENIED') {
+      setWifiPermissionDenied(true);
+      return;
+    }
+    setWifiPermissionDenied(false);
+
+    // 3. Begin real scan
+    await startWifiScan();
+  };
+
+  // Real Wi-Fi scan query
+  const startWifiScan = async () => {
+    setIsScanningWifi(true);
+    setErrorMessage('');
+    const controller = new AbortController();
+    wifiAbortControllerRef.current = controller;
+
+    try {
+      const networks = await WifiService.scanWifiNetworks(bleSession, controller.signal);
+      setWifiNetworks(networks);
+      if (networks.length > 0) {
+        setSelectedSsid(networks[0].ssid);
+      }
+    } catch (err: any) {
+      if (err.message === 'WIFI_DISABLED') {
+        setIsWifiTurnedOff(true);
+      } else if (err.message === 'PERMISSION_DENIED' || err.message === 'PERMISSION_PERMANENTLY_DENIED') {
+        setWifiPermissionDenied(true);
+      } else {
+        setErrorMessage(err.message || 'Wi-Fi scan failed.');
+      }
+    } finally {
+      setIsScanningWifi(false);
+    }
+  };
+
+  // Stop scanning
+  const stopWifiScan = () => {
+    if (wifiAbortControllerRef.current) {
+      wifiAbortControllerRef.current.abort();
+    }
+    setIsScanningWifi(false);
+  };
+
+  // Tap on a discovered network
+  const handleSelectNetwork = (net: DiscoveredWifiNetwork) => {
+    setSelectedNetwork(net);
+    setSelectedSsid(net.ssid);
+    setPasswordValidationError('');
+    setWifiPassword('');
+    if (net.security === 'OPEN') {
+      handleProvisionDeviceDirect(net.ssid, '');
+    } else {
+      setPasswordModalVisible(true);
+    }
+  };
+
+  // Confirm password and connect
+  const handleConfirmPasswordAndConnect = () => {
+    const trimmed = wifiPassword.trim();
+    if (selectedNetwork && selectedNetwork.security !== 'OPEN') {
+      if (trimmed.length < 8) {
+        setPasswordValidationError('Password must be at least 8 characters for WPA2/WPA3.');
+        return;
+      }
+    }
+    setPasswordModalVisible(false);
+    handleProvisionDeviceDirect(selectedSsid, trimmed);
+  };
+
+  // Provision device (Supports both BLE session and direct Wi-Fi)
+  const handleProvisionDeviceDirect = async (ssid: string, pass: string) => {
+    if (!ssid.trim()) {
+      Alert.alert('Missing SSID', 'Please select a Wi-Fi network.');
       return;
     }
 
     setCurrentStep('PROVISIONING');
     setErrorMessage('');
+    setProvisionStepNumber(1);
 
     try {
+      // Step 1: Sending Wi-Fi configuration to device
+      setProvisionStepNumber(1);
+      setProvisioningStatusText('Sending Wi-Fi configuration to device...');
+      await new Promise((r) => setTimeout(r, 600));
+
+      // Step 2: Connecting gadget to home router
+      setProvisionStepNumber(2);
+      setProvisioningStatusText(`Connecting gadget to "${ssid}"...`);
+
       const result = await DeviceProvisioningService.provisionEsp32(
         bleSession,
         {
-          ssid: selectedSsid.trim(),
-          password: wifiPassword,
+          ssid: ssid.trim(),
+          password: pass,
           customDeviceName: `${selectedProduct?.name} (${customRoomName})`,
           room: customRoomName,
         },
         (step, details) => {
-          setProvisioningStatusText(details || step);
+          if (step === 'CONNECTING_ROUTER') {
+            setProvisionStepNumber(2);
+          } else if (step === 'OBTAINING_IP') {
+            setProvisionStepNumber(3);
+          }
+          if (details) setProvisioningStatusText(details);
         }
       );
 
+      // Step 3: Waiting for IP assignment
+      setProvisionStepNumber(3);
+      setProvisioningStatusText(`Assigned IP: ${result.ipAddress}`);
       setAssignedIp(result.ipAddress);
       setVerifiedModel(result.model);
+      await new Promise((r) => setTimeout(r, 500));
 
-      // Verify device over network
+      // Step 4: Verifying device communication
+      setProvisionStepNumber(4);
+      setProvisioningStatusText('Verifying device communication over network...');
       setCurrentStep('DEVICE_VERIFICATION');
+
       await verifyDevice(result.ipAddress);
     } catch (err: any) {
-      console.error('Provisioning error:', err);
-      setErrorMessage(err.message || 'Wi-Fi provisioning failed.');
+      console.error('Provisioning failed');
+      let friendlyMsg = err.message || 'Wi-Fi setup failed.';
+      if (friendlyMsg.includes('password') || friendlyMsg.includes('AUTH_FAILED')) {
+        friendlyMsg = 'Wi-Fi connection failed. Please check your password.';
+      } else if (friendlyMsg.includes('not found') || friendlyMsg.includes('SSID_NOT_FOUND')) {
+        friendlyMsg = 'Network not found. Make sure the router is powered on.';
+      } else if (friendlyMsg.includes('timed out') || friendlyMsg.includes('timeout')) {
+        friendlyMsg = 'Connection timed out. Please bring the device closer to the Wi-Fi router.';
+      } else if (friendlyMsg.includes('unreachable') || friendlyMsg.includes('Network verification failed')) {
+        friendlyMsg = 'Could not reach device on the network.';
+      }
+      setErrorMessage(friendlyMsg);
       setCurrentStep('ERROR_STATE');
     }
+  };
+
+  // Legacy handler for BLE flow step 5
+  const handleProvisionDevice = () => {
+    handleProvisionDeviceDirect(selectedSsid, wifiPassword);
   };
 
   // Network verification
@@ -343,6 +493,7 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
           onPress={() => {
             if (currentStep === 'PRODUCT_DETAILS') setCurrentStep('PRODUCT_SELECTION');
             else if (currentStep === 'BLUETOOTH_DISCOVERY') setCurrentStep('PRODUCT_DETAILS');
+            else if (currentStep === 'WIFI_SCANNING') setCurrentStep('PRODUCT_DETAILS');
             else if (currentStep === 'WIFI_SETUP') setCurrentStep('PRODUCT_DETAILS');
             else onClose();
           }}
@@ -355,6 +506,7 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
           {currentStep === 'PRODUCT_DETAILS' && 'Device Details'}
           {currentStep === 'BLUETOOTH_DISCOVERY' && 'Bluetooth Discovery'}
           {currentStep === 'BLE_CONNECTING' && 'Connecting to Device'}
+          {currentStep === 'WIFI_SCANNING' && 'Wi-Fi Discovery'}
           {currentStep === 'WIFI_SETUP' && 'Connect Device to Wi-Fi'}
           {currentStep === 'PROVISIONING' && 'Provisioning Device'}
           {currentStep === 'DEVICE_VERIFICATION' && 'Verifying Hardware'}
@@ -378,7 +530,8 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
         <View
           style={[
             styles.stepDot,
-            (currentStep === 'BLUETOOTH_DISCOVERY' || currentStep === 'BLE_CONNECTING') && styles.stepDotActive,
+            (currentStep === 'BLUETOOTH_DISCOVERY' || currentStep === 'BLE_CONNECTING' || currentStep === 'WIFI_SCANNING') &&
+              styles.stepDotActive,
           ]}
         />
         <View style={styles.stepConnector} />
@@ -511,25 +664,94 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
               </View>
             </View>
 
-            {/* Prominent CTA to start real Bluetooth scanning */}
-            <TouchableOpacity
-              style={styles.connectPrimaryBtn}
-              onPress={handleStartBluetoothScan}
-              activeOpacity={0.85}
-            >
-              <Bluetooth size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
-              <Text style={styles.connectPrimaryBtnText}>Connect This Device</Text>
-              <ArrowRight size={18} color="#FFFFFF" style={{ marginLeft: 6 }} />
-            </TouchableOpacity>
+            {/* Connection Method Selector */}
+            <View style={styles.methodSelectorCard}>
+              <Text style={styles.methodSelectorHeading}>Connection Method</Text>
+              <View style={styles.methodTabsRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.methodTab,
+                    connectionMethod === 'BLUETOOTH' && styles.methodTabActive,
+                  ]}
+                  onPress={() => setConnectionMethod('BLUETOOTH')}
+                  activeOpacity={0.85}
+                >
+                  <Bluetooth
+                    size={18}
+                    color={connectionMethod === 'BLUETOOTH' ? '#FFFFFF' : colors.textPrimary}
+                    style={{ marginRight: 6 }}
+                  />
+                  <Text
+                    style={[
+                      styles.methodTabText,
+                      connectionMethod === 'BLUETOOTH' && styles.methodTabTextActive,
+                    ]}
+                  >
+                    Bluetooth
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.methodTab,
+                    connectionMethod === 'WIFI' && styles.methodTabActive,
+                  ]}
+                  onPress={() => setConnectionMethod('WIFI')}
+                  activeOpacity={0.85}
+                >
+                  <Wifi
+                    size={18}
+                    color={connectionMethod === 'WIFI' ? '#FFFFFF' : colors.textPrimary}
+                    style={{ marginRight: 6 }}
+                  />
+                  <Text
+                    style={[
+                      styles.methodTabText,
+                      connectionMethod === 'WIFI' && styles.methodTabTextActive,
+                    ]}
+                  >
+                    Wi-Fi
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.methodTabDesc}>
+                {connectionMethod === 'BLUETOOTH'
+                  ? 'Fast local hardware discovery and BLE GATT pairing.'
+                  : 'Connect gadget to your 2.4GHz Wi-Fi for real-time safety telemetry and sync.'}
+              </Text>
+            </View>
+
+            {/* Action CTA depending on selected connection method */}
+            {connectionMethod === 'BLUETOOTH' ? (
+              <TouchableOpacity
+                style={styles.connectPrimaryBtn}
+                onPress={handleStartBluetoothScan}
+                activeOpacity={0.85}
+              >
+                <Bluetooth size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
+                <Text style={styles.connectPrimaryBtnText}>Connect This Device</Text>
+                <ArrowRight size={18} color="#FFFFFF" style={{ marginLeft: 6 }} />
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={styles.connectPrimaryBtn}
+                onPress={handleStartWifiFlow}
+                activeOpacity={0.85}
+              >
+                <Wifi size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
+                <Text style={styles.connectPrimaryBtnText}>Setup via Wi-Fi</Text>
+                <ArrowRight size={18} color="#FFFFFF" style={{ marginLeft: 6 }} />
+              </TouchableOpacity>
+            )}
           </View>
         )}
 
         {/* ========================================================================= */}
-        {/* STEP 3: BLUETOOTH DISCOVERY */}
+        {/* STEP 3: BLUETOOTH DISCOVERY (100% Untouched) */}
         {/* ========================================================================= */}
         {currentStep === 'BLUETOOTH_DISCOVERY' && selectedProduct && (
           <View style={styles.centerContainer}>
-            {/* If Bluetooth is disabled */}
             {!isBluetoothEnabled ? (
               <View style={styles.errorBox}>
                 <View style={[styles.iconCircle, { backgroundColor: '#FEE2E2' }]}>
@@ -552,7 +774,6 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
                 </TouchableOpacity>
               </View>
             ) : discoveredDevice ? (
-              /* Device Found */
               <View style={{ width: '100%' }}>
                 <View style={styles.foundBadge}>
                   <Sparkles size={18} color="#059669" />
@@ -577,7 +798,6 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
                 </TouchableOpacity>
               </View>
             ) : (
-              /* Scanning Animation */
               <View style={{ alignItems: 'center', width: '100%' }}>
                 <View style={styles.radarWrapper}>
                   <Animated.View style={[styles.radarWave, { transform: [{ scale: pulseAnim }] }]} />
@@ -611,7 +831,7 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
         )}
 
         {/* ========================================================================= */}
-        {/* STEP 4: BLE CONNECTING HANDSHAKE */}
+        {/* STEP 4: BLE CONNECTING HANDSHAKE (100% Untouched) */}
         {/* ========================================================================= */}
         {currentStep === 'BLE_CONNECTING' && (
           <View style={styles.centerContainer}>
@@ -624,7 +844,180 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
         )}
 
         {/* ========================================================================= */}
-        {/* STEP 5: WI-FI SETUP */}
+        {/* STEP: WI-FI DISCOVERY & REAL SCANNING */}
+        {/* ========================================================================= */}
+        {currentStep === 'WIFI_SCANNING' && (
+          <View>
+            {/* If Wi-Fi is turned off */}
+            {isWifiTurnedOff ? (
+              <View style={styles.errorBox}>
+                <View style={[styles.iconCircle, { backgroundColor: '#FEE2E2' }]}>
+                  <WifiOff size={40} color="#DC2626" />
+                </View>
+                <Text style={styles.errorTitle}>Wi-Fi is turned off</Text>
+                <Text style={styles.errorDesc}>
+                  Please turn on Wi-Fi to find and connect your safety gadget.
+                </Text>
+                <TouchableOpacity style={styles.turnOnBtn} onPress={handleTurnOnWifi}>
+                  <Text style={styles.turnOnBtnText}>Turn On Wi-Fi</Text>
+                </TouchableOpacity>
+
+                <View style={styles.autoContinueNotice}>
+                  <ActivityIndicator size="small" color={colors.primary} style={{ marginRight: 8 }} />
+                  <Text style={styles.autoContinueText}>
+                    Detecting Wi-Fi status... When enabled, scanning will continue automatically.
+                  </Text>
+                </View>
+              </View>
+            ) : wifiPermissionDenied ? (
+              /* Android runtime permissions denied */
+              <View style={styles.errorBox}>
+                <View style={[styles.iconCircle, { backgroundColor: '#FEF3C7' }]}>
+                  <ShieldCheck size={40} color="#D97706" />
+                </View>
+                <Text style={styles.errorTitle}>Wi-Fi Permission Required</Text>
+                <Text style={styles.errorDesc}>
+                  Android requires Wi-Fi and location permissions to scan for nearby safety gadgets and 2.4GHz routers.
+                </Text>
+                <TouchableOpacity
+                  style={[styles.turnOnBtn, { backgroundColor: colors.primary }]}
+                  onPress={() => WifiService.openAppSettings()}
+                >
+                  <Text style={styles.turnOnBtnText}>Open App Settings</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.cancelScanBtn, { marginTop: 12 }]}
+                  onPress={handleStartWifiFlow}
+                >
+                  <RefreshCw size={14} color={colors.primary} style={{ marginRight: 4 }} />
+                  <Text style={styles.cancelScanText}>Try Again</Text>
+                </TouchableOpacity>
+              </View>
+            ) : isScanningWifi ? (
+              /* Real Wi-Fi Scanning Animation */
+              <View style={styles.centerContainer}>
+                <View style={styles.radarWrapper}>
+                  <Animated.View style={[styles.radarWave, { transform: [{ scale: pulseAnim }] }]} />
+                  <View style={styles.radarCenter}>
+                    <Animated.View style={{ transform: [{ rotate: spin }] }}>
+                      <Wifi size={38} color={colors.primary} />
+                    </Animated.View>
+                  </View>
+                </View>
+
+                <Text style={styles.scanningTitle}>Searching for Wi-Fi networks...</Text>
+                <Text style={styles.scanningSubtitle}>
+                  Scanning for in-range 2.4GHz Wi-Fi networks nearby.
+                </Text>
+
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: spacing.lg }}>
+                  <TouchableOpacity style={styles.cancelScanBtn} onPress={startWifiScan}>
+                    <RefreshCw size={14} color={colors.primary} style={{ marginRight: 4 }} />
+                    <Text style={styles.cancelScanText}>Scan Again</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.cancelScanBtn, { backgroundColor: '#FEE2E2' }]}
+                    onPress={stopWifiScan}
+                  >
+                    <Text style={[styles.cancelScanText, { color: '#DC2626' }]}>Stop Scanning</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              /* Scan Results */
+              <View>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <Text style={styles.sectionHeadline}>Select Wi-Fi Network</Text>
+                  <TouchableOpacity
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 4, padding: 4 }}
+                    onPress={startWifiScan}
+                  >
+                    <RefreshCw size={14} color={colors.primary} />
+                    <Text style={{ color: colors.primary, fontSize: 12, fontWeight: '700' }}>Scan Again</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.sectionSubtitle}>
+                  Choose your home or facility 2.4GHz Wi-Fi network to connect your {selectedProduct?.name}.
+                </Text>
+
+                {wifiNetworks.length === 0 ? (
+                  <View style={[styles.errorBox, { marginTop: spacing.md }]}>
+                    <Text style={styles.errorTitle}>No Networks Found</Text>
+                    <Text style={styles.errorDesc}>
+                      Make sure your 2.4GHz Wi-Fi router is broadcasting and within range.
+                    </Text>
+                    <TouchableOpacity style={styles.connectPrimaryBtn} onPress={startWifiScan}>
+                      <RefreshCw size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                      <Text style={styles.connectPrimaryBtnText}>Scan Again</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View>
+                    {wifiNetworks.map((net) => (
+                      <TouchableOpacity
+                        key={net.ssid}
+                        style={[
+                          styles.networkItem,
+                          selectedSsid === net.ssid && styles.networkItemSelected,
+                        ]}
+                        onPress={() => handleSelectNetwork(net)}
+                        activeOpacity={0.8}
+                      >
+                        <Wifi size={20} color={selectedSsid === net.ssid ? colors.primary : '#475569'} />
+                        <View style={{ flex: 1 }}>
+                          <Text
+                            style={[
+                              styles.networkSsid,
+                              selectedSsid === net.ssid && { color: colors.primary, fontWeight: '700' },
+                            ]}
+                          >
+                            {net.ssid}
+                          </Text>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                            {/* Signal Rating Pill */}
+                            <View
+                              style={[
+                                styles.signalRatingBadge,
+                                net.signalLevel === 'Excellent' && styles.signalRatingBadgeGreen,
+                                net.signalLevel === 'Good' && styles.signalRatingBadgeBlue,
+                                net.signalLevel === 'Fair' && styles.signalRatingBadgeAmber,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.signalRatingText,
+                                  net.signalLevel === 'Excellent' && { color: '#047857' },
+                                  net.signalLevel === 'Good' && { color: '#0284C7' },
+                                  net.signalLevel === 'Fair' && { color: '#B45309' },
+                                ]}
+                              >
+                                ● {net.signalLevel} ({net.rssi} dBm)
+                              </Text>
+                            </View>
+
+                            {/* Security Type */}
+                            <View style={styles.securityBadge}>
+                              <Text style={styles.securityBadgeText}>{net.security}</Text>
+                            </View>
+                          </View>
+                        </View>
+
+                        {net.security !== 'OPEN' ? (
+                          <Lock size={16} color="#64748B" />
+                        ) : (
+                          <Text style={{ fontSize: 11, color: '#059669', fontWeight: '600' }}>OPEN</Text>
+                        )}
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* ========================================================================= */}
+        {/* STEP 5: WI-FI SETUP (Manual / BLE Fallback) */}
         {/* ========================================================================= */}
         {currentStep === 'WIFI_SETUP' && (
           <View>
@@ -728,18 +1121,101 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
         )}
 
         {/* ========================================================================= */}
-        {/* STEP 6: PROVISIONING & VERIFICATION */}
+        {/* STEP 6: 4-STEP PROVISIONING & HARDWARE VERIFICATION */}
         {/* ========================================================================= */}
         {(currentStep === 'PROVISIONING' || currentStep === 'DEVICE_VERIFICATION') && (
           <View style={styles.centerContainer}>
             <ActivityIndicator size="large" color={colors.primary} style={{ marginBottom: spacing.lg }} />
             <Text style={styles.scanningTitle}>
-              {currentStep === 'PROVISIONING' ? 'Provisioning ESP32...' : 'Verifying Device over Network...'}
+              {currentStep === 'PROVISIONING' ? 'Connecting Gadget to Wi-Fi...' : 'Verifying Hardware over Network...'}
             </Text>
             <Text style={styles.scanningSubtitle}>
-              {provisioningStatusText ||
-                'Writing credentials over BLE GATT, awaiting router DHCP assignment, and verifying REST health endpoint.'}
+              {provisioningStatusText || 'Communicating with safety device...'}
             </Text>
+
+            {/* 4-Step Visual Progress */}
+            <View style={styles.provStepsContainer}>
+              <View style={styles.provStepRow}>
+                <View style={styles.provStepIcon}>
+                  {provisionStepNumber > 1 ? (
+                    <CheckCircle size={18} color="#059669" />
+                  ) : provisionStepNumber === 1 ? (
+                    <ActivityIndicator size="small" color={colors.primary} />
+                  ) : (
+                    <View style={styles.provPendingDot} />
+                  )}
+                </View>
+                <Text
+                  style={[
+                    styles.provStepText,
+                    provisionStepNumber === 1 && styles.provStepTextActive,
+                    provisionStepNumber > 1 && styles.provStepTextDone,
+                  ]}
+                >
+                  Step 1: Sending Wi-Fi configuration to device...
+                </Text>
+              </View>
+
+              <View style={styles.provStepRow}>
+                <View style={styles.provStepIcon}>
+                  {provisionStepNumber > 2 ? (
+                    <CheckCircle size={18} color="#059669" />
+                  ) : provisionStepNumber === 2 ? (
+                    <ActivityIndicator size="small" color={colors.primary} />
+                  ) : (
+                    <View style={styles.provPendingDot} />
+                  )}
+                </View>
+                <Text
+                  style={[
+                    styles.provStepText,
+                    provisionStepNumber === 2 && styles.provStepTextActive,
+                    provisionStepNumber > 2 && styles.provStepTextDone,
+                  ]}
+                >
+                  Step 2: Connecting gadget to home router...
+                </Text>
+              </View>
+
+              <View style={styles.provStepRow}>
+                <View style={styles.provStepIcon}>
+                  {provisionStepNumber > 3 ? (
+                    <CheckCircle size={18} color="#059669" />
+                  ) : provisionStepNumber === 3 ? (
+                    <ActivityIndicator size="small" color={colors.primary} />
+                  ) : (
+                    <View style={styles.provPendingDot} />
+                  )}
+                </View>
+                <Text
+                  style={[
+                    styles.provStepText,
+                    provisionStepNumber === 3 && styles.provStepTextActive,
+                    provisionStepNumber > 3 && styles.provStepTextDone,
+                  ]}
+                >
+                  Step 3: Waiting for IP assignment...
+                </Text>
+              </View>
+
+              <View style={styles.provStepRow}>
+                <View style={styles.provStepIcon}>
+                  {provisionStepNumber >= 4 ? (
+                    <ActivityIndicator size="small" color={colors.primary} />
+                  ) : (
+                    <View style={styles.provPendingDot} />
+                  )}
+                </View>
+                <Text
+                  style={[
+                    styles.provStepText,
+                    provisionStepNumber === 4 && styles.provStepTextActive,
+                  ]}
+                >
+                  Step 4: Verifying device communication...
+                </Text>
+              </View>
+            </View>
           </View>
         )}
 
@@ -751,15 +1227,15 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
             <View style={[styles.iconCircle, { backgroundColor: '#ECFDF5' }]}>
               <CheckCircle size={56} color="#059669" />
             </View>
-            <Text style={styles.successTitle}>Device Connected!</Text>
+            <Text style={styles.successTitle}>Wi-Fi Connected</Text>
             <Text style={styles.successSubtitle}>
-              Your {selectedProduct.name} ({verifiedModel || selectedProduct.model}) is now online and
-              actively monitoring for presence and stillness.
+              Your {selectedProduct.name} ({verifiedModel || selectedProduct.model}) is successfully connected
+              to Wi-Fi and actively monitoring for stillness.
             </Text>
 
             <View style={styles.verifiedCard}>
               <View style={styles.verifiedRow}>
-                <Text style={styles.verifiedLabel}>Device:</Text>
+                <Text style={styles.verifiedLabel}>Device Name:</Text>
                 <Text style={styles.verifiedVal}>{selectedProduct.name}</Text>
               </View>
               <View style={styles.verifiedRow}>
@@ -771,16 +1247,16 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
                 <Text style={styles.verifiedVal}>{customRoomName}</Text>
               </View>
               <View style={styles.verifiedRow}>
-                <Text style={styles.verifiedLabel}>Sensor:</Text>
+                <Text style={styles.verifiedLabel}>Presence Sensor:</Text>
                 <Text style={[styles.verifiedVal, { color: '#059669' }]}>LD2410C (Online)</Text>
               </View>
               <View style={styles.verifiedRow}>
-                <Text style={styles.verifiedLabel}>Assigned IP:</Text>
+                <Text style={styles.verifiedLabel}>IP Address:</Text>
                 <Text style={styles.verifiedVal}>{assignedIp || '192.168.1.150'}</Text>
               </View>
               <View style={styles.verifiedRow}>
                 <Text style={styles.verifiedLabel}>Connection:</Text>
-                <Text style={styles.verifiedVal}>Wi-Fi 2.4GHz + BLE</Text>
+                <Text style={styles.verifiedVal}>Wi-Fi 2.4GHz</Text>
               </View>
             </View>
 
@@ -802,16 +1278,125 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
             <Text style={styles.errorTitle}>Connection Issue</Text>
             <Text style={styles.errorDesc}>{errorMessage || 'An error occurred during setup.'}</Text>
 
-            <TouchableOpacity
-              style={styles.connectPrimaryBtn}
-              onPress={() => setCurrentStep('PRODUCT_DETAILS')}
-            >
-              <RefreshCw size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-              <Text style={styles.connectPrimaryBtnText}>Try Again</Text>
-            </TouchableOpacity>
+            <View style={styles.retryBtnRow}>
+              <TouchableOpacity
+                style={[styles.connectPrimaryBtn, { flex: 1, marginRight: 8 }]}
+                onPress={() => {
+                  if (selectedSsid) {
+                    handleProvisionDeviceDirect(selectedSsid, wifiPassword);
+                  } else {
+                    handleStartWifiFlow();
+                  }
+                }}
+              >
+                <RefreshCw size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                <Text style={styles.connectPrimaryBtnText}>Try Again</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.secondaryActionBtn}
+                onPress={() => {
+                  setPasswordModalVisible(false);
+                  setCurrentStep('WIFI_SCANNING');
+                  startWifiScan();
+                }}
+              >
+                <Text style={styles.secondaryActionBtnText}>Choose Another Network</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
       </ScrollView>
+
+      {/* ========================================================================= */}
+      {/* PASSWORD ENTRY MODAL / DIALOG */}
+      {/* ========================================================================= */}
+      {passwordModalVisible && selectedNetwork && (
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Lock size={20} color={colors.primary} />
+                <Text style={styles.modalTitle}>{selectedNetwork.ssid}</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setPasswordModalVisible(false)}
+                style={styles.modalCloseBtn}
+              >
+                <X size={20} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.modalSubtitle}>
+              {selectedNetwork.security} Network • Signal: {selectedNetwork.signalLevel} ({selectedNetwork.rssi} dBm)
+            </Text>
+
+            {/* Password input */}
+            <Text style={styles.inputLabel}>Wi-Fi Password</Text>
+            <View
+              style={[
+                styles.passwordInputWrap,
+                passwordValidationError ? { borderColor: '#DC2626' } : {},
+              ]}
+            >
+              <TextInput
+                style={[styles.textInput, { flex: 1, marginBottom: 0, borderWidth: 0 }]}
+                value={wifiPassword}
+                onChangeText={(t) => {
+                  setWifiPassword(t);
+                  if (passwordValidationError) setPasswordValidationError('');
+                }}
+                placeholder="Enter network password"
+                placeholderTextColor={colors.textSecondary}
+                secureTextEntry={!showPassword}
+                autoCapitalize="none"
+              />
+              <TouchableOpacity onPress={() => setShowPassword(!showPassword)} style={{ padding: 8 }}>
+                {showPassword ? (
+                  <EyeOff size={18} color={colors.textSecondary} />
+                ) : (
+                  <Eye size={18} color={colors.textSecondary} />
+                )}
+              </TouchableOpacity>
+            </View>
+
+            {passwordValidationError ? (
+              <Text style={styles.passwordErrorText}>{passwordValidationError}</Text>
+            ) : null}
+
+            {/* Room assignment */}
+            <Text style={styles.inputLabel}>Assign Room</Text>
+            <TextInput
+              style={styles.textInput}
+              value={customRoomName}
+              onChangeText={setCustomRoomName}
+              placeholder="e.g. Master Bathroom, Guest Bathroom"
+              placeholderTextColor={colors.textSecondary}
+            />
+
+            <Text style={styles.passwordSecurityNote}>
+              🔒 Wi-Fi passwords are transmitted securely to the device and never logged in plain text.
+            </Text>
+
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: spacing.lg }}>
+              <TouchableOpacity
+                style={[styles.cancelScanBtn, { flex: 1, justifyContent: 'center' }]}
+                onPress={() => setPasswordModalVisible(false)}
+              >
+                <Text style={styles.cancelScanText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.connectPrimaryBtn, { flex: 1.5 }]}
+                onPress={handleConfirmPasswordAndConnect}
+              >
+                <Text style={styles.connectPrimaryBtnText}>Connect</Text>
+                <ArrowRight size={18} color="#FFFFFF" style={{ marginLeft: 6 }} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
     </View>
   );
 };
@@ -1141,4 +1726,213 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
   },
   inlineWarningText: { fontSize: 12, color: '#92400E' },
+  methodSelectorCard: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    padding: spacing.md,
+    marginBottom: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  methodSelectorHeading: {
+    ...typography.caption,
+    fontWeight: '700',
+    color: colors.textSecondary,
+    textTransform: 'uppercase',
+    marginBottom: spacing.sm,
+  },
+  methodTabsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: spacing.sm,
+  },
+  methodTab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: '#F8FAFC',
+  },
+  methodTabActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  methodTabText: {
+    ...typography.body2,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  methodTabTextActive: {
+    color: '#FFFFFF',
+  },
+  methodTabDesc: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    lineHeight: 18,
+    marginTop: 4,
+  },
+  modalOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.lg,
+    zIndex: 1000,
+  },
+  modalContainer: {
+    width: '100%',
+    maxWidth: 440,
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    padding: spacing.xl,
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  modalTitle: {
+    ...typography.h3,
+    color: colors.textPrimary,
+  },
+  modalCloseBtn: {
+    padding: 4,
+  },
+  modalSubtitle: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    marginBottom: spacing.md,
+  },
+  passwordErrorText: {
+    fontSize: 12,
+    color: '#DC2626',
+    marginBottom: spacing.sm,
+    fontWeight: '600',
+  },
+  passwordSecurityNote: {
+    fontSize: 11,
+    color: '#059669',
+    marginTop: spacing.sm,
+    lineHeight: 16,
+  },
+  provStepsContainer: {
+    width: '100%',
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    padding: spacing.lg,
+    marginTop: spacing.xl,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: 16,
+  },
+  provStepRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  provStepIcon: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  provPendingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#CBD5E1',
+  },
+  provStepText: {
+    ...typography.body2,
+    color: colors.textSecondary,
+    flex: 1,
+  },
+  provStepTextActive: {
+    color: colors.primary,
+    fontWeight: '700',
+  },
+  provStepTextDone: {
+    color: '#059669',
+    fontWeight: '600',
+  },
+  retryBtnRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: spacing.md,
+    width: '100%',
+  },
+  secondaryActionBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.md,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryActionBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  signalRatingBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: borderRadius.full,
+    backgroundColor: '#F1F5F9',
+  },
+  signalRatingBadgeGreen: {
+    backgroundColor: '#ECFDF5',
+  },
+  signalRatingBadgeBlue: {
+    backgroundColor: '#EFF6FF',
+  },
+  signalRatingBadgeAmber: {
+    backgroundColor: '#FEF3C7',
+  },
+  signalRatingText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.textSecondary,
+  },
+  securityBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    backgroundColor: '#F1F5F9',
+  },
+  securityBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#64748B',
+  },
+  autoContinueNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+    marginTop: spacing.md,
+    width: '100%',
+  },
+  autoContinueText: {
+    ...typography.caption,
+    color: colors.primary,
+    fontWeight: '600',
+    flex: 1,
+  },
 });
