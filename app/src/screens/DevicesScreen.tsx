@@ -174,8 +174,14 @@ export const DevicesScreen: React.FC = () => {
     }
   };
 
-  // Launch native Windows Bluetooth Settings
+  // Launch native Windows Bluetooth Settings and Quick Settings section
   const handleOpenWindowsBluetoothSettings = () => {
+    // 1. Trigger original Windows Quick Settings flyout (Win + A) and Bluetooth settings via bridge
+    try {
+      fetch('http://127.0.0.1:5005/open?target=bluetooth').catch(() => {});
+    } catch {}
+
+    // 2. Direct browser protocol launch
     try {
       if (typeof window !== 'undefined' && Platform.OS === 'web') {
         const link = document.createElement('a');
@@ -196,6 +202,12 @@ export const DevicesScreen: React.FC = () => {
 
   // Launch native Windows Wi-Fi / Network Settings (Opens taskbar flyout)
   const handleOpenWindowsWifiSettings = () => {
+    // 1. Trigger original Windows Quick Settings flyout and Wi-Fi flyout via bridge
+    try {
+      fetch('http://127.0.0.1:5005/open?target=wifi').catch(() => {});
+    } catch {}
+
+    // 2. Direct browser protocol launch
     try {
       if (typeof window !== 'undefined' && Platform.OS === 'web') {
         const link = document.createElement('a');
@@ -212,6 +224,13 @@ export const DevicesScreen: React.FC = () => {
         if (typeof window !== 'undefined') window.location.href = 'ms-settings:network-wifi';
       } catch {}
     }
+  };
+
+  // Launch Windows 11 Quick Settings flyout directly (Win + A)
+  const handleOpenWindowsQuickSettings = () => {
+    try {
+      fetch('http://127.0.0.1:5005/open?target=quicksettings').catch(() => {});
+    } catch {}
   };
 
   // Automatically open Windows settings when Bluetooth or Wi-Fi needs to be turned on
@@ -253,6 +272,19 @@ export const DevicesScreen: React.FC = () => {
   // 1. REAL WINDOWS AUDIO / EARBUDS DETECTION (Genuine, connected Windows audio)
   const handleScanWindowsAudioDevices = async () => {
     setSelectedMethod('WINDOWS_AUDIO');
+
+    // Check if Bluetooth is off in browser
+    if (typeof navigator !== 'undefined' && (navigator as any).bluetooth?.getAvailability) {
+      try {
+        const isBtOn = await (navigator as any).bluetooth.getAvailability();
+        if (!isBtOn) {
+          handleOpenWindowsBluetoothSettings();
+          setPairingStep('PROMPT_TURN_ON_BLUETOOTH');
+          return;
+        }
+      } catch {}
+    }
+
     setPairingStep('SCANNING');
     setDiscoveredDevices([]);
     setScanErrorMessage('');
@@ -311,15 +343,17 @@ export const DevicesScreen: React.FC = () => {
         }
       }
 
-      // No audio devices found
+      // No audio devices found -> immediately open original Windows Settings & Quick Settings flyout
+      handleOpenWindowsBluetoothSettings();
       setScanErrorMessage(
-        'No paired Bluetooth audio devices found in Windows. Please pair your earbuds in Windows Bluetooth Settings first.'
+        'No paired Bluetooth audio devices found in Windows. Opening Windows Settings to pair or turn on Bluetooth.'
       );
       setPairingStep('PROMPT_WINDOWS_EARBUDS_GUIDE');
     } catch (err: any) {
       console.warn('Windows audio scan error:', err);
+      handleOpenWindowsBluetoothSettings();
       setScanErrorMessage(err.message || 'Failed to detect Windows audio devices.');
-      setPairingStep('NOT_FOUND');
+      setPairingStep('PROMPT_TURN_ON_BLUETOOTH');
     }
   };
 
@@ -342,6 +376,7 @@ export const DevicesScreen: React.FC = () => {
       try {
         const isAvailable = await (navigator as any).bluetooth.getAvailability();
         if (!isAvailable) {
+          handleOpenWindowsBluetoothSettings();
           setPairingStep('PROMPT_TURN_ON_BLUETOOTH');
           return;
         }
@@ -408,6 +443,7 @@ export const DevicesScreen: React.FC = () => {
         errMsg.includes('turned off') ||
         errMsg.includes('unavailable')
       ) {
+        handleOpenWindowsBluetoothSettings();
         setPairingStep('PROMPT_TURN_ON_BLUETOOTH');
         return;
       }
@@ -421,7 +457,6 @@ export const DevicesScreen: React.FC = () => {
       } else {
         setScanErrorMessage(err.message || 'BLE scanning was cancelled.');
       }
-      setPairingStep('NOT_FOUND');
     }
   };
 
@@ -431,6 +466,7 @@ export const DevicesScreen: React.FC = () => {
 
     // Check if device has Wi-Fi / Internet connection turned on
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      handleOpenWindowsWifiSettings();
       setPairingStep('PROMPT_TURN_ON_WIFI');
       return;
     }
@@ -454,6 +490,9 @@ export const DevicesScreen: React.FC = () => {
       setScanMessage('Stage 3/4: Querying cloud telemetry & registered devices registry...');
       const map = new Map<string, DiscoveredDevice>();
 
+      const isFakeOrMock = (str: string) =>
+        /demo|virtual|mock|placeholder|fake|gateway-live/i.test(str);
+
       try {
         const { data: registeredDevices } = await supabase
           .from('devices')
@@ -463,11 +502,12 @@ export const DevicesScreen: React.FC = () => {
         if (registeredDevices && registeredDevices.length > 0) {
           for (const d of registeredDevices) {
             const id = d.id || d.deviceId;
-            if (id) {
+            const name = d.device_name || d.name || '';
+            if (id && !isFakeOrMock(id) && !isFakeOrMock(name)) {
               map.set(id, {
-                name: d.device_name || d.name || `ESP32 SafeGuard (${id})`,
+                name: name || `ESP32 SafeGuard (${id})`,
                 deviceId: id,
-                type: 'Registered Wi-Fi Hardware (Cloud)',
+                type: 'Registered Physical ESP32 Hardware',
                 rssi: -52,
                 firmware: d.firmware_version || 'v1.0.0-esp32',
                 lastSeen: d.last_seen ? new Date(d.last_seen).toLocaleTimeString() : 'Registered',
@@ -491,11 +531,11 @@ export const DevicesScreen: React.FC = () => {
 
         if (telemetryRows && telemetryRows.length > 0) {
           for (const row of telemetryRows) {
-            if (row.device_id && !map.has(row.device_id)) {
+            if (row.device_id && !isFakeOrMock(row.device_id) && !map.has(row.device_id)) {
               map.set(row.device_id, {
                 name: `ESP32 SafeGuard (${row.device_id})`,
                 deviceId: row.device_id,
-                type: 'Active Wi-Fi Transmitter (Live Telemetry)',
+                type: 'Active Physical Wi-Fi Transmitter',
                 rssi: row.wifi_rssi ?? -55,
                 firmware: row.firmware_version ?? 'v1.0.0-esp32',
                 lastSeen: new Date(row.created_at).toLocaleTimeString(),
@@ -516,7 +556,7 @@ export const DevicesScreen: React.FC = () => {
         setPairingStep('FOUND');
       } else {
         setScanErrorMessage(
-          'Scan complete: No active ESP32 SafeGuard devices are currently transmitting over Wi-Fi. Verify your ESP32 board is powered on with blue LED active and connected to 2.4GHz Wi-Fi.'
+          'Scan complete: No real physical ESP32 SafeGuard devices are currently transmitting over Wi-Fi. Verify your physical ESP32 board is powered on and connected to 2.4GHz Wi-Fi.'
         );
         setPairingStep('NOT_FOUND');
       }
@@ -614,21 +654,7 @@ export const DevicesScreen: React.FC = () => {
     }
   };
 
-  // Instant Virtual Gateway connection fallback
-  const handleConnectVirtualGateway = () => {
-    const virtualDev: DiscoveredDevice = {
-      name: 'ESP32 SafeGuard (Cloud Gateway)',
-      deviceId: 'esp32-gateway-live',
-      type: 'Virtual Hardware Gateway',
-      rssi: -48,
-      firmware: 'v1.2.0-esp32',
-      lastSeen: 'Just now',
-    };
-    setSelectedDevice(virtualDev);
-    setCustomDeviceName(virtualDev.name);
-    setDiscoveredDevices([virtualDev]);
-    setPairingStep('FOUND');
-  };
+
 
   // Connect via Manual UUID entry
   const handleConnectManual = () => {
@@ -1004,6 +1030,16 @@ export const DevicesScreen: React.FC = () => {
                 </View>
 
                 <TouchableOpacity
+                  style={[styles.modalBtn, { backgroundColor: '#0F6B7E', width: '100%', marginBottom: spacing.xs, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }]}
+                  onPress={handleOpenWindowsQuickSettings}
+                  activeOpacity={0.8}
+                >
+                  <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 }}>
+                    ⊞ Open Windows Quick Settings (Win + A)
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
                   style={[styles.modalBtn, styles.confirmBtn, { backgroundColor: '#2563EB', width: '100%', marginBottom: spacing.sm }]}
                   onPress={handleOpenWindowsBluetoothSettings}
                 >
@@ -1069,6 +1105,16 @@ export const DevicesScreen: React.FC = () => {
                     </TouchableOpacity>
                   </View>
                 </View>
+
+                <TouchableOpacity
+                  style={[styles.modalBtn, { backgroundColor: '#0F6B7E', width: '100%', marginBottom: spacing.xs, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }]}
+                  onPress={handleOpenWindowsQuickSettings}
+                  activeOpacity={0.8}
+                >
+                  <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 }}>
+                    ⊞ Open Windows Quick Settings (Win + A)
+                  </Text>
+                </TouchableOpacity>
 
                 <TouchableOpacity
                   style={[styles.modalBtn, styles.confirmBtn, { backgroundColor: '#D97706', width: '100%', marginBottom: spacing.sm }]}
@@ -1436,23 +1482,7 @@ export const DevicesScreen: React.FC = () => {
                   </TouchableOpacity>
                 )}
 
-                {/* Instant fallback option */}
-                <TouchableOpacity
-                  style={styles.virtualGatewayCard}
-                  onPress={handleConnectVirtualGateway}
-                  activeOpacity={0.8}
-                >
-                  <Zap size={20} color="#0284C7" />
-                  <View style={{ flex: 1, marginLeft: 8 }}>
-                    <Text style={styles.virtualGatewayTitle}>
-                      Connect Cloud ESP32 Gateway (Test Now)
-                    </Text>
-                    <Text style={styles.virtualGatewayDesc}>
-                      Instantly test the dashboard with a pre-configured live gateway.
-                    </Text>
-                  </View>
-                  <ArrowRight size={16} color="#0284C7" />
-                </TouchableOpacity>
+
 
                 <View style={styles.modalActions}>
                   <TouchableOpacity

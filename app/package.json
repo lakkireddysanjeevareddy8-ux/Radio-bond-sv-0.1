@@ -34,7 +34,8 @@
     "build": "expo export --platform web",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "bridge": "node scripts/windows_bridge.js"
   },
   "private": true
 }
