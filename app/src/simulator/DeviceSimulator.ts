@@ -8,6 +8,7 @@ export class DeviceSimulator {
   
   private onTelemetryUpdate?: (telemetry: Telemetry) => void;
   private onEmergencyEvent?: (event: EmergencyEvent) => void;
+  private onEmergencyResolved?: () => void;
   private onVoicePrompt?: (message: string) => void;
 
   private isOffline: boolean = false;
@@ -21,15 +22,19 @@ export class DeviceSimulator {
   public setCallbacks(
     onTelemetryUpdate: (telemetry: Telemetry) => void,
     onEmergencyEvent: (event: EmergencyEvent) => void,
-    onVoicePrompt: (message: string) => void
+    onVoicePrompt: (message: string) => void,
+    onEmergencyResolved?: () => void
   ) {
     this.onTelemetryUpdate = onTelemetryUpdate;
     this.onEmergencyEvent = onEmergencyEvent;
     this.onVoicePrompt = onVoicePrompt;
+    this.onEmergencyResolved = onEmergencyResolved;
   }
 
   public start() {
     this.stop();
+    this.isOffline = false;
+    this.emitTelemetry(); // Emit state immediately on start
     this.tickInterval = setInterval(() => this.tick(), 1000);
   }
 
@@ -47,6 +52,9 @@ export class DeviceSimulator {
   
   public simulatePersonLeaves() {
     this.stateMachine.dispatch('PERSON_LEAVES');
+    if (this.onEmergencyResolved) {
+      this.onEmergencyResolved();
+    }
     this.emitTelemetry();
   }
 
@@ -63,17 +71,20 @@ export class DeviceSimulator {
   public simulateVoiceHelp() {
     this.stateMachine.dispatch('VOICE_EMERGENCY_DETECTED');
     this.emitTelemetry();
-    this.emitEmergency('VOICE', 'HELP', 0.92);
+    this.emitEmergency('VOICE', 'HELP', 0.95);
   }
 
   public simulateResponse() {
     this.stateMachine.dispatch('RESPONSE_RECEIVED');
+    if (this.onEmergencyResolved) {
+      this.onEmergencyResolved();
+    }
     this.emitTelemetry();
   }
 
   public simulateOffline() {
     this.isOffline = true;
-    // Don't emit telemetry when offline
+    this.emitTelemetry();
   }
 
   public simulateOnline() {
@@ -82,7 +93,7 @@ export class DeviceSimulator {
   }
   
   public simulateEmergencyButton() {
-    this.stateMachine.dispatch('VOICE_EMERGENCY_DETECTED'); // reuse state for now
+    this.stateMachine.dispatch('VOICE_EMERGENCY_DETECTED');
     this.emitTelemetry();
     this.emitEmergency('BUTTON');
   }
@@ -98,7 +109,7 @@ export class DeviceSimulator {
     // Trigger voice prompt transition
     if (prevState !== 'CHECKING_WELLBEING' && newState === 'CHECKING_WELLBEING') {
       if (this.onVoicePrompt) {
-        this.onVoicePrompt('Are you okay?');
+        this.onVoicePrompt('Are you okay? Unusual stillness detected.');
       }
     }
 
@@ -110,8 +121,8 @@ export class DeviceSimulator {
     this.emitTelemetry();
   }
 
-  private emitTelemetry() {
-    if (this.isOffline || !this.onTelemetryUpdate) return;
+  public emitTelemetry() {
+    if (!this.onTelemetryUpdate) return;
 
     this.onTelemetryUpdate({
       deviceId: this.config.deviceId,
@@ -119,9 +130,9 @@ export class DeviceSimulator {
       presence: this.stateMachine.getPresence(),
       movement: this.stateMachine.getMovement(),
       stillnessSeconds: this.stateMachine.getStillnessSeconds(),
-      state: this.stateMachine.getState(),
+      state: this.isOffline ? 'DEVICE_OFFLINE' : this.stateMachine.getState(),
       voiceDetected: false,
-      wifiRSSI: -65,
+      wifiRSSI: this.isOffline ? 0 : -58,
       uptime: this.uptime,
       firmwareVersion: '1.0.0-sim',
     });
@@ -131,7 +142,7 @@ export class DeviceSimulator {
     if (!this.onEmergencyEvent) return;
 
     this.onEmergencyEvent({
-      id: Math.random().toString(36).substring(7),
+      id: `sim-emg-${Date.now()}`,
       deviceId: this.config.deviceId,
       eventType: 'EMERGENCY',
       trigger,

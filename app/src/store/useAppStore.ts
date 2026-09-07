@@ -49,17 +49,30 @@ const defaultConfig: DeviceConfig = {
   emergencyEscalation: 'VOICE_AND_ALERT'
 };
 
+const defaultTelemetry: Telemetry = {
+  deviceId: 'DEMO-DEVICE',
+  timestamp: new Date().toISOString(),
+  presence: false,
+  movement: false,
+  stillnessSeconds: 0,
+  state: 'IDLE',
+  voiceDetected: false,
+  wifiRSSI: -58,
+  uptime: 0,
+  firmwareVersion: '1.0.0-sim',
+};
+
 export const useAppStore = create<AppState>((set, get) => ({
-  // Device config (loaded later after auth)
+  // Device config
   deviceConfig: defaultConfig,
   setDeviceConfig: (config) => set({ deviceConfig: config }),
 
   // Telemetry
-  telemetry: null,
+  telemetry: defaultTelemetry,
   setTelemetry: (telemetry) => set({ telemetry }),
 
-  // Connection status
-  isOnline: false,
+  // Connection status (default online in simulator mode)
+  isOnline: true,
   setIsOnline: (isOnline) => set({ isOnline }),
 
   // Emergency events
@@ -80,24 +93,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   setUser: (user) => set({ user }),
   setSession: (session) => set({ session }),
   initializeSupabase: async () => {
-    // Get the current session (if any)
-    const { data: { session }, error } = await supabase.auth.getSession();
-    if (error) console.error('Supabase session fetch error:', error);
-    if (session) {
-      set({ user: session.user, session });
-    }
-    // Listen for auth state changes
-    supabase.auth.onAuthStateChange((_event, newSession) => {
-      set({ user: newSession?.user ?? null, session: newSession ?? null });
-    });
-
-    // Load pre‑provisioned device UUID from env and update config
-    const deviceUuid = process.env.EXPO_PUBLIC_DEVICE_UUID;
-    if (deviceUuid) {
-      const current = get().deviceConfig;
-      if (current) {
-        set({ deviceConfig: { ...current, deviceId: deviceUuid } });
+    try {
+      const { data: { session }, error } = await supabase.auth.getSession();
+      if (error) console.error('Supabase session fetch error:', error);
+      if (session) {
+        set({ user: session.user, session });
       }
+      supabase.auth.onAuthStateChange((_event, newSession) => {
+        set({ user: newSession?.user ?? null, session: newSession ?? null });
+      });
+
+      const deviceUuid = process.env.EXPO_PUBLIC_DEVICE_UUID;
+      if (deviceUuid) {
+        const current = get().deviceConfig;
+        if (current) {
+          set({ deviceConfig: { ...current, deviceId: deviceUuid } });
+        }
+      }
+    } catch (e) {
+      console.warn('Supabase auth init note:', e);
     }
   },
   signOut: async () => {

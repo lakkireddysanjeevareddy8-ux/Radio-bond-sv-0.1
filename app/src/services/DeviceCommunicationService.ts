@@ -11,8 +11,10 @@ export class DeviceCommunicationService {
   
   private onTelemetryUpdate?: (telemetry: Telemetry) => void;
   private onEmergencyEvent?: (event: EmergencyEvent) => void;
+  private onEmergencyResolved?: () => void;
   private onStatusChange?: (status: ConnectionStatus) => void;
   private onVoicePrompt?: (message: string) => void;
+  private lastConfig?: DeviceConfig;
 
   constructor() {}
 
@@ -20,16 +22,28 @@ export class DeviceCommunicationService {
     onTelemetryUpdate: (telemetry: Telemetry) => void,
     onEmergencyEvent: (event: EmergencyEvent) => void,
     onStatusChange: (status: ConnectionStatus) => void,
-    onVoicePrompt: (message: string) => void
+    onVoicePrompt: (message: string) => void,
+    onEmergencyResolved?: () => void
   ) {
     this.onTelemetryUpdate = onTelemetryUpdate;
     this.onEmergencyEvent = onEmergencyEvent;
     this.onStatusChange = onStatusChange;
     this.onVoicePrompt = onVoicePrompt;
+    this.onEmergencyResolved = onEmergencyResolved;
+
+    if (this.simulator) {
+      this.simulator.setCallbacks(
+        (telemetry) => this.onTelemetryUpdate?.(telemetry),
+        (event) => this.onEmergencyEvent?.(event),
+        (message) => this.onVoicePrompt?.(message),
+        () => this.onEmergencyResolved?.()
+      );
+    }
   }
 
   // Demo Simulator Mode
   public connectToDemoDevice(config: DeviceConfig) {
+    this.lastConfig = config;
     if (this.channel) {
       supabase.removeChannel(this.channel);
       this.channel = null;
@@ -40,8 +54,11 @@ export class DeviceCommunicationService {
       this.simulator.setCallbacks(
         (telemetry) => this.onTelemetryUpdate?.(telemetry),
         (event) => this.onEmergencyEvent?.(event),
-        (message) => this.onVoicePrompt?.(message)
+        (message) => this.onVoicePrompt?.(message),
+        () => this.onEmergencyResolved?.()
       );
+      this.simulator.start();
+    } else {
       this.simulator.start();
     }
     
@@ -153,20 +170,61 @@ export class DeviceCommunicationService {
     this.onStatusChange?.(status);
   }
 
+  // Ensure simulator is active whenever demo methods are called
+  public ensureSimulator() {
+    if (!this.simulator) {
+      const cfg: DeviceConfig = this.lastConfig || {
+        deviceId: 'DEMO-DEVICE',
+        deviceName: 'Bathroom Safety Device',
+        stillnessThreshold: 15,
+        responseTimeout: 10,
+        voiceDetectionEnabled: true,
+        speakerEnabled: true,
+        emergencyKeywords: ['HELP', 'EMERGENCY', 'SAVE ME'],
+        voiceSensitivity: 'Medium',
+        emergencyEscalation: 'VOICE_AND_ALERT',
+      };
+      this.connectToDemoDevice(cfg);
+    }
+  }
+
   // --- Controls for Demo Mode ---
-  public demoPersonEnters() { this.simulator?.simulatePersonEnters(); }
-  public demoPersonLeaves() { this.simulator?.simulatePersonLeaves(); }
-  public demoMovement() { this.simulator?.simulateMovement(); }
-  public demoStops() { this.simulator?.simulateStops(); }
-  public demoVoiceHelp() { this.simulator?.simulateVoiceHelp(); }
-  public demoResponse() { this.simulator?.simulateResponse(); }
-  public demoEmergencyButton() { this.simulator?.simulateEmergencyButton(); }
+  public demoPersonEnters() { 
+    this.ensureSimulator();
+    this.simulator?.simulatePersonEnters(); 
+  }
+  public demoPersonLeaves() { 
+    this.ensureSimulator();
+    this.simulator?.simulatePersonLeaves(); 
+  }
+  public demoMovement() { 
+    this.ensureSimulator();
+    this.simulator?.simulateMovement(); 
+  }
+  public demoStops() { 
+    this.ensureSimulator();
+    this.simulator?.simulateStops(); 
+  }
+  public demoVoiceHelp() { 
+    this.ensureSimulator();
+    this.simulator?.simulateVoiceHelp(); 
+  }
+  public demoResponse() { 
+    this.ensureSimulator();
+    this.simulator?.simulateResponse(); 
+  }
+  public demoEmergencyButton() { 
+    this.ensureSimulator();
+    this.simulator?.simulateEmergencyButton(); 
+  }
   
   public demoDeviceOffline() {
+    this.ensureSimulator();
     this.simulator?.simulateOffline();
     this.setStatus('DISCONNECTED');
   }
   public demoDeviceOnline() {
+    this.ensureSimulator();
     this.simulator?.simulateOnline();
     this.setStatus('CONNECTED');
   }

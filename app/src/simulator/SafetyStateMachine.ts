@@ -1,4 +1,4 @@
-import { SafetyState, DeviceConfig, Telemetry } from '../types';
+import { SafetyState, DeviceConfig } from '../types';
 
 type Action = 
   | 'PERSON_ENTERS' 
@@ -42,94 +42,74 @@ export class SafetyStateMachine {
   }
 
   public dispatch(action: Action) {
-    switch (this.state) {
-      case 'IDLE':
-        if (action === 'PERSON_ENTERS') {
-          this.presence = true;
-          this.movement = true;
-          this.state = 'PERSON_PRESENT';
-        }
+    switch (action) {
+      case 'PERSON_ENTERS':
+        this.presence = true;
+        this.movement = true;
+        this.stillnessSeconds = 0;
+        this.responseSeconds = 0;
+        this.state = 'PERSON_PRESENT';
         break;
 
-      case 'PERSON_PRESENT':
-      case 'MOVING':
-        if (action === 'PERSON_LEAVES') {
-          this.reset();
-        } else if (action === 'MOVEMENT_DETECTED') {
-          this.movement = true;
-          this.stillnessSeconds = 0;
-          this.state = 'MOVING';
-        } else if (action === 'MOVEMENT_STOPPED') {
-          this.movement = false;
-          this.stillnessSeconds = 0;
-          this.state = 'STILL_MONITORING';
-        } else if (action === 'VOICE_EMERGENCY_DETECTED') {
-          this.state = 'EMERGENCY';
-        }
+      case 'PERSON_LEAVES':
+        this.reset();
         break;
 
-      case 'STILL_MONITORING':
-        if (action === 'PERSON_LEAVES') {
-          this.reset();
-        } else if (action === 'MOVEMENT_DETECTED') {
-          this.movement = true;
-          this.stillnessSeconds = 0;
-          this.state = 'MOVING';
-        } else if (action === 'TICK') {
+      case 'MOVEMENT_DETECTED':
+        this.presence = true;
+        this.movement = true;
+        this.stillnessSeconds = 0;
+        this.responseSeconds = 0;
+        this.state = 'MOVING';
+        break;
+
+      case 'MOVEMENT_STOPPED':
+        this.presence = true;
+        this.movement = false;
+        this.stillnessSeconds = 0;
+        this.responseSeconds = 0;
+        this.state = 'STILL_MONITORING';
+        break;
+
+      case 'VOICE_EMERGENCY_DETECTED':
+        this.presence = true;
+        this.state = 'EMERGENCY';
+        break;
+
+      case 'RESPONSE_RECEIVED':
+        this.presence = true;
+        this.movement = true;
+        this.stillnessSeconds = 0;
+        this.responseSeconds = 0;
+        this.state = 'MOVING';
+        break;
+
+      case 'TICK':
+        if (this.state === 'STILL_MONITORING') {
           this.stillnessSeconds++;
           if (this.stillnessSeconds >= this.config.stillnessThreshold) {
             this.state = 'CHECKING_WELLBEING';
             this.responseSeconds = 0;
           }
-        } else if (action === 'VOICE_EMERGENCY_DETECTED') {
-          this.state = 'EMERGENCY';
-        }
-        break;
-
-      case 'CHECKING_WELLBEING':
-      case 'WAITING_FOR_RESPONSE':
-        if (action === 'RESPONSE_RECEIVED' || action === 'MOVEMENT_DETECTED') {
-          this.movement = true;
-          this.stillnessSeconds = 0;
-          this.state = 'MOVING';
-        } else if (action === 'TICK') {
+        } else if (this.state === 'CHECKING_WELLBEING' || this.state === 'WAITING_FOR_RESPONSE') {
+          this.stillnessSeconds++;
           this.responseSeconds++;
-          if (this.state === 'CHECKING_WELLBEING') {
-             this.state = 'WAITING_FOR_RESPONSE';
-          }
+          this.state = 'WAITING_FOR_RESPONSE';
           if (this.responseSeconds >= this.config.responseTimeout) {
             this.state = 'EMERGENCY';
           }
-        } else if (action === 'VOICE_EMERGENCY_DETECTED') {
-          this.state = 'EMERGENCY';
-        }
-        break;
-
-      case 'EMERGENCY':
-        if (action === 'PERSON_LEAVES') {
-           this.reset();
-        }
-        break;
-        
-      case 'RESOLVED':
-        if (action === 'PERSON_LEAVES') {
-          this.reset();
-        } else if (action === 'MOVEMENT_DETECTED') {
-          this.movement = true;
-          this.stillnessSeconds = 0;
-          this.state = 'MOVING';
+        } else if (this.state === 'EMERGENCY') {
+          this.stillnessSeconds++;
         }
         break;
     }
   }
 
   public resolveEmergency() {
-    if (this.state === 'EMERGENCY') {
-       this.state = 'RESOLVED';
-    }
+    this.state = 'RESOLVED';
   }
 
-  private reset() {
+  public reset() {
     this.presence = false;
     this.movement = false;
     this.stillnessSeconds = 0;

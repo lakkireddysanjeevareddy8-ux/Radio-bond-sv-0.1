@@ -35,6 +35,10 @@ export default function App() {
           setVoicePrompt(message);
           // Auto clear voice prompt after 5 seconds
           setTimeout(() => setVoicePrompt(null), 5000);
+        },
+        () => {
+          // Emergency resolved / person left
+          setActiveEmergency(null);
         }
       );
 
