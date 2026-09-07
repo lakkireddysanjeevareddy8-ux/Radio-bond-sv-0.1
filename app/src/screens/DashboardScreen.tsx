@@ -15,7 +15,7 @@ export const DashboardScreen: React.FC = () => {
     safetyStatus = 'OFFLINE';
   } else if (
     telemetry?.state === 'EMERGENCY' ||
-    (activeEmergency && activeEmergency.status === 'ACTIVE' && telemetry?.state !== 'IDLE' && telemetry?.state !== 'SAFE')
+    (activeEmergency && activeEmergency.status === 'ACTIVE' && telemetry?.state !== 'IDLE')
   ) {
     safetyStatus = 'EMERGENCY';
   } else if (telemetry?.state === 'CHECKING_WELLBEING' || telemetry?.state === 'WAITING_FOR_RESPONSE') {
@@ -98,14 +98,14 @@ export const DashboardScreen: React.FC = () => {
                 active={true}
               />
               <MetricBox
-                icon={<Mic size={18} color={colors.textSecondary} />}
-                title="Voice"
-                value="Monitoring"
-                active={false}
+                icon={<Activity size={18} color="#059669" />}
+                title="Radar Sensor"
+                value="LD2410C Active"
+                active={true}
               />
               <MetricBox
                 icon={<Shield size={18} color={colors.textSecondary} />}
-                title="State"
+                title="Safety State"
                 value={telemetry.state.replace(/_/g, ' ')}
                 active={false}
               />

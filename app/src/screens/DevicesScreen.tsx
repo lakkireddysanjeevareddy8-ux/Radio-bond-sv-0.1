@@ -16,6 +16,8 @@ import {
 } from 'react-native';
 import { colors, typography, spacing, borderRadius } from '../utils/theme';
 import { useAppStore } from '../store/useAppStore';
+import { useDeviceStore } from '../store/useDeviceStore';
+import { DeviceOnboardingScreen } from './DeviceOnboardingScreen';
 import { supabase } from '../services/supabaseClient';
 import {
   Wifi,
@@ -85,6 +87,9 @@ export const DevicesScreen: React.FC = () => {
     isSimulatorMode,
     setIsSimulatorMode,
   } = useAppStore();
+
+  const { devices, activeDeviceId, setActiveDeviceId } = useDeviceStore();
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   // Rename modal state
   const [showRenameModal, setShowRenameModal] = useState(false);
@@ -634,7 +639,7 @@ export const DevicesScreen: React.FC = () => {
       presence: true,
       movement: true,
       stillnessSeconds: 0,
-      state: 'SAFE',
+      state: 'IDLE',
       voiceDetected: false,
       wifiRSSI: selectedDevice.rssi ?? -45,
       uptime: 120,
@@ -690,14 +695,117 @@ export const DevicesScreen: React.FC = () => {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      {/* Real Device Search Button (Placed at top) */}
+      {/* Realme Link Style Professional IoT Onboarding CTA */}
       <TouchableOpacity
-        style={styles.addDeviceButton}
+        style={[
+          styles.addDeviceButton,
+          {
+            backgroundColor: colors.primary,
+            borderWidth: 0,
+            shadowColor: colors.primary,
+            shadowOpacity: 0.25,
+            shadowRadius: 8,
+            shadowOffset: { width: 0, height: 4 },
+            elevation: 4,
+            marginBottom: spacing.md,
+          },
+        ]}
+        onPress={() => setShowOnboarding(true)}
+        activeOpacity={0.85}
+      >
+        <Radio size={20} color="#FFFFFF" />
+        <Text style={[styles.addDeviceText, { color: '#FFFFFF', fontWeight: '700', fontSize: 15 }]}>
+          + Connect a Device (Choose Product Flow)
+        </Text>
+      </TouchableOpacity>
+
+      {/* My Devices list from useDeviceStore */}
+      {devices.length > 0 && (
+        <View style={{ marginBottom: spacing.lg }}>
+          <Text style={{ ...typography.h3, color: colors.textPrimary, marginBottom: spacing.sm }}>
+            My Devices ({devices.length})
+          </Text>
+          {devices.map((dev) => {
+            const isSelected = activeDeviceId === dev.deviceId;
+            return (
+              <TouchableOpacity
+                key={dev.deviceId}
+                style={[
+                  styles.deviceCard,
+                  {
+                    padding: spacing.md,
+                    marginBottom: spacing.sm,
+                    borderColor: isSelected ? colors.primary : colors.border,
+                    borderWidth: isSelected ? 2 : 1,
+                  },
+                ]}
+                onPress={() => {
+                  setActiveDeviceId(dev.deviceId);
+                  setDeviceConfig({
+                    deviceId: dev.deviceId,
+                    deviceName: `${dev.name} — ${dev.room}`,
+                    stillnessThreshold: 25,
+                    responseTimeout: 15,
+                    voiceDetectionEnabled: true,
+                    speakerEnabled: true,
+                    emergencyKeywords: ['HELP', 'EMERGENCY'],
+                    voiceSensitivity: 'Medium',
+                    emergencyEscalation: 'VOICE_AND_ALERT',
+                  });
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <View
+                    style={[
+                      styles.deviceIconBox,
+                      { width: 44, height: 44, backgroundColor: isSelected ? '#EFF6FF' : '#F1F5F9' },
+                    ]}
+                  >
+                    <Cpu size={22} color={isSelected ? colors.primary : '#64748B'} />
+                  </View>
+                  <View style={{ flex: 1, marginLeft: 8 }}>
+                    <Text style={{ ...typography.body1, fontWeight: '700', color: colors.textPrimary }}>
+                      {dev.name}
+                    </Text>
+                    <Text style={{ ...typography.caption, color: colors.textSecondary }}>
+                      {dev.model} • {dev.room} {dev.ipAddress ? `• ${dev.ipAddress}` : ''}
+                    </Text>
+                  </View>
+                  <View
+                    style={{
+                      paddingHorizontal: 8,
+                      paddingVertical: 3,
+                      borderRadius: 4,
+                      backgroundColor: isSelected ? '#ECFDF5' : '#F8FAFC',
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        fontWeight: '700',
+                        color: isSelected ? '#047857' : '#64748B',
+                      }}
+                    >
+                      {isSelected ? 'ACTIVE' : 'SELECT'}
+                    </Text>
+                  </View>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
+
+      {/* Legacy Fast Connect Button */}
+      <TouchableOpacity
+        style={[styles.addDeviceButton, { marginBottom: spacing.md }]}
         onPress={handleOpenPairing}
         activeOpacity={0.8}
       >
-        <Radio size={18} color={colors.primary} />
-        <Text style={styles.addDeviceText}>+ Search Real Device (Bluetooth / Wi-Fi)</Text>
+        <Radio size={16} color={colors.textSecondary} />
+        <Text style={[styles.addDeviceText, { color: colors.textSecondary, fontSize: 13 }]}>
+          Manual Pairing &amp; Windows Audio Scan
+        </Text>
       </TouchableOpacity>
 
       {/* Active Device Card */}
@@ -1567,6 +1675,21 @@ export const DevicesScreen: React.FC = () => {
             )}
           </View>
         </View>
+      </Modal>
+
+      {/* Commercial Realme Link Style IoT Onboarding Modal */}
+      <Modal
+        visible={showOnboarding}
+        animationType="slide"
+        onRequestClose={() => setShowOnboarding(false)}
+      >
+        <DeviceOnboardingScreen
+          onClose={() => setShowOnboarding(false)}
+          onComplete={() => {
+            setShowOnboarding(false);
+            navigation.navigate('Home');
+          }}
+        />
       </Modal>
     </ScrollView>
   );
