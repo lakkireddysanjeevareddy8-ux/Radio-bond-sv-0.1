@@ -631,6 +631,16 @@ export const DevicesScreen: React.FC = () => {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      {/* Real Device Search Button (Placed at top) */}
+      <TouchableOpacity
+        style={styles.addDeviceButton}
+        onPress={handleOpenPairing}
+        activeOpacity={0.8}
+      >
+        <Radio size={18} color={colors.primary} />
+        <Text style={styles.addDeviceText}>+ Search Real Device (Bluetooth / Wi-Fi)</Text>
+      </TouchableOpacity>
+
       {/* Active Device Card */}
       <View style={styles.deviceCard}>
         <View style={styles.deviceHeader}>
@@ -767,7 +777,7 @@ export const DevicesScreen: React.FC = () => {
           </View>
           <Text style={styles.demoNoticeText}>
             Currently displaying simulated radar telemetry. To connect your real Bluetooth earbuds or
-            ESP32 board, click "+ Search Real Device" below.
+            ESP32 board, click "+ Search Real Device" above.
           </Text>
         </View>
       ) : (
@@ -792,15 +802,6 @@ export const DevicesScreen: React.FC = () => {
           </Text>
         </View>
       )}
-
-      {/* Real Device Search Button */}
-      <TouchableOpacity
-        style={styles.addDeviceButton}
-        onPress={handleOpenPairing}
-        activeOpacity={0.8}
-      >
-        <Text style={styles.addDeviceText}>+ Search Real Device (Bluetooth / Wi-Fi)</Text>
-      </TouchableOpacity>
 
       {/* Rename Modal */}
       <Modal visible={showRenameModal} transparent animationType="fade">
@@ -1584,16 +1585,20 @@ const styles = StyleSheet.create({
   liveNoticeTitle: { ...typography.body2, color: '#14532D', fontWeight: '700' },
   liveNoticeText: { ...typography.caption, color: '#14532D', lineHeight: 16 },
   addDeviceButton: {
-    marginTop: spacing.md,
+    marginBottom: spacing.md,
     padding: spacing.md,
     borderRadius: borderRadius.lg,
     borderWidth: 2,
     borderColor: colors.primary,
     borderStyle: 'dashed',
+    backgroundColor: '#F0F9FF',
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
     cursor: 'pointer' as any,
   },
-  addDeviceText: { ...typography.body1, color: colors.primary, fontWeight: '600' },
+  addDeviceText: { ...typography.body1, color: colors.primary, fontWeight: '700' },
 
   // Modal styles
   modalOverlay: {
