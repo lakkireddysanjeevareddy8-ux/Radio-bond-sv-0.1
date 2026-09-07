@@ -109,6 +109,17 @@ export class SafetyStateMachine {
     this.state = 'RESOLVED';
   }
 
+  public recoverOnline() {
+    if (
+      this.state === 'EMERGENCY' ||
+      this.state === 'CHECKING_WELLBEING' ||
+      this.state === 'WAITING_FOR_RESPONSE' ||
+      this.state === 'DEVICE_OFFLINE'
+    ) {
+      this.reset();
+    }
+  }
+
   public reset() {
     this.presence = false;
     this.movement = false;

@@ -13,7 +13,10 @@ export const DashboardScreen: React.FC = () => {
 
   if (!isOnline) {
     safetyStatus = 'OFFLINE';
-  } else if (activeEmergency || telemetry?.state === 'EMERGENCY') {
+  } else if (
+    telemetry?.state === 'EMERGENCY' ||
+    (activeEmergency && activeEmergency.status === 'ACTIVE' && telemetry?.state !== 'IDLE' && telemetry?.state !== 'SAFE')
+  ) {
     safetyStatus = 'EMERGENCY';
   } else if (telemetry?.state === 'CHECKING_WELLBEING' || telemetry?.state === 'WAITING_FOR_RESPONSE') {
     safetyStatus = 'CHECKING';
@@ -119,7 +122,7 @@ export const DashboardScreen: React.FC = () => {
       </ScrollView>
 
       {/* Emergency overlay rendered on top */}
-      {activeEmergency && <EmergencyScreen />}
+      {activeEmergency && safetyStatus === 'EMERGENCY' && <EmergencyScreen />}
     </View>
   );
 };

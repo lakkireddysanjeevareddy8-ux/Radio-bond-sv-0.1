@@ -89,6 +89,10 @@ export class DeviceSimulator {
 
   public simulateOnline() {
     this.isOffline = false;
+    this.stateMachine.recoverOnline();
+    if (this.onEmergencyResolved) {
+      this.onEmergencyResolved();
+    }
     this.emitTelemetry();
   }
   
