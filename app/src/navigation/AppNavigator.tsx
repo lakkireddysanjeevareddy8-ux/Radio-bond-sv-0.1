@@ -4,15 +4,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useAppStore } from '../store/useAppStore';
 import { LoginScreen } from '../screens/LoginScreen';
-import { Text } from 'react-native';
-// Placeholder icons
-const Home = (props: { color: string; size?: number }) => <Text style={{color: props.color}}>{'🏠'}</Text>;
-const Cpu = (props: { color: string; size?: number }) => <Text style={{color: props.color}}>{'🖥️'}</Text>;
-const List = (props: { color: string; size?: number }) => <Text style={{color: props.color}}>{'📋'}</Text>;
-const Phone = (props: { color: string; size?: number }) => <Text style={{color: props.color}}>{'📞'}</Text>;
-const Settings = (props: { color: string; size?: number }) => <Text style={{color: props.color}}>{'⚙️'}</Text>;
-const FlaskConical = (props: { color: string; size?: number }) => <Text style={{color: props.color}}>{'⚗️'}</Text>;
-
+import { AnimatedBottomTabBar } from './AnimatedTabBar';
 import { DashboardScreen } from '../screens/DashboardScreen';
 import { DevicesScreen } from '../screens/DevicesScreen';
 import { EventsScreen } from '../screens/EventsScreen';
@@ -27,18 +19,10 @@ const Stack = createNativeStackNavigator();
 const MainTabs = () => {
   return (
     <Tab.Navigator
+      tabBar={(props) => <AnimatedBottomTabBar {...props} />}
       screenOptions={{
-        tabBarActiveTintColor: colors.primary,
-        tabBarInactiveTintColor: colors.textSecondary,
         headerStyle: { backgroundColor: colors.surface },
         headerTitleStyle: { color: colors.textPrimary, fontWeight: '600' as const },
-        tabBarStyle: {
-          backgroundColor: colors.surface,
-          borderTopColor: colors.border,
-          borderTopWidth: 1,
-          height: 60,
-          paddingBottom: 8,
-        },
       }}
     >
       <Tab.Screen
@@ -47,7 +31,6 @@ const MainTabs = () => {
         options={{
           title: 'Dashboard',
           headerTitle: '🛡️  Washroom Safety',
-          tabBarIcon: ({ color, size }) => <Home color={color} size={size} />,
         }}
       />
       <Tab.Screen
@@ -55,7 +38,6 @@ const MainTabs = () => {
         component={DevicesScreen}
         options={{
           title: 'Devices',
-          tabBarIcon: ({ color, size }) => <Cpu color={color} size={size} />,
         }}
       />
       <Tab.Screen
@@ -63,7 +45,6 @@ const MainTabs = () => {
         component={EventsScreen}
         options={{
           title: 'Events',
-          tabBarIcon: ({ color, size }) => <List color={color} size={size} />,
         }}
       />
       <Tab.Screen
@@ -71,7 +52,6 @@ const MainTabs = () => {
         component={ContactsScreen}
         options={{
           title: 'Contacts',
-          tabBarIcon: ({ color, size }) => <Phone color={color} size={size} />,
         }}
       />
       <Tab.Screen
@@ -79,7 +59,6 @@ const MainTabs = () => {
         component={SettingsScreen}
         options={{
           title: 'Settings',
-          tabBarIcon: ({ color, size }) => <Settings color={color} size={size} />,
         }}
       />
       <Tab.Screen
@@ -87,7 +66,6 @@ const MainTabs = () => {
         component={DemoScreen}
         options={{
           title: 'Demo',
-          tabBarIcon: ({ color, size }) => <FlaskConical color={color} size={size} />,
           tabBarBadge: 'TEST',
         }}
       />
