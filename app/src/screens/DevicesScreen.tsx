@@ -178,17 +178,50 @@ export const DevicesScreen: React.FC = () => {
   const handleOpenWindowsBluetoothSettings = () => {
     try {
       if (typeof window !== 'undefined' && Platform.OS === 'web') {
-        window.location.href = 'ms-settings:bluetooth';
+        const link = document.createElement('a');
+        link.href = 'ms-settings:bluetooth';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
       } else {
         Linking.openURL('ms-settings:bluetooth');
       }
     } catch (e) {
-      Alert.alert(
-        'Open Windows Settings',
-        'Press Windows Key + I on your keyboard, then go to "Bluetooth & devices" to pair your earbuds.'
-      );
+      console.warn('Bluetooth settings protocol error:', e);
+      try {
+        if (typeof window !== 'undefined') window.location.href = 'ms-settings:bluetooth';
+      } catch {}
     }
   };
+
+  // Launch native Windows Wi-Fi / Network Settings (Opens taskbar flyout)
+  const handleOpenWindowsWifiSettings = () => {
+    try {
+      if (typeof window !== 'undefined' && Platform.OS === 'web') {
+        const link = document.createElement('a');
+        link.href = 'ms-availablenetworks:';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } else {
+        Linking.openURL('ms-availablenetworks:');
+      }
+    } catch (e) {
+      console.warn('Wi-Fi flyout error:', e);
+      try {
+        if (typeof window !== 'undefined') window.location.href = 'ms-settings:network-wifi';
+      } catch {}
+    }
+  };
+
+  // Automatically open Windows settings when Bluetooth or Wi-Fi needs to be turned on
+  useEffect(() => {
+    if (pairingStep === 'PROMPT_TURN_ON_BLUETOOTH' || pairingStep === 'PROMPT_WINDOWS_EARBUDS_GUIDE') {
+      handleOpenWindowsBluetoothSettings();
+    } else if (pairingStep === 'PROMPT_TURN_ON_WIFI') {
+      handleOpenWindowsWifiSettings();
+    }
+  }, [pairingStep]);
 
   // Rename handlers
   const handleOpenRename = () => {
@@ -944,19 +977,39 @@ export const DevicesScreen: React.FC = () => {
                   </Text>
                 </View>
 
-                <View style={styles.instructionsCard}>
-                  <Text style={styles.instructionsTitle}>📱 How to turn on Bluetooth:</Text>
-                  <Text style={styles.instructionLine}>
-                    • <Text style={{ fontWeight: '700' }}>Windows:</Text> Press{' '}
-                    <Text style={{ fontWeight: '700' }}>Win + A</Text> or open Settings &gt;
-                    Bluetooth &amp; devices, then switch Bluetooth to{' '}
-                    <Text style={{ fontWeight: '700', color: colors.primary }}>ON</Text>.
+                {/* Windows 11 Quick Settings Action Center Tile */}
+                <View style={styles.quickSettingsBox}>
+                  <View style={styles.quickSettingsHeader}>
+                    <Text style={styles.quickSettingsTitle}>Windows Quick Settings Tray</Text>
+                    <View style={styles.shortcutPill}>
+                      <Text style={styles.shortcutText}>⊞ Win + A</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.quickSettingsHint}>
+                    Press <Text style={{ fontWeight: '700' }}>Win + A</Text> on your keyboard or click your taskbar Wi-Fi/Speaker icon to toggle Bluetooth:
                   </Text>
-                  <Text style={styles.instructionLine}>
-                    • <Text style={{ fontWeight: '700' }}>Earbuds / ESP32:</Text> Ensure the device is
-                    out of its case and advertising in pairing mode.
-                  </Text>
+                  <View style={styles.quickTilesRow}>
+                    <TouchableOpacity
+                      style={[styles.quickTile, { backgroundColor: '#F1F5F9' }]}
+                      onPress={handleOpenWindowsBluetoothSettings}
+                      activeOpacity={0.8}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <Bluetooth size={20} color="#64748B" />
+                        <Text style={[styles.quickTileText, { color: '#334155' }]}>Bluetooth (OFF)</Text>
+                      </View>
+                      <ArrowRight size={14} color="#64748B" />
+                    </TouchableOpacity>
+                  </View>
                 </View>
+
+                <TouchableOpacity
+                  style={[styles.modalBtn, styles.confirmBtn, { backgroundColor: '#2563EB', width: '100%', marginBottom: spacing.sm }]}
+                  onPress={handleOpenWindowsBluetoothSettings}
+                >
+                  <ExternalLink size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                  <Text style={styles.confirmBtnText}>Open Windows Bluetooth Settings</Text>
+                </TouchableOpacity>
 
                 <View style={styles.modalActions}>
                   <TouchableOpacity
@@ -987,22 +1040,43 @@ export const DevicesScreen: React.FC = () => {
                     Wi-Fi / Network is Turned Off
                   </Text>
                   <Text style={[styles.alertDescription, { color: '#78350F' }]}>
-                    Your device is disconnected from Wi-Fi. Please enable Wi-Fi and connect to your local
-                    router so we can discover active ESP32 SafeGuard devices.
+                    Your device is disconnected from Wi-Fi. Windows Network flyout is opening automatically so you can connect to your router.
                   </Text>
                 </View>
 
-                <View style={styles.instructionsCard}>
-                  <Text style={styles.instructionsTitle}>📶 How to turn on Wi-Fi:</Text>
-                  <Text style={styles.instructionLine}>
-                    • <Text style={{ fontWeight: '700' }}>Windows:</Text> Click the Network icon in the
-                    bottom-right taskbar and connect to your Wi-Fi network.
+                {/* Windows 11 Quick Settings Action Center Tile */}
+                <View style={styles.quickSettingsBox}>
+                  <View style={styles.quickSettingsHeader}>
+                    <Text style={styles.quickSettingsTitle}>Windows Quick Settings Tray</Text>
+                    <View style={styles.shortcutPill}>
+                      <Text style={styles.shortcutText}>⊞ Win + A</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.quickSettingsHint}>
+                    Press <Text style={{ fontWeight: '700' }}>Win + A</Text> on your keyboard or click below to open your Wi-Fi flyout:
                   </Text>
-                  <Text style={styles.instructionLine}>
-                    • <Text style={{ fontWeight: '700' }}>ESP32 Router:</Text> Ensure your device is on
-                    the same 2.4GHz network as your ESP32 board.
-                  </Text>
+                  <View style={styles.quickTilesRow}>
+                    <TouchableOpacity
+                      style={[styles.quickTile, { backgroundColor: '#EFF6FF' }]}
+                      onPress={handleOpenWindowsWifiSettings}
+                      activeOpacity={0.8}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <Wifi size={20} color="#2563EB" />
+                        <Text style={[styles.quickTileText, { color: '#1E40AF' }]}>Available Wi-Fi</Text>
+                      </View>
+                      <ArrowRight size={14} color="#2563EB" />
+                    </TouchableOpacity>
+                  </View>
                 </View>
+
+                <TouchableOpacity
+                  style={[styles.modalBtn, styles.confirmBtn, { backgroundColor: '#D97706', width: '100%', marginBottom: spacing.sm }]}
+                  onPress={handleOpenWindowsWifiSettings}
+                >
+                  <ExternalLink size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                  <Text style={styles.confirmBtnText}>Open Windows Wi-Fi Settings</Text>
+                </TouchableOpacity>
 
                 <View style={styles.modalActions}>
                   <TouchableOpacity
@@ -1720,6 +1794,62 @@ const styles = StyleSheet.create({
   },
 
   // Alert Banner Styles (for Turn On Bluetooth / Wi-Fi)
+  quickSettingsBox: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  quickSettingsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  quickSettingsTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  shortcutPill: {
+    backgroundColor: '#0F172A',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  shortcutText: {
+    color: '#FFFFFF',
+    fontWeight: '800',
+    fontSize: 11,
+    letterSpacing: 0.5,
+  },
+  quickSettingsHint: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    lineHeight: 18,
+    marginBottom: spacing.sm,
+  },
+  quickTilesRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  quickTile: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: spacing.sm,
+    borderRadius: borderRadius.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.06)',
+    cursor: 'pointer' as any,
+  },
+  quickTileText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
   alertBanner: {
     borderWidth: 1,
     borderRadius: borderRadius.md,
