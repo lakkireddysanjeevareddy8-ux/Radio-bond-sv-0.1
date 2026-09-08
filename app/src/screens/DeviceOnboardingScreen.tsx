@@ -145,16 +145,33 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
   useEffect(() => {
     let interval: any = null;
     if (isWifiTurnedOff && currentStep === 'WIFI_SCANNING') {
-      interval = setInterval(() => {
-        if (WifiService.isWifiAvailable()) {
+      interval = setInterval(async () => {
+        const isOnline = await WifiService.checkDeviceWifiEnabled();
+        if (isOnline) {
           setIsWifiTurnedOff(false);
           setIsWifiEnabled(true);
           startWifiScan();
         }
       }, 1500);
     }
+    const handleOnlineEvent = async () => {
+      if (isWifiTurnedOff && currentStep === 'WIFI_SCANNING') {
+        const isOnline = await WifiService.checkDeviceWifiEnabled();
+        if (isOnline) {
+          setIsWifiTurnedOff(false);
+          setIsWifiEnabled(true);
+          startWifiScan();
+        }
+      }
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', handleOnlineEvent);
+    }
     return () => {
       if (interval) clearInterval(interval);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', handleOnlineEvent);
+      }
     };
   }, [isWifiTurnedOff, currentStep]);
 
@@ -232,11 +249,12 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
   // Load real Wi-Fi networks (for BLE onboarding)
   const loadWifiNetworks = async (session?: ConnectedBleSession | null) => {
     setIsScanningWifi(true);
-    const wifiActive = WifiService.isWifiAvailable();
+    const wifiActive = await WifiService.checkDeviceWifiEnabled();
     setIsWifiEnabled(wifiActive);
 
     if (!wifiActive) {
       setIsScanningWifi(false);
+      setIsWifiTurnedOff(true);
       return;
     }
 
@@ -249,6 +267,7 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
     } catch (e: any) {
       if (e.message === 'WIFI_DISABLED') {
         setIsWifiEnabled(false);
+        setIsWifiTurnedOff(true);
       }
     } finally {
       setIsScanningWifi(false);
@@ -266,8 +285,9 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
     setErrorMessage('');
     setCurrentStep('WIFI_SCANNING');
 
-    // 1. Check Wi-Fi state
-    if (!WifiService.isWifiAvailable()) {
+    // 1. Deep check Wi-Fi state
+    const wifiActive = await WifiService.checkDeviceWifiEnabled();
+    if (!wifiActive) {
       setIsWifiTurnedOff(true);
       setIsWifiEnabled(false);
       return;
@@ -291,6 +311,16 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
   const startWifiScan = async () => {
     setIsScanningWifi(true);
     setErrorMessage('');
+
+    // Ensure Wi-Fi is actively enabled before proceeding
+    const wifiActive = await WifiService.checkDeviceWifiEnabled();
+    if (!wifiActive) {
+      setIsScanningWifi(false);
+      setIsWifiTurnedOff(true);
+      setIsWifiEnabled(false);
+      return;
+    }
+
     const controller = new AbortController();
     wifiAbortControllerRef.current = controller;
 
@@ -303,6 +333,7 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
     } catch (err: any) {
       if (err.message === 'WIFI_DISABLED') {
         setIsWifiTurnedOff(true);
+        setIsWifiEnabled(false);
       } else if (err.message === 'PERMISSION_DENIED' || err.message === 'PERMISSION_PERMANENTLY_DENIED') {
         setWifiPermissionDenied(true);
       } else {
@@ -852,14 +883,25 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
             {isWifiTurnedOff ? (
               <View style={styles.errorBox}>
                 <View style={[styles.iconCircle, { backgroundColor: '#FEE2E2' }]}>
-                  <WifiOff size={40} color="#DC2626" />
+                  <WifiOff size={44} color="#DC2626" />
                 </View>
-                <Text style={styles.errorTitle}>Wi-Fi is turned off</Text>
+                <Text style={styles.errorTitle}>Wi-Fi is Turned Off</Text>
                 <Text style={styles.errorDesc}>
-                  Please turn on Wi-Fi to find and connect your safety gadget.
+                  Your device's Wi-Fi is currently turned off. Please turn on Wi-Fi on your phone/computer so we can scan for available networks and pair your {selectedProduct?.name || 'safety gadget'}.
                 </Text>
                 <TouchableOpacity style={styles.turnOnBtn} onPress={handleTurnOnWifi}>
+                  <Wifi size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
                   <Text style={styles.turnOnBtnText}>Turn On Wi-Fi</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.cancelScanBtn, { marginTop: 12, backgroundColor: '#EFF6FF', borderColor: colors.primary }]}
+                  onPress={handleStartWifiFlow}
+                >
+                  <RefreshCw size={14} color={colors.primary} style={{ marginRight: 6 }} />
+                  <Text style={[styles.cancelScanText, { color: colors.primary, fontWeight: '700' }]}>
+                    I've Turned It On, Try Again
+                  </Text>
                 </TouchableOpacity>
 
                 <View style={styles.autoContinueNotice}>

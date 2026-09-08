@@ -20,11 +20,60 @@ const server = http.createServer((req, res) => {
   const pathname = url.pathname;
   const target = url.searchParams.get('target') || 'quicksettings';
 
+  if (pathname === '/wifi-status') {
+    exec('netsh wlan show interfaces', (err, stdout, stderr) => {
+      const output = (stdout || '') + (stderr || '');
+      const isPoweredDown =
+        output.includes('powered down') ||
+        output.includes('Hardware Off') ||
+        output.includes('Software Off') ||
+        output.includes('There is no wireless interface') ||
+        output.includes('wlansvc is not running');
+
+      const isConnected = output.includes('State                  : connected');
+      const isDisconnected = output.includes('State                  : disconnected');
+      const wifiEnabled = !isPoweredDown && (isConnected || isDisconnected || output.includes('Interface type'));
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          success: true,
+          wifiEnabled,
+          state: wifiEnabled ? (isConnected ? 'connected' : 'disconnected') : 'off',
+          isPoweredDown,
+        })
+      );
+    });
+    return;
+  }
+
   if (pathname === '/scan-wifi') {
     exec('netsh wlan show networks mode=bssid', (err, stdout, stderr) => {
+      const output = (stdout || '') + (stderr || '');
+      const isPoweredDown =
+        output.includes('powered down') ||
+        output.includes('Hardware Off') ||
+        output.includes('Software Off') ||
+        output.includes('There is no wireless interface') ||
+        output.includes('wlansvc is not running');
+
+      if (isPoweredDown) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            success: false,
+            wifiEnabled: false,
+            error: 'WIFI_DISABLED',
+            message: 'Wi-Fi interface is turned off or powered down. Please turn on Wi-Fi.',
+            networks: [],
+          })
+        );
+        return;
+      }
+
       if (err || !stdout) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err ? err.message : 'Scan failed', networks: [] }));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err ? err.message : 'Scan failed', networks: [] }));
         return;
       }
 
