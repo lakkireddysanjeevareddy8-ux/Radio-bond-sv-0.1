@@ -1,13 +1,37 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Linking, Alert, Platform } from 'react-native';
 import { useAppStore } from '../store/useAppStore';
+import { useContactStore } from '../store/useContactStore';
 import { colors, typography, spacing, borderRadius } from '../utils/theme';
 import { AlertTriangle, Phone, CheckCircle } from 'lucide-react-native';
 
 export const EmergencyScreen: React.FC = () => {
   const { activeEmergency, setActiveEmergency, deviceConfig } = useAppStore();
+  const { getPrimaryContact, contacts } = useContactStore();
 
   if (!activeEmergency) return null;
+
+  const handleCall = async (phoneNumber: string) => {
+    const cleanPhone = phoneNumber.replace(/[^\d+]/g, '');
+    const url = `tel:${cleanPhone}`;
+    try {
+      const supported = await Linking.canOpenURL(url);
+      if (supported || Platform.OS === 'web') {
+        await Linking.openURL(url);
+      } else {
+        Alert.alert('Call Failed', `Unable to place call to ${phoneNumber}.`);
+      }
+    } catch {
+      if (Platform.OS === 'web') {
+        window.open(url, '_self');
+      } else {
+        Alert.alert('Emergency Contact', `Please dial: ${phoneNumber}`);
+      }
+    }
+  };
+
+  const primaryContact = getPrimaryContact();
+
 
   const handleResolve = () => {
     setActiveEmergency(null);
@@ -39,15 +63,33 @@ export const EmergencyScreen: React.FC = () => {
         </View>
 
         <View style={styles.actionsContainer}>
-          <TouchableOpacity style={[styles.button, styles.primaryButton]}>
+          <TouchableOpacity
+            style={[styles.button, styles.primaryButton]}
+            onPress={() => {
+              const targetPhone = primaryContact?.phone || (contacts.length > 0 ? contacts[0].phone : '911');
+              handleCall(targetPhone);
+            }}
+          >
             <Phone color={colors.surface} size={20} />
-            <Text style={styles.primaryButtonText}>CALL EMERGENCY CONTACT</Text>
+            <Text style={styles.primaryButtonText}>
+              {primaryContact ? `CALL EMERGENCY (${primaryContact.name.toUpperCase()})` : 'CALL EMERGENCY SERVICES'}
+            </Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={[styles.button, styles.secondaryButton]}>
-            <Phone color={colors.textPrimary} size={20} />
-            <Text style={styles.secondaryButtonText}>CALL PRIMARY CONTACT</Text>
-          </TouchableOpacity>
+          {primaryContact && contacts.length > 1 && (
+            <TouchableOpacity
+              style={[styles.button, styles.secondaryButton]}
+              onPress={() => {
+                const secondary = contacts.find((c) => !c.isPrimary) || primaryContact;
+                handleCall(secondary.phone);
+              }}
+            >
+              <Phone color={colors.textPrimary} size={20} />
+              <Text style={styles.secondaryButtonText}>
+                CALL BACKUP ({contacts.find((c) => !c.isPrimary)?.name.toUpperCase() || 'CONTACT'})
+              </Text>
+            </TouchableOpacity>
+          )}
 
           <TouchableOpacity style={[styles.button, styles.resolveButton]} onPress={handleResolve}>
             <CheckCircle color={colors.safe} size={20} />

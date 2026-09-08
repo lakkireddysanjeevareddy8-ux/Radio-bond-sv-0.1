@@ -63,3 +63,12 @@ export interface DeviceStatus {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface Contact {
+  id: string;
+  name: string;
+  phone: string;
+  relationship: string;
+  isPrimary: boolean;
+}
+
