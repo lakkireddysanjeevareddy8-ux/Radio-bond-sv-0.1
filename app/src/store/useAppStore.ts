@@ -49,6 +49,32 @@ const defaultConfig: DeviceConfig = {
   emergencyEscalation: 'VOICE_AND_ALERT'
 };
 
+const CONFIG_STORAGE_KEY = 'washroom_safeguard_config_v1';
+
+const loadPersistedConfig = (): DeviceConfig => {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = window.localStorage.getItem(CONFIG_STORAGE_KEY);
+      if (raw) {
+        return { ...defaultConfig, ...JSON.parse(raw) };
+      }
+    }
+  } catch (e) {
+    console.warn('Could not load config from local storage:', e);
+  }
+  return defaultConfig;
+};
+
+const persistConfig = (config: DeviceConfig) => {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
+    }
+  } catch (e) {
+    console.warn('Could not persist config to local storage:', e);
+  }
+};
+
 const defaultTelemetry: Telemetry = {
   deviceId: 'DEMO-DEVICE',
   timestamp: new Date().toISOString(),
@@ -64,8 +90,11 @@ const defaultTelemetry: Telemetry = {
 
 export const useAppStore = create<AppState>((set, get) => ({
   // Device config
-  deviceConfig: defaultConfig,
-  setDeviceConfig: (config) => set({ deviceConfig: config }),
+  deviceConfig: loadPersistedConfig(),
+  setDeviceConfig: (config) => {
+    persistConfig(config);
+    set({ deviceConfig: config });
+  },
 
   // Telemetry
   telemetry: defaultTelemetry,
