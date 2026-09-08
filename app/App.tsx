@@ -1,8 +1,10 @@
 import React, { useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { AppNavigator } from './src/navigation/AppNavigator';
+import { EmergencyScreen } from './src/screens/EmergencyScreen';
 import { deviceService } from './src/services/DeviceCommunicationService';
 import { useAppStore } from './src/store/useAppStore';
+import { EmergencySoundService } from './src/services/EmergencySoundService';
 
 export default function App() {
   const {
@@ -17,6 +19,8 @@ export default function App() {
 
   useEffect(() => {
     initializeSupabase();
+    // Prompt for browser notification permission early
+    EmergencySoundService.requestNotificationPermission();
   }, []);
 
   useEffect(() => {
@@ -58,6 +62,7 @@ export default function App() {
     <>
       <StatusBar style="auto" />
       <AppNavigator />
+      <EmergencyScreen />
     </>
   );
 }

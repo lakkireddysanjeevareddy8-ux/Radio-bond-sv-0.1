@@ -5,11 +5,19 @@ import { useDeviceStore } from '../store/useDeviceStore';
 import { DeviceConnectionService } from '../services/deviceConnectionService';
 import { colors, typography, spacing, borderRadius } from '../utils/theme';
 import { SafetyStatusCard } from '../components/SafetyStatusCard';
-import { EmergencyScreen } from './EmergencyScreen';
 import { Shield, Wifi, User, Activity, Clock, Mic, Volume2, RefreshCw } from 'lucide-react-native';
 
 export const DashboardScreen: React.FC = () => {
-  const { deviceConfig, telemetry, isOnline, activeEmergency, voicePrompt, setIsOnline, setTelemetry } = useAppStore();
+  const {
+    deviceConfig,
+    telemetry,
+    isOnline,
+    activeEmergency,
+    setActiveEmergency,
+    voicePrompt,
+    setIsOnline,
+    setTelemetry,
+  } = useAppStore();
   const { getActiveDevice } = useDeviceStore();
   const activeDevice = getActiveDevice();
   const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
@@ -26,6 +34,16 @@ export const DashboardScreen: React.FC = () => {
         },
         onTelemetry: (t) => {
           setTelemetry(t);
+          if (t.state === 'EMERGENCY' && !activeEmergency) {
+            setActiveEmergency({
+              id: `emg-wifi-${Date.now()}`,
+              deviceId: t.deviceId || activeDevice?.deviceId || 'ESP32-LIVE',
+              eventType: 'EMERGENCY',
+              trigger: 'BUTTON',
+              timestamp: new Date().toISOString(),
+              status: 'ACTIVE',
+            });
+          }
         },
       });
 
@@ -175,9 +193,6 @@ export const DashboardScreen: React.FC = () => {
           </Text>
         </View>
       </ScrollView>
-
-      {/* Emergency overlay rendered on top */}
-      {activeEmergency && safetyStatus === 'EMERGENCY' && <EmergencyScreen />}
     </View>
   );
 };

@@ -1,15 +1,78 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Linking, Alert, Platform } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Linking,
+  Alert,
+  Platform,
+  Animated,
+} from 'react-native';
 import { useAppStore } from '../store/useAppStore';
 import { useContactStore } from '../store/useContactStore';
 import { colors, typography, spacing, borderRadius } from '../utils/theme';
-import { AlertTriangle, Phone, CheckCircle } from 'lucide-react-native';
+import {
+  AlertTriangle,
+  Phone,
+  CheckCircle,
+  Volume2,
+  VolumeX,
+  ShieldAlert,
+  BellRing,
+} from 'lucide-react-native';
+import { EmergencySoundService } from '../services/EmergencySoundService';
 
 export const EmergencyScreen: React.FC = () => {
   const { activeEmergency, setActiveEmergency, deviceConfig } = useAppStore();
   const { getPrimaryContact, contacts } = useContactStore();
+  const [isMuted, setIsMuted] = useState(false);
+  const [pulseAnim] = useState(new Animated.Value(1));
+
+  useEffect(() => {
+    if (activeEmergency) {
+      // 1. Play continuous emergency alarm siren
+      EmergencySoundService.resetMute();
+      setIsMuted(false);
+      EmergencySoundService.playEmergencySiren();
+
+      // 2. Dispatch system OS notification popup (visible even outside browser/app)
+      const triggerLabel = activeEmergency.trigger.replace(/_/g, ' ');
+      const keywordInfo = activeEmergency.keyword ? ` (Detected: "${activeEmergency.keyword}")` : '';
+      EmergencySoundService.sendSystemNotification(
+        '🚨 EMERGENCY ALERT DETECTED!',
+        `Immediate response needed! Washroom Safety device detected ${triggerLabel}${keywordInfo}. Tap to view details and call emergency contacts.`,
+        activeEmergency.trigger
+      );
+
+      // 3. Pulse animation loop
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.04,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
+    }
+
+    return () => {
+      EmergencySoundService.stopEmergencySiren();
+    };
+  }, [activeEmergency?.id]);
 
   if (!activeEmergency) return null;
+
+  const handleToggleMute = () => {
+    const muted = EmergencySoundService.toggleMute();
+    setIsMuted(muted);
+  };
 
   const handleCall = async (phoneNumber: string) => {
     const cleanPhone = phoneNumber.replace(/[^\d+]/g, '');
@@ -32,33 +95,69 @@ export const EmergencyScreen: React.FC = () => {
 
   const primaryContact = getPrimaryContact();
 
-
   const handleResolve = () => {
+    EmergencySoundService.stopEmergencySiren();
+    EmergencySoundService.resetMute();
     setActiveEmergency(null);
   };
 
   return (
     <View style={styles.overlay}>
-      <View style={styles.card}>
+      <Animated.View style={[styles.card, { transform: [{ scale: pulseAnim }] }]}>
+        {/* Urgent Alert Banner */}
+        <View style={styles.topAlarmBar}>
+          <View style={styles.alarmBadge}>
+            <BellRing size={16} color="#DC2626" />
+            <Text style={styles.alarmBadgeText}>LIVE EMERGENCY ALARM</Text>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.muteBtn, isMuted && styles.muteBtnActive]}
+            onPress={handleToggleMute}
+            accessibilityRole="button"
+            accessibilityLabel={isMuted ? 'Unmute siren' : 'Mute siren'}
+          >
+            {isMuted ? (
+              <>
+                <VolumeX size={15} color="#DC2626" />
+                <Text style={styles.muteBtnText}>Muted</Text>
+              </>
+            ) : (
+              <>
+                <Volume2 size={15} color="#FFFFFF" />
+                <Text style={[styles.muteBtnText, { color: '#FFFFFF' }]}>Mute Siren</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+
         <View style={styles.header}>
-          <AlertTriangle color={colors.emergency} size={48} />
-          <Text style={styles.title}>POSSIBLE EMERGENCY</Text>
-          <Text style={styles.subtitle}>Unusual situation detected. Please respond.</Text>
+          <View style={styles.iconCircle}>
+            <AlertTriangle color="#DC2626" size={44} />
+          </View>
+          <Text style={styles.title}>EMERGENCY DETECTED</Text>
+          <Text style={styles.subtitle}>
+            Critical safety event received from your Washroom Safety Gadget.
+          </Text>
         </View>
 
         <View style={styles.detailsContainer}>
-          <DetailRow label="Bathroom" value="Main Bathroom" />
-          <DetailRow label="Device" value={deviceConfig?.deviceName || 'Unknown'} />
-          <DetailRow label="Trigger" value={activeEmergency.trigger.replace(/_/g, ' ')} />
+          <DetailRow label="Location" value="Main Washroom" />
+          <DetailRow label="Device" value={deviceConfig?.deviceName || 'Washroom Safety Gadget'} />
+          <DetailRow label="Trigger Source" value={activeEmergency.trigger.replace(/_/g, ' ')} highlight />
           {activeEmergency.keyword && (
-            <DetailRow label="Detected Keyword" value={`"${activeEmergency.keyword}"`} />
+            <DetailRow label="Keyword Detected" value={`"${activeEmergency.keyword}"`} highlight />
           )}
           {activeEmergency.confidence !== undefined && (
             <DetailRow label="Confidence" value={`${Math.round(activeEmergency.confidence * 100)}%`} />
           )}
           <DetailRow
-            label="Time"
-            value={new Date(activeEmergency.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            label="Time of Incident"
+            value={new Date(activeEmergency.timestamp).toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            })}
           />
         </View>
 
@@ -70,9 +169,9 @@ export const EmergencyScreen: React.FC = () => {
               handleCall(targetPhone);
             }}
           >
-            <Phone color={colors.surface} size={20} />
+            <Phone color="#FFFFFF" size={20} />
             <Text style={styles.primaryButtonText}>
-              {primaryContact ? `CALL EMERGENCY (${primaryContact.name.toUpperCase()})` : 'CALL EMERGENCY SERVICES'}
+              {primaryContact ? `CALL PRIMARY (${primaryContact.name.toUpperCase()})` : 'CALL EMERGENCY SERVICES'}
             </Text>
           </TouchableOpacity>
 
@@ -84,7 +183,7 @@ export const EmergencyScreen: React.FC = () => {
                 handleCall(secondary.phone);
               }}
             >
-              <Phone color={colors.textPrimary} size={20} />
+              <Phone color={colors.textPrimary} size={18} />
               <Text style={styles.secondaryButtonText}>
                 CALL BACKUP ({contacts.find((c) => !c.isPrimary)?.name.toUpperCase() || 'CONTACT'})
               </Text>
@@ -96,44 +195,113 @@ export const EmergencyScreen: React.FC = () => {
             <Text style={styles.resolveButtonText}>MARK AS RESOLVED</Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </Animated.View>
     </View>
   );
 };
 
-const DetailRow = ({ label, value }: { label: string; value: string }) => (
+const DetailRow = ({
+  label,
+  value,
+  highlight,
+}: {
+  label: string;
+  value: string;
+  highlight?: boolean;
+}) => (
   <View style={styles.detailRow}>
     <Text style={styles.detailLabel}>{label}</Text>
-    <Text style={styles.detailValue}>{value}</Text>
+    <Text style={[styles.detailValue, highlight && styles.detailValueHighlight]}>{value}</Text>
   </View>
 );
 
 const styles = StyleSheet.create({
   overlay: {
     position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.85)',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(15, 23, 42, 0.92)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: spacing.md,
-    zIndex: 1000,
+    zIndex: 999999,
+    elevation: 999,
   },
   card: {
     backgroundColor: colors.surface,
     borderRadius: borderRadius.lg,
     padding: spacing.xl,
     width: '100%',
-    maxWidth: 400,
+    maxWidth: 440,
+    borderWidth: 2,
+    borderColor: '#EF4444',
+    shadowColor: '#EF4444',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.35,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  topAlarmBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.md,
+    paddingBottom: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  alarmBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FEE2E2',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: borderRadius.full,
+  },
+  alarmBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#DC2626',
+    letterSpacing: 0.5,
+  },
+  muteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#DC2626',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: borderRadius.full,
+  },
+  muteBtnActive: {
+    backgroundColor: '#FEE2E2',
+  },
+  muteBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#DC2626',
   },
   header: {
     alignItems: 'center',
-    marginBottom: spacing.xl,
+    marginBottom: spacing.lg,
+  },
+  iconCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#FEE2E2',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
   },
   title: {
     fontSize: 22,
-    fontWeight: '700',
-    color: colors.emergency,
-    marginTop: spacing.md,
+    fontWeight: '800',
+    color: '#DC2626',
+    letterSpacing: 0.5,
     textAlign: 'center',
   },
   subtitle: {
@@ -141,31 +309,39 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     textAlign: 'center',
     marginTop: spacing.xs,
+    lineHeight: 18,
   },
   detailsContainer: {
-    marginBottom: spacing.xl,
+    marginBottom: spacing.lg,
     backgroundColor: colors.background,
     padding: spacing.md,
     borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   detailRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingVertical: spacing.sm,
+    paddingVertical: spacing.xs,
     borderBottomWidth: 1,
-    borderBottomColor: colors.border,
+    borderBottomColor: '#F1F5F9',
   },
   detailLabel: {
-    ...typography.body2,
+    ...typography.caption,
     color: colors.textSecondary,
+    fontWeight: '500',
   },
   detailValue: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
     color: colors.textPrimary,
   },
+  detailValueHighlight: {
+    color: '#DC2626',
+    fontWeight: '800',
+  },
   actionsContainer: {
-    gap: spacing.md,
+    gap: spacing.sm,
   },
   button: {
     flexDirection: 'row',
@@ -176,12 +352,18 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   primaryButton: {
-    backgroundColor: colors.emergency,
+    backgroundColor: '#DC2626',
+    shadowColor: '#DC2626',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 3,
   },
   primaryButtonText: {
     fontSize: 14,
     fontWeight: '700',
-    color: colors.surface,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
   },
   secondaryButton: {
     backgroundColor: colors.background,
@@ -189,18 +371,19 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   secondaryButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '700',
     color: colors.textPrimary,
   },
   resolveButton: {
     backgroundColor: '#ECFDF5',
     borderWidth: 1,
     borderColor: colors.safe,
+    marginTop: 4,
   },
   resolveButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '700',
     color: colors.safe,
   },
 });
