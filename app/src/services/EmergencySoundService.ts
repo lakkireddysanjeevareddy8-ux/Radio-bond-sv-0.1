@@ -3,11 +3,12 @@ import { Platform, Vibration } from 'react-native';
 class EmergencySoundServiceClass {
   private audioCtx: AudioContext | null = null;
   private isSirenActive: boolean = false;
+  private isVibrating: boolean = false;
   private sirenInterval: any = null;
+  private vibrationInterval: any = null;
   private isMuted: boolean = false;
 
   constructor() {
-    // Attempt permission request on startup if supported
     this.requestNotificationPermission();
   }
 
@@ -28,6 +29,64 @@ class EmergencySoundServiceClass {
       console.warn('Notification permission request note:', e);
     }
     return false;
+  }
+
+  /**
+   * Start continuous looping vibration until explicitly stopped.
+   * Works on mobile browsers (navigator.vibrate) and native (Vibration.vibrate with repeat).
+   */
+  public startContinuousVibration(): void {
+    if (this.isVibrating) return;
+    this.isVibrating = true;
+
+    // 1. Native React Native looping vibration
+    try {
+      // Pass repeat=true on native platforms
+      Vibration.vibrate([0, 1000, 400, 1000, 400], true);
+    } catch {}
+
+    // 2. Web / Browser looping vibration via navigator.vibrate
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        const triggerWebPulse = () => {
+          if (!this.isVibrating) return;
+          try {
+            navigator.vibrate([1000, 400, 1000, 400]);
+          } catch {}
+        };
+
+        triggerWebPulse();
+        if (this.vibrationInterval) clearInterval(this.vibrationInterval);
+        this.vibrationInterval = setInterval(triggerWebPulse, 2800);
+      }
+    } catch (e) {
+      console.warn('Web vibration initiation note:', e);
+    }
+  }
+
+  /**
+   * Stop continuous vibration immediately.
+   */
+  public stopContinuousVibration(): void {
+    this.isVibrating = false;
+
+    // Clear interval on web
+    if (this.vibrationInterval) {
+      clearInterval(this.vibrationInterval);
+      this.vibrationInterval = null;
+    }
+
+    // Cancel native vibration
+    try {
+      Vibration.cancel();
+    } catch {}
+
+    // Cancel web vibration
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate(0);
+      }
+    } catch {}
   }
 
   /**
@@ -73,17 +132,18 @@ class EmergencySoundServiceClass {
       console.warn('System notification dispatch note:', e);
     }
 
-    // Also trigger mobile device vibration
-    try {
-      Vibration.vibrate([0, 1000, 400, 1000, 400, 1000]);
-    } catch {}
+    // Ensure continuous vibration starts along with the system alert
+    this.startContinuousVibration();
   }
 
   /**
-   * Start the continuous high-intensity emergency audio siren.
+   * Start the continuous high-intensity emergency audio siren and vibration.
    * Alternates between 960Hz and 770Hz in an urgent alarm pattern.
    */
   public playEmergencySiren(): void {
+    // Start continuous vibration alongside audio siren
+    this.startContinuousVibration();
+
     if (this.isSirenActive || this.isMuted) return;
 
     try {
@@ -113,7 +173,7 @@ class EmergencySoundServiceClass {
           const gain = this.audioCtx.createGain();
 
           osc.type = 'sawtooth';
-          // Alternating American/European standard emergency frequencies (960Hz / 770Hz)
+          // Alternating standard emergency frequencies (960Hz / 770Hz)
           osc.frequency.setValueAtTime(
             toggle ? 960 : 770,
             this.audioCtx.currentTime
@@ -146,7 +206,7 @@ class EmergencySoundServiceClass {
   }
 
   /**
-   * Stop the active emergency siren.
+   * Stop the active emergency siren and vibration.
    */
   public stopEmergencySiren(): void {
     this.isSirenActive = false;
@@ -159,6 +219,15 @@ class EmergencySoundServiceClass {
         this.audioCtx.suspend();
       } catch {}
     }
+    this.stopContinuousVibration();
+  }
+
+  /**
+   * Stop all emergency alerts (sound, vibration, intervals).
+   */
+  public stopAll(): void {
+    this.stopEmergencySiren();
+    this.stopContinuousVibration();
   }
 
   /**
@@ -168,8 +237,11 @@ class EmergencySoundServiceClass {
     this.isMuted = !this.isMuted;
     if (this.isMuted) {
       this.stopEmergencySiren();
+      // Keep or toggle vibration as well
+      this.stopContinuousVibration();
     } else {
       this.playEmergencySiren();
+      this.startContinuousVibration();
     }
     return this.isMuted;
   }

@@ -20,6 +20,7 @@ import {
   VolumeX,
   ShieldAlert,
   BellRing,
+  CircleStop,
 } from 'lucide-react-native';
 import { EmergencySoundService } from '../services/EmergencySoundService';
 
@@ -31,10 +32,11 @@ export const EmergencyScreen: React.FC = () => {
 
   useEffect(() => {
     if (activeEmergency) {
-      // 1. Play continuous emergency alarm siren
+      // 1. Play continuous emergency alarm siren and continuous vibration
       EmergencySoundService.resetMute();
       setIsMuted(false);
       EmergencySoundService.playEmergencySiren();
+      EmergencySoundService.startContinuousVibration();
 
       // 2. Dispatch system OS notification popup (visible even outside browser/app)
       const triggerLabel = activeEmergency.trigger.replace(/_/g, ' ');
@@ -63,7 +65,7 @@ export const EmergencyScreen: React.FC = () => {
     }
 
     return () => {
-      EmergencySoundService.stopEmergencySiren();
+      EmergencySoundService.stopAll();
     };
   }, [activeEmergency?.id]);
 
@@ -95,8 +97,14 @@ export const EmergencyScreen: React.FC = () => {
 
   const primaryContact = getPrimaryContact();
 
+  const handleStopEmergency = () => {
+    EmergencySoundService.stopAll();
+    EmergencySoundService.resetMute();
+    setActiveEmergency(null);
+  };
+
   const handleResolve = () => {
-    EmergencySoundService.stopEmergencySiren();
+    EmergencySoundService.stopAll();
     EmergencySoundService.resetMute();
     setActiveEmergency(null);
   };
@@ -108,7 +116,7 @@ export const EmergencyScreen: React.FC = () => {
         <View style={styles.topAlarmBar}>
           <View style={styles.alarmBadge}>
             <BellRing size={16} color="#DC2626" />
-            <Text style={styles.alarmBadgeText}>LIVE EMERGENCY ALARM</Text>
+            <Text style={styles.alarmBadgeText}>SIREN & VIBRATION ACTIVE</Text>
           </View>
 
           <TouchableOpacity
@@ -162,6 +170,17 @@ export const EmergencyScreen: React.FC = () => {
         </View>
 
         <View style={styles.actionsContainer}>
+          {/* Prominent Stop Button to stop popup, alarm & continuous vibration */}
+          <TouchableOpacity
+            style={[styles.button, styles.stopAlarmButton]}
+            onPress={handleStopEmergency}
+            accessibilityRole="button"
+            accessibilityLabel="Stop emergency popup, alarm and vibration"
+          >
+            <CircleStop color="#FFFFFF" size={22} />
+            <Text style={styles.stopAlarmButtonText}>STOP ALARM & VIBRATION</Text>
+          </TouchableOpacity>
+
           <TouchableOpacity
             style={[styles.button, styles.primaryButton]}
             onPress={() => {
@@ -169,7 +188,7 @@ export const EmergencyScreen: React.FC = () => {
               handleCall(targetPhone);
             }}
           >
-            <Phone color="#FFFFFF" size={20} />
+            <Phone color="#FFFFFF" size={18} />
             <Text style={styles.primaryButtonText}>
               {primaryContact ? `CALL PRIMARY (${primaryContact.name.toUpperCase()})` : 'CALL EMERGENCY SERVICES'}
             </Text>
@@ -191,8 +210,8 @@ export const EmergencyScreen: React.FC = () => {
           )}
 
           <TouchableOpacity style={[styles.button, styles.resolveButton]} onPress={handleResolve}>
-            <CheckCircle color={colors.safe} size={20} />
-            <Text style={styles.resolveButtonText}>MARK AS RESOLVED</Text>
+            <CheckCircle color={colors.safe} size={18} />
+            <Text style={styles.resolveButtonText}>MARK AS RESOLVED & DISMISS</Text>
           </TouchableOpacity>
         </View>
       </Animated.View>
@@ -351,13 +370,32 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.md,
     gap: spacing.sm,
   },
-  primaryButton: {
+  stopAlarmButton: {
     backgroundColor: '#DC2626',
+    borderWidth: 2,
+    borderColor: '#B91C1C',
     shadowColor: '#DC2626',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 3,
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 4,
+    paddingVertical: 14,
+  },
+  stopAlarmButtonText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  primaryButton: {
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#334155',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 2,
   },
   primaryButtonText: {
     fontSize: 14,
