@@ -20,6 +20,19 @@ const server = http.createServer((req, res) => {
   const pathname = url.pathname;
   const target = url.searchParams.get('target') || 'quicksettings';
 
+  if (pathname === '/emergency-popup') {
+    console.log('[Windows Bridge] Triggering OS Emergency Popup & Window Focus');
+    try {
+      exec('powershell -Command "[System.Media.SystemSounds]::Hand.Play()"');
+      exec('powershell -Command "Start-Process \'http://localhost:8081\'"');
+    } catch (e) {
+      console.error('Error triggering emergency popup:', e);
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, message: 'Emergency popup triggered on OS' }));
+    return;
+  }
+
   if (pathname === '/wifi-status') {
     exec('netsh wlan show interfaces', (err, stdout, stderr) => {
       const output = (stdout || '') + (stderr || '');

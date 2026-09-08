@@ -89,6 +89,56 @@ class EmergencySoundServiceClass {
     } catch {}
   }
 
+  public getNotificationPermission(): 'granted' | 'denied' | 'default' | 'unsupported' {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      return Notification.permission;
+    }
+    return 'unsupported';
+  }
+
+  public async unlockAndTestAudio(): Promise<boolean> {
+    try {
+      if (typeof window === 'undefined') return true;
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) return false;
+      if (!this.audioCtx) {
+        this.audioCtx = new AudioContextClass();
+      }
+      if (this.audioCtx.state === 'suspended') {
+        await this.audioCtx.resume();
+      }
+
+      // Play short 200ms confirmation chime
+      const osc = this.audioCtx.createOscillator();
+      const gain = this.audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, this.audioCtx.currentTime);
+      gain.gain.setValueAtTime(0.15, this.audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, this.audioCtx.currentTime + 0.2);
+      osc.connect(gain);
+      gain.connect(this.audioCtx.destination);
+      osc.start();
+      osc.stop(this.audioCtx.currentTime + 0.2);
+      return true;
+    } catch (e) {
+      console.warn('Audio unlock error:', e);
+      return false;
+    }
+  }
+
+  public testVibration(): boolean {
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate([200, 100, 200]);
+        return true;
+      }
+      Vibration.vibrate([0, 200, 100, 200]);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   /**
    * Dispatch an OS-level notification popup that appears
    * on top of desktop, rest, social media, or other apps.
@@ -98,32 +148,57 @@ class EmergencySoundServiceClass {
     body: string,
     trigger: string = 'EMERGENCY'
   ): void {
+    // 1. Dispatch to Windows Bridge to bring browser to front & trigger system alert sound
+    try {
+      fetch('http://127.0.0.1:5005/emergency-popup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, body, trigger }),
+      }).catch(() => {});
+    } catch {}
+
+    // 2. Dispatch OS-level Notification popup (shows over other apps/social media)
     try {
       if (typeof window !== 'undefined' && 'Notification' in window) {
-        if (Notification.permission === 'granted') {
-          const notif = new Notification(title, {
-            body,
-            icon: '/favicon.ico',
-            badge: '/favicon.ico',
-            tag: 'washroom-emergency',
-            requireInteraction: true, // Remains on screen until user interacts!
-            silent: false,
-          });
+        const notifOptions = {
+          body,
+          icon: '/favicon.ico',
+          badge: '/favicon.ico',
+          tag: 'washroom-emergency',
+          requireInteraction: true, // Remains on screen until user interacts!
+          silent: false,
+        };
 
-          notif.onclick = () => {
-            try {
-              window.focus();
-              notif.close();
-            } catch {}
-          };
+        if (Notification.permission === 'granted') {
+          if (
+            typeof navigator !== 'undefined' &&
+            'serviceWorker' in navigator &&
+            navigator.serviceWorker.ready
+          ) {
+            navigator.serviceWorker.ready
+              .then((reg) => reg.showNotification(title, notifOptions as any))
+              .catch(() => {
+                const notif = new Notification(title, notifOptions);
+                notif.onclick = () => {
+                  try {
+                    window.focus();
+                    notif.close();
+                  } catch {}
+                };
+              });
+          } else {
+            const notif = new Notification(title, notifOptions);
+            notif.onclick = () => {
+              try {
+                window.focus();
+                notif.close();
+              } catch {}
+            };
+          }
         } else if (Notification.permission === 'default') {
           Notification.requestPermission().then((perm) => {
             if (perm === 'granted') {
-              new Notification(title, {
-                body,
-                tag: 'washroom-emergency',
-                requireInteraction: true,
-              });
+              new Notification(title, notifOptions);
             }
           });
         }
@@ -132,7 +207,7 @@ class EmergencySoundServiceClass {
       console.warn('System notification dispatch note:', e);
     }
 
-    // Ensure continuous vibration starts along with the system alert
+    // 3. Ensure continuous vibration starts along with the system alert
     this.startContinuousVibration();
   }
 

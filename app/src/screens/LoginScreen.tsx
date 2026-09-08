@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,16 @@ import {
 import Svg, { Path } from 'react-native-svg';
 import { useAppStore } from '../store/useAppStore';
 import { AuthService } from '../services/authService';
+import {
+  BellRing,
+  Volume2,
+  CheckCircle,
+  Smartphone,
+  ArrowRight,
+  ShieldCheck,
+  X,
+} from 'lucide-react-native';
+import { EmergencySoundService } from '../services/EmergencySoundService';
 
 const GoogleIcon = ({ size = 22 }: { size?: number }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24">
@@ -44,7 +54,54 @@ export const LoginScreen = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
+  // Device permissions & safety terms state
+  const [notificationGranted, setNotificationGranted] = useState<boolean>(false);
+  const [audioGranted, setAudioGranted] = useState<boolean>(false);
+  const [vibrationGranted, setVibrationGranted] = useState<boolean>(false);
+  const [showTermsModal, setShowTermsModal] = useState<boolean>(false);
+  const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
+
   const { setUser, setSession } = useAppStore();
+
+  useEffect(() => {
+    // Check initial notification permission
+    const currentNotif = EmergencySoundService.getNotificationPermission();
+    if (currentNotif === 'granted') {
+      setNotificationGranted(true);
+    }
+  }, []);
+
+  const handleAllowNotification = async () => {
+    const res = await EmergencySoundService.requestNotificationPermission();
+    if (res) {
+      setNotificationGranted(true);
+    }
+  };
+
+  const handleAllowAudio = async () => {
+    const success = await EmergencySoundService.unlockAndTestAudio();
+    if (success) {
+      setAudioGranted(true);
+    }
+  };
+
+  const handleAllowVibration = () => {
+    const success = EmergencySoundService.testVibration();
+    if (success) {
+      setVibrationGranted(true);
+    }
+  };
+
+  const executeWithTermsCheck = (action: () => void) => {
+    const isNotifGranted = EmergencySoundService.getNotificationPermission() === 'granted';
+    if (isNotifGranted && audioGranted && vibrationGranted) {
+      action();
+      return;
+    }
+    // Prompt user to allow terms one by one
+    setPendingAction(() => action);
+    setShowTermsModal(true);
+  };
 
   const handleGoogleSignIn = async () => {
     setErrorMessage(null);
@@ -99,6 +156,17 @@ export const LoginScreen = () => {
     }
   };
 
+  const doLocalLogin = () => {
+    setUser({
+      id: 'local-test-user',
+      email: 'developer@safeguard.local',
+      app_metadata: { provider: 'local' },
+      user_metadata: { name: 'Local Test Administrator' },
+      aud: 'authenticated',
+      created_at: new Date().toISOString(),
+    } as any);
+  };
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -124,6 +192,35 @@ export const LoginScreen = () => {
               Autonomous, non-invasive washroom wellbeing & fall prevention monitoring
             </Text>
           </View>
+
+          {/* Permissions & Terms Status Banner */}
+          <TouchableOpacity
+            style={styles.safetyStatusBanner}
+            onPress={() => setShowTermsModal(true)}
+            activeOpacity={0.8}
+          >
+            <View style={styles.statusBannerLeft}>
+              <BellRing
+                size={18}
+                color={
+                  notificationGranted && audioGranted && vibrationGranted
+                    ? '#10B981'
+                    : '#F59E0B'
+                }
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.statusBannerTitle}>
+                  Emergency Pop-up Terms & Permissions
+                </Text>
+                <Text style={styles.statusBannerSub}>
+                  {notificationGranted && audioGranted && vibrationGranted
+                    ? 'All 3 terms & permissions allowed (Popups active outside app) ✓'
+                    : `${(notificationGranted ? 1 : 0) + (audioGranted ? 1 : 0) + (vibrationGranted ? 1 : 0)} of 3 allowed — Tap to allow one by one`}
+                </Text>
+              </View>
+            </View>
+            <ArrowRight size={14} color="#94A3B8" />
+          </TouchableOpacity>
 
           {/* Mode Switcher Tabs */}
           <View style={styles.tabBar}>
@@ -171,7 +268,7 @@ export const LoginScreen = () => {
           {/* Google Single Sign-On Button */}
           <TouchableOpacity
             style={styles.googleSsoButton}
-            onPress={handleGoogleSignIn}
+            onPress={() => executeWithTermsCheck(handleGoogleSignIn)}
             disabled={googleLoading}
             activeOpacity={0.85}
           >
@@ -234,7 +331,7 @@ export const LoginScreen = () => {
           {/* Submit Action Button */}
           <TouchableOpacity
             style={styles.primaryActionButton}
-            onPress={handleEmailAuth}
+            onPress={() => executeWithTermsCheck(handleEmailAuth)}
             disabled={loading}
             activeOpacity={0.9}
           >
@@ -250,16 +347,7 @@ export const LoginScreen = () => {
           {/* Local Preview Mode Button (Instant Access for localhost testing) */}
           <TouchableOpacity
             style={styles.localDevButton}
-            onPress={() => {
-              setUser({
-                id: 'local-test-user',
-                email: 'developer@safeguard.local',
-                app_metadata: { provider: 'local' },
-                user_metadata: { name: 'Local Test Administrator' },
-                aud: 'authenticated',
-                created_at: new Date().toISOString(),
-              } as any);
-            }}
+            onPress={() => executeWithTermsCheck(doLocalLogin)}
             activeOpacity={0.85}
           >
             <Text style={styles.localDevButtonText}>⚡ Local Preview Mode (Instant Access)</Text>
@@ -280,6 +368,139 @@ export const LoginScreen = () => {
           </View>
         </View>
       </ScrollView>
+
+      {/* Step-by-Step Emergency Terms Modal */}
+      {showTermsModal && (
+        <View style={styles.modalOverlay}>
+          <View style={styles.termsModalCard}>
+            <View style={styles.termsModalHeader}>
+              <View style={styles.termsBadge}>
+                <BellRing size={15} color="#DC2626" />
+                <Text style={styles.termsBadgeText}>SYSTEM SAFETY SETUP</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setShowTermsModal(false)}
+                style={styles.modalCloseBtn}
+                accessibilityLabel="Close terms setup"
+              >
+                <X size={18} color="#94A3B8" />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.termsModalTitle}>Out-of-App Emergency Alerts</Text>
+            <Text style={styles.termsModalSubtitle}>
+              To receive emergency pop-ups and alarms when you are on social media, in another tab,
+              or on your desktop/home screen, please allow these permissions one by one:
+            </Text>
+
+            {/* Step 1: System Popups */}
+            <View style={[styles.termStepCard, notificationGranted && styles.termStepCardDone]}>
+              <View style={styles.termStepHeader}>
+                <View style={[styles.stepIconBox, notificationGranted && styles.stepIconBoxDone]}>
+                  <BellRing size={18} color={notificationGranted ? '#10B981' : '#DC2626'} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.termStepTitle}>1. System Emergency Pop-ups</Text>
+                  <Text style={styles.termStepDesc}>
+                    Allows alerts to pop up on your screen over social media, games, or other apps.
+                  </Text>
+                </View>
+              </View>
+              {notificationGranted ? (
+                <View style={styles.doneBadge}>
+                  <CheckCircle size={14} color="#10B981" />
+                  <Text style={styles.doneBadgeText}>Allowed</Text>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={styles.stepBtn}
+                  onPress={handleAllowNotification}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.stepBtnText}>Allow Pop-ups (Step 1)</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Step 2: Siren Sound */}
+            <View style={[styles.termStepCard, audioGranted && styles.termStepCardDone]}>
+              <View style={styles.termStepHeader}>
+                <View style={[styles.stepIconBox, audioGranted && styles.stepIconBoxDone]}>
+                  <Volume2 size={18} color={audioGranted ? '#10B981' : '#3B82F6'} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.termStepTitle}>2. Emergency Siren Sound</Text>
+                  <Text style={styles.termStepDesc}>
+                    Allows high-volume alarm siren to sound without browser autoplay blocking.
+                  </Text>
+                </View>
+              </View>
+              {audioGranted ? (
+                <View style={styles.doneBadge}>
+                  <CheckCircle size={14} color="#10B981" />
+                  <Text style={styles.doneBadgeText}>Allowed & Tested</Text>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={[styles.stepBtn, styles.audioStepBtn]}
+                  onPress={handleAllowAudio}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.stepBtnText}>Allow & Test Siren (Step 2)</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Step 3: Vibration */}
+            <View style={[styles.termStepCard, vibrationGranted && styles.termStepCardDone]}>
+              <View style={styles.termStepHeader}>
+                <View style={[styles.stepIconBox, vibrationGranted && styles.stepIconBoxDone]}>
+                  <Smartphone size={18} color={vibrationGranted ? '#10B981' : '#F59E0B'} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.termStepTitle}>3. Continuous Device Vibration</Text>
+                  <Text style={styles.termStepDesc}>
+                    Vibrates device or trackpad continuously until the emergency is stopped.
+                  </Text>
+                </View>
+              </View>
+              {vibrationGranted ? (
+                <View style={styles.doneBadge}>
+                  <CheckCircle size={14} color="#10B981" />
+                  <Text style={styles.doneBadgeText}>Allowed & Tested</Text>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={[styles.stepBtn, styles.vibeStepBtn]}
+                  onPress={handleAllowVibration}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.stepBtnText}>Allow & Test Vibration (Step 3)</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Complete / Enter Console Button */}
+            <TouchableOpacity
+              style={[
+                styles.confirmTermsBtn,
+                notificationGranted && audioGranted && vibrationGranted && styles.confirmTermsBtnReady,
+              ]}
+              onPress={() => {
+                setShowTermsModal(false);
+                pendingAction?.();
+              }}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.confirmTermsBtnText}>
+                {notificationGranted && audioGranted && vibrationGranted
+                  ? '✓ All Terms Allowed — Enter Console'
+                  : 'Proceed to Console →'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
     </KeyboardAvoidingView>
   );
 };
@@ -572,6 +793,189 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     textAlign: 'center',
     lineHeight: 16,
+  },
+  safetyStatusBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 18,
+    gap: 10,
+  },
+  statusBannerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  statusBannerTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0F172A',
+    letterSpacing: 0.2,
+  },
+  statusBannerSub: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  modalOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(11, 17, 32, 0.88)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+    zIndex: 99999,
+    elevation: 100,
+  },
+  termsModalCard: {
+    backgroundColor: '#0F172A',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#334155',
+    padding: 22,
+    width: '100%',
+    maxWidth: 460,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.5,
+    shadowRadius: 24,
+    elevation: 20,
+  },
+  termsModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  termsBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FEE2E2',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 9999,
+  },
+  termsBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#DC2626',
+    letterSpacing: 0.5,
+  },
+  modalCloseBtn: {
+    padding: 4,
+  },
+  termsModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#F8FAFC',
+    marginBottom: 4,
+  },
+  termsModalSubtitle: {
+    fontSize: 12,
+    color: '#94A3B8',
+    lineHeight: 18,
+    marginBottom: 16,
+  },
+  termStepCard: {
+    backgroundColor: '#1E293B',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+    padding: 12,
+    marginBottom: 10,
+    gap: 10,
+  },
+  termStepCardDone: {
+    borderColor: '#10B981',
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+  },
+  termStepHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  stepIconBox: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: '#334155',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 2,
+  },
+  stepIconBoxDone: {
+    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+  },
+  termStepTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#F8FAFC',
+  },
+  termStepDesc: {
+    fontSize: 11,
+    color: '#94A3B8',
+    marginTop: 2,
+    lineHeight: 15,
+  },
+  doneBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 4,
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 9999,
+  },
+  doneBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#10B981',
+  },
+  stepBtn: {
+    backgroundColor: '#DC2626',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  audioStepBtn: {
+    backgroundColor: '#2563EB',
+  },
+  vibeStepBtn: {
+    backgroundColor: '#D97706',
+  },
+  stepBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  confirmTermsBtn: {
+    backgroundColor: '#334155',
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  confirmTermsBtnReady: {
+    backgroundColor: '#10B981',
+  },
+  confirmTermsBtnText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: 0.3,
   },
 });
 

@@ -115,28 +115,41 @@ export const EmergencyScreen: React.FC = () => {
         {/* Urgent Alert Banner */}
         <View style={styles.topAlarmBar}>
           <View style={styles.alarmBadge}>
-            <BellRing size={16} color="#DC2626" />
+            <BellRing size={15} color="#DC2626" />
             <Text style={styles.alarmBadgeText}>SIREN & VIBRATION ACTIVE</Text>
           </View>
 
-          <TouchableOpacity
-            style={[styles.muteBtn, isMuted && styles.muteBtnActive]}
-            onPress={handleToggleMute}
-            accessibilityRole="button"
-            accessibilityLabel={isMuted ? 'Unmute siren' : 'Mute siren'}
-          >
-            {isMuted ? (
-              <>
-                <VolumeX size={15} color="#DC2626" />
-                <Text style={styles.muteBtnText}>Muted</Text>
-              </>
-            ) : (
-              <>
-                <Volume2 size={15} color="#FFFFFF" />
-                <Text style={[styles.muteBtnText, { color: '#FFFFFF' }]}>Mute Siren</Text>
-              </>
-            )}
-          </TouchableOpacity>
+          <View style={styles.topRightControls}>
+            {/* Small Stop Alarm Button in header */}
+            <TouchableOpacity
+              style={styles.smallStopAlarmBtn}
+              onPress={handleStopEmergency}
+              accessibilityRole="button"
+              accessibilityLabel="Stop emergency alarm and vibration"
+            >
+              <CircleStop size={13} color="#FFFFFF" />
+              <Text style={styles.smallStopAlarmBtnText}>STOP ALARM</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.muteBtn, isMuted && styles.muteBtnActive]}
+              onPress={handleToggleMute}
+              accessibilityRole="button"
+              accessibilityLabel={isMuted ? 'Unmute siren' : 'Mute siren'}
+            >
+              {isMuted ? (
+                <>
+                  <VolumeX size={13} color="#DC2626" />
+                  <Text style={styles.muteBtnText}>Muted</Text>
+                </>
+              ) : (
+                <>
+                  <Volume2 size={13} color="#FFFFFF" />
+                  <Text style={[styles.muteBtnText, { color: '#FFFFFF' }]}>Mute</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
 
         <View style={styles.header}>
@@ -170,17 +183,6 @@ export const EmergencyScreen: React.FC = () => {
         </View>
 
         <View style={styles.actionsContainer}>
-          {/* Prominent Stop Button to stop popup, alarm & continuous vibration */}
-          <TouchableOpacity
-            style={[styles.button, styles.stopAlarmButton]}
-            onPress={handleStopEmergency}
-            accessibilityRole="button"
-            accessibilityLabel="Stop emergency popup, alarm and vibration"
-          >
-            <CircleStop color="#FFFFFF" size={22} />
-            <Text style={styles.stopAlarmButtonText}>STOP ALARM & VIBRATION</Text>
-          </TouchableOpacity>
-
           <TouchableOpacity
             style={[styles.button, styles.primaryButton]}
             onPress={() => {
@@ -212,6 +214,17 @@ export const EmergencyScreen: React.FC = () => {
           <TouchableOpacity style={[styles.button, styles.resolveButton]} onPress={handleResolve}>
             <CheckCircle color={colors.safe} size={18} />
             <Text style={styles.resolveButtonText}>MARK AS RESOLVED & DISMISS</Text>
+          </TouchableOpacity>
+
+          {/* Small compact stop alarm button at bottom */}
+          <TouchableOpacity
+            style={styles.smallStopActionBtn}
+            onPress={handleStopEmergency}
+            accessibilityRole="button"
+            accessibilityLabel="Stop emergency alarm and vibration"
+          >
+            <CircleStop size={14} color="#DC2626" />
+            <Text style={styles.smallStopActionBtnText}>Stop Emergency Alarm & Vibration</Text>
           </TouchableOpacity>
         </View>
       </Animated.View>
@@ -370,32 +383,52 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.md,
     gap: spacing.sm,
   },
-  stopAlarmButton: {
-    backgroundColor: '#DC2626',
-    borderWidth: 2,
-    borderColor: '#B91C1C',
-    shadowColor: '#DC2626',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    elevation: 4,
-    paddingVertical: 14,
+  topRightControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
-  stopAlarmButtonText: {
-    fontSize: 15,
+  smallStopAlarmBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#DC2626',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: borderRadius.full,
+  },
+  smallStopAlarmBtnText: {
+    fontSize: 11,
     fontWeight: '800',
     color: '#FFFFFF',
-    letterSpacing: 0.5,
+    letterSpacing: 0.3,
+  },
+  smallStopActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: borderRadius.full,
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    alignSelf: 'center',
+    marginTop: 2,
+  },
+  smallStopActionBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#DC2626',
   },
   primaryButton: {
-    backgroundColor: '#0F172A',
-    borderWidth: 1,
-    borderColor: '#334155',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 2,
+    backgroundColor: '#DC2626',
+    shadowColor: '#DC2626',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 3,
   },
   primaryButtonText: {
     fontSize: 14,
