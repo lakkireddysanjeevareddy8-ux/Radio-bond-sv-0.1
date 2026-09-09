@@ -1,4 +1,4 @@
-import { Platform } from 'react-native';
+import { Platform, Linking } from 'react-native';
 import { ProductDefinition } from './productCatalog';
 
 export interface DiscoveredBleDevice {
@@ -43,24 +43,64 @@ export class BluetoothService {
   }
 
   /**
-   * Prompts OS or Windows Bridge to open Bluetooth settings if disabled.
+   * Prompts OS (Android Mobile/Tablet, iOS Mobile/Tablet, Windows) to open Bluetooth settings if disabled.
    */
   public static openSystemBluetoothSettings(): void {
-    // 1. Local Windows bridge if available
-    try {
-      fetch('http://127.0.0.1:5005/open?target=bluetooth').catch(() => {});
-    } catch {}
+    // 1. Native Android Mobile & Tablet
+    if (Platform.OS === 'android') {
+      try {
+        if ((Linking as any).sendIntent) {
+          (Linking as any).sendIntent('android.settings.BLUETOOTH_SETTINGS').catch(() => {
+            Linking.openSettings();
+          });
+          return;
+        }
+      } catch {}
+      Linking.openSettings().catch(() => {});
+      return;
+    }
 
-    // 2. Platform URL
-    try {
-      if (typeof window !== 'undefined' && Platform.OS === 'web') {
+    // 2. Native iOS Mobile & Tablet (iPhone / iPad)
+    if (Platform.OS === 'ios') {
+      Linking.openURL('App-Prefs:Bluetooth').catch(() => {
+        Linking.openSettings().catch(() => {});
+      });
+      return;
+    }
+
+    // 3. Web on Mobile / Tablet / Desktop
+    if (typeof window !== 'undefined') {
+      const userAgent = (navigator.userAgent || '').toLowerCase();
+      const isAndroidWeb = /android/i.test(userAgent);
+      const isIosWeb = /iphone|ipad|ipod/i.test(userAgent);
+
+      if (isAndroidWeb) {
+        try {
+          window.location.href = 'intent:#Intent;action=android.settings.BLUETOOTH_SETTINGS;end;';
+          return;
+        } catch {}
+      }
+
+      if (isIosWeb) {
+        try {
+          window.location.href = 'App-Prefs:Bluetooth';
+          return;
+        } catch {}
+      }
+
+      // 4. Windows Desktop & local bridge fallback
+      try {
+        fetch('http://127.0.0.1:5005/open?target=bluetooth').catch(() => {});
+      } catch {}
+
+      try {
         const a = document.createElement('a');
         a.href = 'ms-settings:bluetooth';
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-      }
-    } catch {}
+      } catch {}
+    }
   }
 
   /**

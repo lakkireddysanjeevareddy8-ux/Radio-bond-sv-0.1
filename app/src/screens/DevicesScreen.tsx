@@ -13,11 +13,15 @@ import {
   Easing,
   Platform,
   Linking,
+  Image,
 } from 'react-native';
 import { colors, typography, spacing, borderRadius } from '../utils/theme';
 import { useAppStore } from '../store/useAppStore';
 import { useDeviceStore } from '../store/useDeviceStore';
 import { DeviceOnboardingScreen } from './DeviceOnboardingScreen';
+import { BluetoothOffScreen } from './BluetoothOffScreen';
+import { AddDeviceSearchScreen } from './AddDeviceSearchScreen';
+import { BluetoothService } from '../services/bluetoothService';
 import { supabase } from '../services/supabaseClient';
 import {
   Wifi,
@@ -47,6 +51,7 @@ import {
   Battery,
   Info,
   ExternalLink,
+  Plus,
 } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 
@@ -110,6 +115,25 @@ export const DevicesScreen: React.FC = () => {
   const [showManualEntry, setShowManualEntry] = useState(false);
   const [manualDeviceName, setManualDeviceName] = useState('My ESP32 SafeGuard');
   const [manualDeviceId, setManualDeviceId] = useState('esp32-washroom-01');
+
+  // User Requested Flows: Bluetooth Off Modal & Add Device Search Screen
+  const [showBluetoothOffScreen, setShowBluetoothOffScreen] = useState(false);
+  const [showAddDeviceSearchScreen, setShowAddDeviceSearchScreen] = useState(false);
+  const [simulateBluetoothOff, setSimulateBluetoothOff] = useState(false);
+
+  // Add device button click handler
+  const handleAddDevicePress = async () => {
+    if (simulateBluetoothOff) {
+      setShowBluetoothOffScreen(true);
+      return;
+    }
+    const isBtAvailable = await BluetoothService.isBluetoothAvailable();
+    if (!isBtAvailable) {
+      setShowBluetoothOffScreen(true);
+    } else {
+      setShowAddDeviceSearchScreen(true);
+    }
+  };
 
   // Animation values for radar pulse & rotation
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -695,29 +719,67 @@ export const DevicesScreen: React.FC = () => {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      {/* Realme Link Style Professional IoT Onboarding CTA */}
-      <TouchableOpacity
-        style={[
-          styles.addDeviceButton,
-          {
-            backgroundColor: colors.primary,
-            borderWidth: 0,
-            shadowColor: colors.primary,
-            shadowOpacity: 0.25,
-            shadowRadius: 8,
-            shadowOffset: { width: 0, height: 4 },
-            elevation: 4,
-            marginBottom: spacing.md,
-          },
-        ]}
-        onPress={() => setShowOnboarding(true)}
-        activeOpacity={0.85}
-      >
-        <Radio size={20} color="#FFFFFF" />
-        <Text style={[styles.addDeviceText, { color: '#FFFFFF', fontWeight: '700', fontSize: 15 }]}>
-          + Connect a Device (Choose Product Flow)
-        </Text>
-      </TouchableOpacity>
+      {/* ========================================================================= */}
+      {/* SCREENSHOT 3: "My devices" Primary View */}
+      {/* ========================================================================= */}
+      <View style={styles.myDevicesSection}>
+        <View style={styles.myDevicesHeaderRow}>
+          <Text style={styles.myDevicesMainTitle}>My devices</Text>
+          
+          {/* Quick simulation tester to test Bluetooth Off behavior */}
+          <TouchableOpacity
+            style={[
+              styles.testBtToggleBtn,
+              simulateBluetoothOff && styles.testBtToggleBtnActive,
+            ]}
+            onPress={() => setSimulateBluetoothOff(!simulateBluetoothOff)}
+            activeOpacity={0.8}
+          >
+            <BluetoothOff size={13} color={simulateBluetoothOff ? '#DC2626' : '#64748B'} />
+            <Text style={[styles.testBtToggleText, simulateBluetoothOff && { color: '#DC2626' }]}>
+              {simulateBluetoothOff ? 'BT Off Simulated' : 'Simulate BT Off'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Device Card (Screenshot 3 style) */}
+        <TouchableOpacity
+          style={styles.deviceHeroCard}
+          onPress={() => navigation.navigate('Settings')}
+          activeOpacity={0.85}
+        >
+          <View style={styles.deviceHeroThumbWrap}>
+            <Image
+              source={require('../../assets/wsg01_product.jpg')}
+              style={styles.deviceHeroImage}
+              resizeMode="contain"
+            />
+          </View>
+          <View style={styles.deviceHeroInfo}>
+            <Text style={styles.deviceHeroTitle}>
+              {deviceConfig?.deviceName || 'SafeGuard WSG-01'}
+            </Text>
+            <Text style={styles.deviceHeroSubtitle}>
+              {isOnline ? 'Connected' : 'Disconnected'}
+            </Text>
+            <View style={styles.deviceHeroSetupRow}>
+              <Text style={styles.deviceHeroSetupText}>→] Set up</Text>
+            </View>
+          </View>
+        </TouchableOpacity>
+
+        {/* "+ Add a new device" Card (Screenshot 3 style) */}
+        <TouchableOpacity
+          style={styles.addNewDeviceHeroCard}
+          onPress={handleAddDevicePress}
+          activeOpacity={0.85}
+        >
+          <View style={styles.addNewDevicePlusIconBox}>
+            <Plus size={28} color="#0F172A" strokeWidth={2.4} />
+          </View>
+          <Text style={styles.addNewDeviceHeroText}>Add a new device</Text>
+        </TouchableOpacity>
+      </View>
 
       {/* My Devices list from useDeviceStore */}
       {devices.length > 0 && (
@@ -1677,6 +1739,36 @@ export const DevicesScreen: React.FC = () => {
         </View>
       </Modal>
 
+      {/* Bluetooth Off Screen Modal (Matching Screenshot 1 & 2) */}
+      <Modal visible={showBluetoothOffScreen} animationType="slide">
+        <BluetoothOffScreen
+          appName="Washroom Safety Gadget"
+          onTurnedOn={() => {
+            setShowBluetoothOffScreen(false);
+            setSimulateBluetoothOff(false);
+            setShowAddDeviceSearchScreen(true);
+          }}
+          onLater={() => {
+            setShowBluetoothOffScreen(false);
+          }}
+        />
+      </Modal>
+
+      {/* Add New Device Search Screen Modal (Matching Screenshot 5 & 4) */}
+      <Modal visible={showAddDeviceSearchScreen} animationType="slide">
+        <AddDeviceSearchScreen
+          onBack={() => setShowAddDeviceSearchScreen(false)}
+          onBluetoothOff={() => {
+            setShowAddDeviceSearchScreen(false);
+            setShowBluetoothOffScreen(true);
+          }}
+          onDeviceConnected={(devName, devId) => {
+            setShowAddDeviceSearchScreen(false);
+            Alert.alert('Device Connected', `"${devName}" is verified and active.`);
+          }}
+        />
+      </Modal>
+
       {/* Commercial Realme Link Style IoT Onboarding Modal */}
       <Modal
         visible={showOnboarding}
@@ -1713,7 +1805,13 @@ const StatItem = ({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.md, paddingBottom: spacing.xxl },
+  content: {
+    padding: spacing.md,
+    paddingBottom: spacing.xxl,
+    maxWidth: 680,
+    width: '100%',
+    alignSelf: 'center',
+  },
   deviceCard: {
     backgroundColor: colors.surface,
     borderRadius: borderRadius.lg,
@@ -2375,5 +2473,131 @@ const styles = StyleSheet.create({
     ...typography.body2,
     color: colors.surface,
     fontWeight: '700',
+  },
+
+  // Screenshot 3: "My devices" Styles
+  myDevicesSection: {
+    marginBottom: spacing.xl,
+  },
+  myDevicesHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  myDevicesMainTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#0F172A',
+    letterSpacing: -0.5,
+  },
+  testBtToggleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  testBtToggleBtnActive: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FCA5A5',
+  },
+  testBtToggleText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#64748B',
+    marginLeft: 5,
+  },
+  deviceHeroCard: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 24,
+    padding: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000000',
+    shadowOpacity: 0.03,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
+  },
+  deviceHeroThumbWrap: {
+    width: 68,
+    height: 68,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 18,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+    overflow: 'hidden',
+  },
+  deviceHeroImage: {
+    width: 58,
+    height: 58,
+  },
+  deviceHeroInfo: {
+    flex: 1,
+  },
+  deviceHeroTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 3,
+  },
+  deviceHeroSubtitle: {
+    fontSize: 14,
+    color: '#64748B',
+    marginBottom: 6,
+  },
+  deviceHeroSetupRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  deviceHeroSetupText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0F172A',
+  },
+  addNewDeviceHeroCard: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 24,
+    padding: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000000',
+    shadowOpacity: 0.03,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
+  },
+  addNewDevicePlusIconBox: {
+    width: 68,
+    height: 68,
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 18,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000000',
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
+  },
+  addNewDeviceHeroText: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#0F172A',
   },
 });
