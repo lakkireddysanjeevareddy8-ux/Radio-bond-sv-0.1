@@ -12,10 +12,11 @@ import {
   Alert,
   Modal,
   Image,
+  Platform,
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Circle, Path, Defs, LinearGradient, Stop } from 'react-native-svg';
+import Svg, { Circle, Path, Defs, LinearGradient, RadialGradient, Stop } from 'react-native-svg';
 import {
   ArrowLeft,
   Search,
@@ -26,7 +27,6 @@ import {
   AlertTriangle,
   Layers,
   Sparkles,
-  Wifi,
   Radio,
   CheckCircle,
 } from 'lucide-react-native';
@@ -54,7 +54,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
   const { addOrUpdateDevice, setActiveDeviceId } = useDeviceStore();
   const { deviceConfig, setDeviceConfig, setTelemetry, setIsOnline, setIsSimulatorMode } = useAppStore();
 
-  const [isSearching, setIsSearching] = useState<boolean>(true);
+  const [isScanningActive, setIsScanningActive] = useState<boolean>(true);
   const [availableDevices, setAvailableDevices] = useState<DiscoveredBleDevice[]>([]);
   const [fastPairDevice, setFastPairDevice] = useState<DiscoveredBleDevice | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
@@ -67,7 +67,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
   const [manualId, setManualId] = useState<string>('esp32-wsg-01');
   const [manualRoom, setManualRoom] = useState<string>('Master Washroom');
 
-  // Radar sweep animation
+  // Radar continuous rotation animation
   const rotateAnim = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
@@ -93,39 +93,52 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     } catch {}
   };
 
+  // Continuous loop that NEVER stops, immune to re-renders
   useEffect(() => {
-    const rotateLoop = Animated.loop(
+    let isMounted = true;
+
+    const runRotation = () => {
+      if (!isMounted) return;
+      rotateAnim.setValue(0);
       Animated.timing(rotateAnim, {
         toValue: 1,
-        duration: 2200,
+        duration: 2000,
         easing: Easing.linear,
-        useNativeDriver: true,
-      })
-    );
+        useNativeDriver: Platform.OS !== 'web', // false on web prevents CSS animation freeze
+      }).start(({ finished }) => {
+        if (finished && isMounted) {
+          runRotation();
+        }
+      });
+    };
 
-    const pulseLoop = Animated.loop(
+    const runPulse = () => {
+      if (!isMounted) return;
       Animated.sequence([
         Animated.timing(pulseAnim, {
           toValue: 1.06,
           duration: 1100,
           easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
+          useNativeDriver: Platform.OS !== 'web',
         }),
         Animated.timing(pulseAnim, {
           toValue: 1,
           duration: 1100,
           easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
+          useNativeDriver: Platform.OS !== 'web',
         }),
-      ])
-    );
+      ]).start(({ finished }) => {
+        if (finished && isMounted) {
+          runPulse();
+        }
+      });
+    };
 
-    rotateLoop.start();
-    pulseLoop.start();
+    runRotation();
+    runPulse();
 
     return () => {
-      rotateLoop.stop();
-      pulseLoop.stop();
+      isMounted = false;
     };
   }, []);
 
@@ -206,9 +219,10 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     loadSystemDevices();
   }, []);
 
-  // Moto Buds style 1-tap scan
+  // Moto Buds style 1-tap scan: continuous searching without stopping
   const handleStartScan = async () => {
     setErrorMessage('');
+    setIsScanningActive(true);
 
     const isBtAvailable = await BluetoothService.isBluetoothAvailable();
     if (!isBtAvailable) {
@@ -217,7 +231,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     }
 
     try {
-      // Trigger native/browser chooser (acceptAllDevices: true)
+      // Trigger browser/device chooser
       const found = await BluetoothService.scanNearbyDevices();
       if (found) {
         setFastPairDevice(found);
@@ -229,7 +243,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
         return;
       }
       if (msg === 'no_device_chosen' || err.name === 'NotFoundError') {
-        // User dismissed chooser; keep searching calmly
+        // User cancelled picker; radar keeps spinning smoothly without freezing
       } else {
         setErrorMessage(err.message || 'Scanning encountered an issue.');
       }
@@ -341,6 +355,33 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
         },
       ]}
     >
+      {/* Web CSS Injection to guarantee GPU-accelerated infinite spinning that never freezes */}
+      {Platform.OS === 'web' && (
+        <style
+          // @ts-ignore
+          dangerouslySetInnerHTML={{
+            __html: `
+              @keyframes motoContinuousRadarSpin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+              }
+              @keyframes motoContinuousPulse {
+                0%, 100% { transform: scale(1); }
+                50% { transform: scale(1.05); }
+              }
+              .moto-continuous-radar-sweep {
+                animation: motoContinuousRadarSpin 2.2s linear infinite !important;
+                transform-origin: 50% 50% !important;
+              }
+              .moto-continuous-disc-pulse {
+                animation: motoContinuousPulse 1.8s ease-in-out infinite !important;
+                transform-origin: 50% 50% !important;
+              }
+            `,
+          }}
+        />
+      )}
+
       {/* Top Header Bar */}
       <View style={[styles.headerBar, { maxWidth: isTablet ? 640 : '100%', alignSelf: 'center', width: '100%' }]}>
         <TouchableOpacity style={styles.backButton} onPress={onBack} activeOpacity={0.7}>
@@ -383,8 +424,10 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
               onPress={handleStartScan}
               activeOpacity={0.9}
             >
-              {/* Rotating radar sweep */}
+              {/* Rotating radar sweep: Authentic smooth conic gradient with NO sharp cutoffs */}
               <Animated.View
+                // @ts-ignore
+                className="moto-continuous-radar-sweep"
                 style={[
                   styles.radarSweepCircle,
                   {
@@ -395,26 +438,36 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
                   },
                 ]}
               >
-                <Svg width={radarSize} height={radarSize} viewBox="0 0 210 210">
-                  <Defs>
-                    <LinearGradient id="sweepGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                      <Stop offset="0%" stopColor="#94A3B8" stopOpacity="0.8" />
-                      <Stop offset="40%" stopColor="#CBD5E1" stopOpacity="0.45" />
-                      <Stop offset="80%" stopColor="#E2E8F0" stopOpacity="0.15" />
-                      <Stop offset="100%" stopColor="#F8FAFC" stopOpacity="0.02" />
-                    </LinearGradient>
-                  </Defs>
-                  <Circle cx="105" cy="105" r="100" fill="url(#sweepGrad)" />
-                  <Path
-                    d="M105 105 L105 5 A100 100 0 0 1 205 105 Z"
-                    fill="#94A3B8"
-                    opacity="0.35"
+                {Platform.OS === 'web' ? (
+                  <View
+                    style={[
+                      styles.conicSweepView,
+                      {
+                        width: radarSize,
+                        height: radarSize,
+                        borderRadius: radarSize / 2,
+                      },
+                    ]}
                   />
-                </Svg>
+                ) : (
+                  <Svg width={radarSize} height={radarSize} viewBox="0 0 210 210">
+                    <Defs>
+                      <LinearGradient id="sweepGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <Stop offset="0%" stopColor="#94A3B8" stopOpacity="0.85" />
+                        <Stop offset="35%" stopColor="#CBD5E1" stopOpacity="0.5" />
+                        <Stop offset="70%" stopColor="#E2E8F0" stopOpacity="0.2" />
+                        <Stop offset="100%" stopColor="#F8FAFC" stopOpacity="0.02" />
+                      </LinearGradient>
+                    </Defs>
+                    <Circle cx="105" cy="105" r="100" fill="url(#sweepGrad)" />
+                  </Svg>
+                )}
               </Animated.View>
 
               {/* Dark Search Disc with Magnifying Glass Logo */}
               <Animated.View
+                // @ts-ignore
+                className="moto-continuous-disc-pulse"
                 style={[
                   styles.darkSearchDisc,
                   {
@@ -649,6 +702,13 @@ const styles = StyleSheet.create({
   },
   radarSweepCircle: {
     position: 'absolute',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  conicSweepView: {
+    // @ts-ignore
+    background:
+      'conic-gradient(from 0deg at 50% 50%, #94A3B8 0deg, #CBD5E1 80deg, #E2E8F0 160deg, rgba(241, 245, 249, 0.3) 260deg, transparent 350deg, #94A3B8 360deg)',
   },
   darkSearchDisc: {
     backgroundColor: '#1E232B',
