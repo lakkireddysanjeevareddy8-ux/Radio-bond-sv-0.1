@@ -3,14 +3,22 @@ import { DeviceConfig, Telemetry, EmergencyEvent, SafetyState } from '../types';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '../services/supabaseClient';
 
+export type HardwareMode = 'REAL_HARDWARE' | 'DEMO_SIMULATOR';
+
 interface AppState {
+  // Runtime Mode
+  hardwareMode: HardwareMode;
+  setHardwareMode: (mode: HardwareMode) => void;
+  hasCompletedSafetyOnboarding: boolean;
+  setHasCompletedSafetyOnboarding: (completed: boolean) => void;
+
   // Device
   deviceConfig: DeviceConfig | null;
   setDeviceConfig: (config: DeviceConfig) => void;
   
   // Telemetry
   telemetry: Telemetry | null;
-  setTelemetry: (telemetry: Telemetry) => void;
+  setTelemetry: (telemetry: Telemetry | null) => void;
   
   // Connection
   isOnline: boolean;
@@ -32,7 +40,7 @@ interface AppState {
   voicePrompt: string | null;
   setVoicePrompt: (prompt: string | null) => void;
 
-  // Mode
+  // Mode (Legacy compatibility, kept in sync with hardwareMode)
   isSimulatorMode: boolean;
   setIsSimulatorMode: (isSimulator: boolean) => void;
 
@@ -46,10 +54,10 @@ interface AppState {
 }
 
 const defaultConfig: DeviceConfig = {
-  deviceId: 'DEMO-DEVICE',
-  deviceName: 'Bathroom Safety Device',
-  stillnessThreshold: 15,
-  responseTimeout: 10,
+  deviceId: 'WSG-000001',
+  deviceName: 'Washroom Safety Guardian',
+  stillnessThreshold: 25,
+  responseTimeout: 15,
   voiceDetectionEnabled: true,
   speakerEnabled: true,
   emergencyKeywords: ['HELP', 'EMERGENCY', 'SAVE ME'],
@@ -58,6 +66,8 @@ const defaultConfig: DeviceConfig = {
 };
 
 const CONFIG_STORAGE_KEY = 'washroom_safeguard_config_v1';
+const ONBOARDING_STORAGE_KEY = 'washroom_safety_onboarding_v1';
+const HARDWARE_MODE_STORAGE_KEY = 'washroom_hardware_mode_v1';
 
 const loadPersistedConfig = (): DeviceConfig => {
   try {
@@ -83,20 +93,62 @@ const persistConfig = (config: DeviceConfig) => {
   }
 };
 
-const defaultTelemetry: Telemetry = {
-  deviceId: 'DEMO-DEVICE',
-  timestamp: new Date().toISOString(),
-  presence: false,
-  movement: false,
-  stillnessSeconds: 0,
-  state: 'IDLE',
-  voiceDetected: false,
-  wifiRSSI: -58,
-  uptime: 0,
-  firmwareVersion: '1.0.0-sim',
+const loadPersistedOnboarding = (): boolean => {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage.getItem(ONBOARDING_STORAGE_KEY) === 'true';
+    }
+  } catch (e) {
+    console.warn('Could not load onboarding flag:', e);
+  }
+  return false;
 };
 
+const loadPersistedHardwareMode = (): HardwareMode => {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const mode = window.localStorage.getItem(HARDWARE_MODE_STORAGE_KEY);
+      if (mode === 'DEMO_SIMULATOR' || mode === 'REAL_HARDWARE') {
+        return mode;
+      }
+    }
+  } catch (e) {}
+  // Default to REAL_HARDWARE for production
+  return 'REAL_HARDWARE';
+};
+
+const initialHardwareMode = loadPersistedHardwareMode();
+
 export const useAppStore = create<AppState>((set, get) => ({
+  // Runtime Mode
+  hardwareMode: initialHardwareMode,
+  setHardwareMode: (mode) => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(HARDWARE_MODE_STORAGE_KEY, mode);
+      }
+    } catch {}
+
+    const isSim = mode === 'DEMO_SIMULATOR';
+    set({
+      hardwareMode: mode,
+      isSimulatorMode: isSim,
+      fakeWifiConnected: false, // Reset fake wifi on mode toggle
+      telemetry: isSim ? get().telemetry : null, // Clear fake telemetry in hardware mode
+      isOnline: isSim ? true : false, // In hardware mode, online requires actual verified communication
+    });
+  },
+
+  hasCompletedSafetyOnboarding: loadPersistedOnboarding(),
+  setHasCompletedSafetyOnboarding: (completed) => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(ONBOARDING_STORAGE_KEY, completed ? 'true' : 'false');
+      }
+    } catch {}
+    set({ hasCompletedSafetyOnboarding: completed });
+  },
+
   // Device config
   deviceConfig: loadPersistedConfig(),
   setDeviceConfig: (config) => {
@@ -104,12 +156,23 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ deviceConfig: config });
   },
 
-  // Telemetry
-  telemetry: defaultTelemetry,
+  // Telemetry: null in REAL_HARDWARE mode until live data arrives from device
+  telemetry: initialHardwareMode === 'DEMO_SIMULATOR' ? {
+    deviceId: 'DEMO-DEVICE',
+    timestamp: new Date().toISOString(),
+    presence: false,
+    movement: false,
+    stillnessSeconds: 0,
+    state: 'IDLE',
+    voiceDetected: false,
+    wifiRSSI: -58,
+    uptime: 0,
+    firmwareVersion: '1.0.0-sim',
+  } : null,
   setTelemetry: (telemetry) => set({ telemetry }),
 
-  // Connection status
-  isOnline: true,
+  // Connection status: strictly independent
+  isOnline: initialHardwareMode === 'DEMO_SIMULATOR',
   setIsOnline: (isOnline) => set({ isOnline }),
   bluetoothStatus: 'DISCONNECTED',
   setBluetoothStatus: (bluetoothStatus) => set({ bluetoothStatus }),
@@ -118,7 +181,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   cloudStatus: 'DISCONNECTED',
   setCloudStatus: (cloudStatus) => set({ cloudStatus }),
   fakeWifiConnected: false,
-  setFakeWifiConnected: (fakeWifiConnected) => set({ fakeWifiConnected }),
+  setFakeWifiConnected: (fakeWifiConnected) => {
+    // Only permit fake Wi-Fi in DEMO_SIMULATOR mode
+    if (get().hardwareMode !== 'DEMO_SIMULATOR') {
+      console.warn('[Store] fakeWifiConnected rejected: Application is in REAL_HARDWARE mode.');
+      set({ fakeWifiConnected: false });
+      return;
+    }
+    set({ fakeWifiConnected });
+  },
 
   // Emergency events
   activeEmergency: null,
@@ -128,9 +199,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   voicePrompt: null,
   setVoicePrompt: (voicePrompt) => set({ voicePrompt }),
 
-  // Mode
-  isSimulatorMode: true,
-  setIsSimulatorMode: (isSimulatorMode) => set({ isSimulatorMode }),
+  // Simulator mode toggle (syncs with hardwareMode)
+  isSimulatorMode: initialHardwareMode === 'DEMO_SIMULATOR',
+  setIsSimulatorMode: (isSimulatorMode) => {
+    const mode = isSimulatorMode ? 'DEMO_SIMULATOR' : 'REAL_HARDWARE';
+    get().setHardwareMode(mode);
+  },
 
   // Auth
   user: null,

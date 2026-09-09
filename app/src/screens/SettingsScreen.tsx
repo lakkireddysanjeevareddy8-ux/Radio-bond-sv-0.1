@@ -9,6 +9,7 @@ import {
   Alert,
   TextInput,
   Platform,
+  Modal,
 } from 'react-native';
 import { colors, typography, spacing, borderRadius } from '../utils/theme';
 import { useAppStore } from '../store/useAppStore';
@@ -16,6 +17,7 @@ import { useContactStore } from '../store/useContactStore';
 import { EmergencyPushService } from '../services/EmergencyPushService';
 import { EmergencySoundService } from '../services/EmergencySoundService';
 import { DeviceConfig } from '../types';
+import { SafetySetupScreen } from './SafetySetupScreen';
 import {
   Pencil,
   Save,
@@ -32,6 +34,7 @@ import {
   Smartphone,
   ShieldAlert,
   Phone,
+  ChevronRight,
 } from 'lucide-react-native';
 
 const thresholdOptions = [15, 30, 60, 90, 120];
@@ -43,6 +46,8 @@ export const SettingsScreen: React.FC = () => {
     setDeviceConfig,
     isSimulatorMode,
     setIsSimulatorMode,
+    hardwareMode,
+    setHardwareMode,
     isOnline,
     user,
     signOut,
@@ -57,6 +62,7 @@ export const SettingsScreen: React.FC = () => {
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
   const [newKeyword, setNewKeyword] = useState('');
   const [showKeywordInput, setShowKeywordInput] = useState(false);
+  const [showPermissionsModal, setShowPermissionsModal] = useState(false);
 
   // Emergency Alert Settings State
   const [showTestConfirmModal, setShowTestConfirmModal] = useState(false);
@@ -264,23 +270,48 @@ export const SettingsScreen: React.FC = () => {
           </TouchableOpacity>
         </View>
 
+        {/* Safety Permissions & Onboarding */}
+        <SectionHeader title="Safety Permissions & Onboarding" />
+        <View style={styles.card}>
+          <TouchableOpacity
+            style={styles.permissionsRowBtn}
+            onPress={() => setShowPermissionsModal(true)}
+            activeOpacity={0.8}
+          >
+            <View style={styles.permissionsBtnLeft}>
+              <View style={styles.permissionsIconWrapper}>
+                <ShieldAlert size={20} color="#2563EB" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.permissionsRowTitle}>WSG-01 Safety Setup & Permissions</Text>
+                <Text style={styles.permissionsRowSubtitle}>
+                  Verify Bluetooth, Notifications, Emergency Sirens, and Background Operation
+                </Text>
+              </View>
+            </View>
+            <ChevronRight size={18} color="#64748B" />
+          </TouchableOpacity>
+        </View>
+
         {/* Hardware & Data Source Mode */}
-        <SectionHeader title="Hardware & Data Source" />
+        <SectionHeader title="Hardware & Runtime Mode" />
         <View style={styles.card}>
           <ToggleRow
             label="Demo Simulator Mode"
-            value={isSimulatorMode}
-            onToggle={(val) => setIsSimulatorMode(val)}
+            value={hardwareMode === 'DEMO_SIMULATOR'}
+            onToggle={(val) => setHardwareMode(val ? 'DEMO_SIMULATOR' : 'REAL_HARDWARE')}
             disabled={false}
           />
           <View style={styles.modeInfoBox}>
             <Text style={styles.modeInfoTitle}>
-              {isSimulatorMode ? '🎮 Demo Simulator Active' : '📡 Real ESP32 Hardware Active'}
+              {hardwareMode === 'DEMO_SIMULATOR'
+                ? '🎮 Demo Simulator Active'
+                : '📡 Real Hardware Mode (Production)'}
             </Text>
             <Text style={styles.modeInfoSubtitle}>
-              {isSimulatorMode
-                ? 'Using built-in software simulator. Great for testing UI, timers, and alerts.'
-                : 'App is subscribed to Supabase Realtime table for telemetry from your physical ESP32.'}
+              {hardwareMode === 'DEMO_SIMULATOR'
+                ? 'Running in software simulator mode. Great for UI design and scenario testing.'
+                : 'Production real-hardware architecture active. Requires verified physical BLE GATT & ESP32 connection.'}
             </Text>
           </View>
           <View style={[styles.settingRow, { borderBottomWidth: 0, marginTop: 8 }]}>
@@ -619,6 +650,21 @@ export const SettingsScreen: React.FC = () => {
             </View>
           </View>
         </View>
+      )}
+
+      {/* Safety Permissions Audit Modal */}
+      {showPermissionsModal && (
+        <Modal
+          visible={showPermissionsModal}
+          animationType="slide"
+          onRequestClose={() => setShowPermissionsModal(false)}
+        >
+          <SafetySetupScreen
+            isSettingsModal={true}
+            onComplete={() => setShowPermissionsModal(false)}
+            onSkip={() => setShowPermissionsModal(false)}
+          />
+        </Modal>
       )}
     </View>
   );
@@ -1221,5 +1267,37 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#FFFFFF',
     letterSpacing: 0.3,
+  },
+  permissionsRowBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+  },
+  permissionsBtnLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+    paddingRight: 10,
+  },
+  permissionsIconWrapper: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#EFF6FF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  permissionsRowTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginBottom: 2,
+  },
+  permissionsRowSubtitle: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    lineHeight: 16,
   },
 });

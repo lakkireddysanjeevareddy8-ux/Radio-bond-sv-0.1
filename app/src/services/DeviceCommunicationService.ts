@@ -1,6 +1,7 @@
 import { DeviceSimulator } from '../simulator/DeviceSimulator';
 import { Telemetry, EmergencyEvent, DeviceConfig, SafetyState } from '../types';
 import { supabase } from './supabaseClient';
+import { useAppStore } from '../store/useAppStore';
 
 export type ConnectionStatus = 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING';
 
@@ -8,6 +9,9 @@ export class DeviceCommunicationService {
   private simulator: DeviceSimulator | null = null;
   private channel: any = null;
   private status: ConnectionStatus = 'DISCONNECTED';
+  private heartbeatTimer: any = null;
+  private lastTelemetryTime: number = 0;
+  private static readonly STALE_HEARTBEAT_MS = 15000; // 15s timeout for 3s telemetry interval
   
   private onTelemetryUpdate?: (telemetry: Telemetry) => void;
   private onEmergencyEvent?: (event: EmergencyEvent) => void;
@@ -43,6 +47,11 @@ export class DeviceCommunicationService {
 
   // Demo Simulator Mode
   public connectToDemoDevice(config: DeviceConfig) {
+    if (useAppStore.getState().hardwareMode === 'REAL_HARDWARE') {
+      console.warn('[DeviceCommunicationService] connectToDemoDevice blocked: Application is in REAL_HARDWARE mode.');
+      return;
+    }
+    this.stopHeartbeatWatchdog();
     this.lastConfig = config;
     if (this.channel) {
       supabase.removeChannel(this.channel);
@@ -69,6 +78,7 @@ export class DeviceCommunicationService {
   public async connectToSupabaseDevice(deviceId: string) {
     this.disconnect();
     this.setStatus('CONNECTING');
+    this.startHeartbeatWatchdog();
 
     // Query most recent telemetry row (if any)
     try {
@@ -81,7 +91,13 @@ export class DeviceCommunicationService {
         .maybeSingle();
 
       if (latestTelemetry) {
-        this.handleSupabaseTelemetry(latestTelemetry);
+        // If the row was written recently (within 15s), accept it as live
+        const rowTime = new Date(latestTelemetry.created_at || latestTelemetry.timestamp).getTime();
+        if (Date.now() - rowTime < DeviceCommunicationService.STALE_HEARTBEAT_MS) {
+          this.handleSupabaseTelemetry(latestTelemetry);
+        } else {
+          console.log('[Heartbeat] Stored telemetry is older than 15s. Awaiting live broadcast.');
+        }
       }
     } catch (err) {
       console.warn('Initial telemetry fetch skipped:', err);
@@ -105,16 +121,34 @@ export class DeviceCommunicationService {
         }
       )
       .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          this.setStatus('CONNECTED');
-        } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+        if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
           this.setStatus('DISCONNECTED');
         }
       });
   }
 
+  private startHeartbeatWatchdog() {
+    this.stopHeartbeatWatchdog();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.lastTelemetryTime > 0 && Date.now() - this.lastTelemetryTime > DeviceCommunicationService.STALE_HEARTBEAT_MS) {
+        if (this.status === 'CONNECTED') {
+          console.warn('[Heartbeat] Device telemetry stale (>15s). Marking device offline.');
+          this.setStatus('DISCONNECTED');
+        }
+      }
+    }, 3000);
+  }
+
+  private stopHeartbeatWatchdog() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
   private handleSupabaseTelemetry(row: any) {
     if (!row) return;
+    this.lastTelemetryTime = Date.now();
     const telemetry: Telemetry = {
       deviceId: row.device_id || row.deviceId || 'ESP32-LIVE',
       timestamp: row.created_at || row.timestamp || new Date().toISOString(),
@@ -215,6 +249,8 @@ export class DeviceCommunicationService {
   }
 
   public disconnect() {
+    this.stopHeartbeatWatchdog();
+    this.lastTelemetryTime = 0;
     if (this.simulator) {
       this.simulator.stop();
       this.simulator = null;
@@ -233,6 +269,9 @@ export class DeviceCommunicationService {
 
   // Ensure simulator is active whenever demo methods are called
   public ensureSimulator() {
+    if (useAppStore.getState().hardwareMode === 'REAL_HARDWARE') {
+      return;
+    }
     if (!this.simulator) {
       const cfg: DeviceConfig = this.lastConfig || {
         deviceId: 'DEMO-DEVICE',

@@ -92,6 +92,8 @@ export const DevicesScreen: React.FC = () => {
     setIsOnline,
     isSimulatorMode,
     setIsSimulatorMode,
+    hardwareMode,
+    setHardwareMode,
     bluetoothStatus,
     wifiStatus,
     cloudStatus,
@@ -738,8 +740,8 @@ export const DevicesScreen: React.FC = () => {
         <View style={styles.myDevicesHeaderRow}>
           <Text style={styles.myDevicesMainTitle}>My devices</Text>
           
-          {/* Quick simulation testers (strictly dev-only, Test 5 & 6) */}
-          {Boolean(typeof __DEV__ !== 'undefined' && __DEV__) && (
+          {/* Quick simulation testers (strictly dev-only, only in DEMO_SIMULATOR mode) */}
+          {Boolean(typeof __DEV__ !== 'undefined' && __DEV__ && hardwareMode === 'DEMO_SIMULATOR') && (
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
               <TouchableOpacity
                 style={[
@@ -1095,12 +1097,12 @@ export const DevicesScreen: React.FC = () => {
       </View>
 
       {/* Mode notice banner */}
-      {isSimulatorMode ? (
+      {hardwareMode === 'DEMO_SIMULATOR' ? (
         <View style={styles.demoNotice}>
           <View style={styles.bannerHeader}>
             <Text style={styles.demoNoticeTitle}>🧪 DEMO SIMULATOR ACTIVE</Text>
             <TouchableOpacity
-              onPress={() => setIsSimulatorMode(false)}
+              onPress={() => setHardwareMode('REAL_HARDWARE')}
               style={styles.switchModePill}
             >
               <Text style={styles.switchModePillText}>Switch to Live Hardware</Text>
@@ -1120,7 +1122,7 @@ export const DevicesScreen: React.FC = () => {
                 : '📡 REAL HARDWARE ACTIVE'}
             </Text>
             <TouchableOpacity
-              onPress={() => setIsSimulatorMode(true)}
+              onPress={() => setHardwareMode('DEMO_SIMULATOR')}
               style={styles.switchModePill}
             >
               <Text style={styles.switchModePillText}>Switch to Demo</Text>
