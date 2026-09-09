@@ -115,14 +115,18 @@ export class BluetoothService {
     if (bluetooth.getAvailability) {
       try {
         const isAvail = await bluetooth.getAvailability();
-        return isAvail ? 'on' : 'off';
+        if (!isAvail) return 'off';
+        // Web Bluetooth getAvailability() indicates only adapter hardware presence, NOT whether
+        // the user has the physical radio toggled ON in Windows Action Center, nor does it allow
+        // background scanning without a user gesture. We safely report 'unknown' to prompt user verification.
+        return 'unknown';
       } catch (err) {
         console.warn('[BluetoothService] Real web availability query note:', err);
         return 'off';
       }
     }
 
-    return 'on';
+    return 'unknown';
   }
 
   /**
@@ -147,11 +151,11 @@ export class BluetoothService {
   }
 
   /**
-   * Checks if effective Bluetooth state is 'on'.
+   * Checks if effective Bluetooth state is usable for scanning.
    */
   public static async isBluetoothAvailable(): Promise<boolean> {
     const effectiveState = await this.getEffectiveBluetoothState();
-    return effectiveState === 'on';
+    return effectiveState === 'on' || (Platform.OS === 'web' && effectiveState === 'unknown');
   }
 
   /**
@@ -437,9 +441,17 @@ export class BluetoothService {
         const devs = await navigator.mediaDevices.enumerateDevices();
         const seen = new Set<string>();
         for (const d of devs) {
-          if (d.kind === 'audiooutput' || d.kind === 'audioinput') {
+          // Strictly exclude microphones and audio inputs; only consider output audio for Windows earbuds mode
+          if (d.kind === 'audiooutput') {
             const label = d.label || '';
-            if (label && !seen.has(label)) {
+            const lowerLabel = label.toLowerCase();
+            if (
+              label &&
+              !seen.has(label) &&
+              !lowerLabel.includes('mic') &&
+              !lowerLabel.includes('array') &&
+              !lowerLabel.includes('realtek')
+            ) {
               seen.add(label);
               list.push({
                 id: d.deviceId || `sys-${Math.random().toString(36).substring(2, 7)}`,

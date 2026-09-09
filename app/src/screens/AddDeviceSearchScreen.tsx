@@ -73,8 +73,19 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     setCloudStatus,
   } = useAppStore();
 
-  type SetupPhase = 'SCANNING' | 'WIFI_SETUP' | 'PROVISIONING' | 'WIFI_FAILED' | 'SUCCESS';
-  const [phase, setPhase] = useState<SetupPhase>('SCANNING');
+  type SetupPhase =
+    | 'CHECKING_BLUETOOTH'
+    | 'BLUETOOTH_OFF'
+    | 'BLUETOOTH_PERMISSION'
+    | 'BLUETOOTH_UNSUPPORTED'
+    | 'BLUETOOTH_STANDBY'
+    | 'SCANNING'
+    | 'DEVICE_FOUND'
+    | 'WIFI_SETUP'
+    | 'PROVISIONING'
+    | 'WIFI_FAILED'
+    | 'SUCCESS';
+  const [phase, setPhase] = useState<SetupPhase>('CHECKING_BLUETOOTH');
   const [connectedSession, setConnectedSession] = useState<ConnectedBleSession | null>(null);
   const [targetDevice, setTargetDevice] = useState<DiscoveredBleDevice | null>(null);
   const [wifiSsid, setWifiSsid] = useState<string>('Home_2.4G');
@@ -83,7 +94,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
   const [provisionStatusText, setProvisionStatusText] = useState<string>('Sending Wi-Fi configuration...');
   const [assignedIpAddress, setAssignedIpAddress] = useState<string>('');
 
-  const [isScanningActive, setIsScanningActive] = useState<boolean>(true);
+  const [isScanningActive, setIsScanningActive] = useState<boolean>(false);
   const [availableDevices, setAvailableDevices] = useState<DiscoveredBleDevice[]>([]);
   const [fastPairDevice, setFastPairDevice] = useState<DiscoveredBleDevice | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
@@ -176,84 +187,174 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     outputRange: ['0deg', '360deg'],
   });
 
-  // Scan initialization & AppState monitoring
+  // Real BLE Scanner invocation
+  const startRealBleScan = (mountedCheck: () => boolean) => {
+    setIsScanningActive(true);
+    setPhase('SCANNING');
+    setErrorMessage('');
+
+    if (Platform.OS !== 'web') {
+      BluetoothService.startDeviceScan(
+        (discovered) => {
+          if (!mountedCheck()) return;
+
+          // Strictly filter out any Windows audio, microphone, or speaker devices
+          const lowerName = (discovered.name || '').toLowerCase();
+          if (
+            lowerName.includes('microphone') ||
+            lowerName.includes('audio') ||
+            lowerName.includes('speaker') ||
+            lowerName.includes('headset') ||
+            lowerName.includes('hands-free') ||
+            lowerName.includes('realtek')
+          ) {
+            return;
+          }
+
+          setAvailableDevices((prev) => {
+            const idx = prev.findIndex((d) => d.id === discovered.id);
+            if (idx >= 0) {
+              const updated = [...prev];
+              updated[idx] = discovered;
+              return updated;
+            }
+            return [...prev, discovered];
+          });
+
+          // Fast pair candidate if matches WSG-01
+          if (
+            lowerName.includes('wsg') ||
+            lowerName.includes('washroom') ||
+            lowerName.includes('safeguard')
+          ) {
+            setFastPairDevice(discovered);
+            setPhase('DEVICE_FOUND');
+          }
+        },
+        (scanErr) => {
+          console.warn('[AddDeviceSearch] Scan error:', scanErr);
+          setIsScanningActive(false);
+          const msg = String(scanErr.message || '').toLowerCase();
+          if (
+            msg.includes('bluetooth_disabled') ||
+            msg.includes('disabled') ||
+            msg.includes('poweredoff')
+          ) {
+            if (mountedCheck()) {
+              setPhase('BLUETOOTH_OFF');
+              onBluetoothOff();
+            }
+          } else if (mountedCheck()) {
+            setErrorMessage(scanErr.message);
+          }
+        },
+        { targetNamePrefix: 'WSG-01', timeoutMs: 25000 }
+      );
+    }
+  };
+
+  // Bluetooth Preflight check and AppState monitoring
   useEffect(() => {
     let isMounted = true;
 
     // Listen for AppState changes: if user disables Bluetooth while app is backgrounded, detect it on resume
     const appStateSub = AppState.addEventListener('change', async (nextState: AppStateStatus) => {
       if (nextState === 'active') {
-        const isAvail = await BluetoothService.isBluetoothAvailable();
-        if (!isAvail && isMounted) {
-          onBluetoothOff();
+        const effectiveState = await BluetoothService.getEffectiveBluetoothState();
+        if (effectiveState === 'off') {
+          if (isMounted) {
+            setIsScanningActive(false);
+            setPhase('BLUETOOTH_OFF');
+            BluetoothService.stopScan();
+            onBluetoothOff();
+          }
+        } else if (effectiveState === 'on') {
+          if (isMounted && (phase === 'BLUETOOTH_OFF' || phase === 'CHECKING_BLUETOOTH')) {
+            runBluetoothPreflight();
+          }
         }
       }
     });
 
-    const initScan = async () => {
-      const isAvail = await BluetoothService.isBluetoothAvailable();
-      if (!isAvail) {
-        if (isMounted) onBluetoothOff();
-        return;
-      }
-
-      if (Platform.OS !== 'web') {
-        // Native Android / iOS: Genuine BLE scan without fake devices
-        setIsScanningActive(true);
-        BluetoothService.startDeviceScan(
-          (discovered) => {
-            if (!isMounted) return;
-            setAvailableDevices((prev) => {
-              const idx = prev.findIndex((d) => d.id === discovered.id);
-              if (idx >= 0) {
-                const updated = [...prev];
-                updated[idx] = discovered;
-                return updated;
-              }
-              return [...prev, discovered];
-            });
-
-            // Fast pair candidate if matches WSG-01
-            if (
-              discovered.name.toLowerCase().includes('wsg') ||
-              discovered.name.toLowerCase().includes('washroom') ||
-              discovered.name.toLowerCase().includes('safeguard')
-            ) {
-              setFastPairDevice(discovered);
-            }
-          },
-          (scanErr) => {
-            console.warn('[AddDeviceSearch] Scan error:', scanErr);
-            if (
-              scanErr.message.includes('BLUETOOTH_DISABLED') ||
-              scanErr.message.includes('disabled')
-            ) {
-              if (isMounted) onBluetoothOff();
-            } else if (isMounted) {
-              setErrorMessage(scanErr.message);
-            }
-          },
-          { targetNamePrefix: 'WSG-01', timeoutMs: 25000 }
-        );
-      } else {
-        // Web: Query system devices for Edge/Chrome desktop experience
-        try {
-          const devs = await BluetoothService.getSystemBluetoothDevices();
-          if (devs.length > 0 && isMounted) {
-            setAvailableDevices(devs);
-          }
-        } catch {}
-      }
-    };
-
     // Listen for central Bluetooth state changes (real OS toggle or dev simulation toggle)
     const btStateSub = BluetoothService.addBluetoothStateListener((effectiveState) => {
       if (effectiveState === 'off' && isMounted) {
+        setIsScanningActive(false);
+        setPhase('BLUETOOTH_OFF');
+        BluetoothService.stopScan();
         onBluetoothOff();
       }
     });
 
-    initScan();
+    const runBluetoothPreflight = async () => {
+      setErrorMessage('');
+      setPhase('CHECKING_BLUETOOTH');
+      setIsScanningActive(false);
+
+      // 1. Determine effective Bluetooth state
+      const effectiveState = await BluetoothService.getEffectiveBluetoothState();
+      if (!isMounted) return;
+
+      // 2. If state === "off":
+      //    call onBluetoothOff()
+      //    DO NOT call startDeviceScan()
+      //    DO NOT call scanNearbyDevices()
+      if (effectiveState === 'off') {
+        setPhase('BLUETOOTH_OFF');
+        setIsScanningActive(false);
+        BluetoothService.stopScan();
+        onBluetoothOff();
+        return;
+      }
+
+      // 3. If state === "unauthorized":
+      //    request Bluetooth permissions.
+      //    If permission denied: show appropriate permission UI. Do not start scanning.
+      if (effectiveState === 'unauthorized') {
+        const granted = await BluetoothService.requestPermissions();
+        if (!isMounted) return;
+        if (!granted) {
+          setPhase('BLUETOOTH_PERMISSION');
+          setIsScanningActive(false);
+          return;
+        }
+      }
+
+      // 4. If state === "unsupported":
+      //    show appropriate unsupported Bluetooth message. Do not start scanning.
+      if (effectiveState === 'unsupported') {
+        setPhase('BLUETOOTH_UNSUPPORTED');
+        setIsScanningActive(false);
+        setErrorMessage('Bluetooth Low Energy is not supported on this device.');
+        return;
+      }
+
+      // 5. On Web / Windows Desktop:
+      //    Do NOT assume physical radio is ON or auto-scan without user gesture.
+      //    Use safe state: ask user to check Bluetooth then scan via user gesture.
+      if (Platform.OS === 'web') {
+        setPhase('BLUETOOTH_STANDBY');
+        setIsScanningActive(false);
+        return;
+      }
+
+      // 6. If state === "on":
+      //    request permissions if necessary.
+      //    only after permission succeeds: start REAL BLE scanning.
+      if (effectiveState === 'on') {
+        const granted = await BluetoothService.requestPermissions();
+        if (!isMounted) return;
+        if (!granted) {
+          setPhase('BLUETOOTH_PERMISSION');
+          setIsScanningActive(false);
+          return;
+        }
+
+        startRealBleScan(() => isMounted);
+      }
+    };
+
+    runBluetoothPreflight();
 
     return () => {
       isMounted = false;
@@ -263,59 +364,127 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     };
   }, []);
 
-  // 1-tap scan: continuous searching without stopping
+  // Manual "Scan for Nearby Devices" button preflight check
   const handleStartScan = async () => {
     setErrorMessage('');
-    setIsScanningActive(true);
 
-    const isBtAvailable = await BluetoothService.isBluetoothAvailable();
-    if (!isBtAvailable) {
+    // 1. Check effective Bluetooth state
+    const effectiveState = await BluetoothService.getEffectiveBluetoothState();
+
+    // 2. If OFF: show BluetoothOffScreen
+    if (effectiveState === 'off') {
+      setIsScanningActive(false);
+      setPhase('BLUETOOTH_OFF');
+      BluetoothService.stopScan();
       onBluetoothOff();
       return;
     }
 
-    try {
-      if (Platform.OS !== 'web') {
-        // Restart native BLE scan
-        setAvailableDevices([]);
-        setFastPairDevice(null);
-        await BluetoothService.startDeviceScan(
-          (discovered) => {
-            setAvailableDevices((prev) => {
-              if (prev.some((d) => d.id === discovered.id)) return prev;
-              return [...prev, discovered];
-            });
-            if (discovered.name.toLowerCase().includes('wsg')) {
-              setFastPairDevice(discovered);
-            }
-          },
-          (err) => {
-            if (err.message.includes('BLUETOOTH_DISABLED')) {
-              onBluetoothOff();
-            } else {
-              setErrorMessage(err.message);
-            }
-          },
-          { targetNamePrefix: 'WSG-01', timeoutMs: 25000 }
-        );
-      } else {
-        // Trigger Web Bluetooth browser/device chooser
-        const found = await BluetoothService.scanNearbyDevices();
-        if (found) {
-          setFastPairDevice(found);
-        }
-      }
-    } catch (err: any) {
-      const msg = String(err.message || '').toLowerCase();
-      if (msg === 'bluetooth_disabled' || msg.includes('disabled') || msg.includes('adapter')) {
-        onBluetoothOff();
+    // 3. If unauthorized: request permission
+    if (effectiveState === 'unauthorized') {
+      const granted = await BluetoothService.requestPermissions();
+      if (!granted) {
+        setPhase('BLUETOOTH_PERMISSION');
+        setIsScanningActive(false);
+        setErrorMessage('Bluetooth permissions are required to scan for WSG-01 devices.');
         return;
       }
-      if (msg === 'user_cancelled' || msg === 'no_device_chosen' || err.name === 'NotFoundError') {
-        // User cancelled picker; radar keeps spinning smoothly without freezing
-      } else {
-        setErrorMessage(err.message || 'Scanning encountered an issue.');
+    }
+
+    // 4. If unsupported: show unsupported message
+    if (effectiveState === 'unsupported') {
+      setPhase('BLUETOOTH_UNSUPPORTED');
+      setIsScanningActive(false);
+      setErrorMessage('Bluetooth Low Energy is not supported on this device.');
+      return;
+    }
+
+    // 5. If ON (or Web user gesture): start REAL scan
+    setIsScanningActive(true);
+    setPhase('SCANNING');
+    setAvailableDevices([]);
+    setFastPairDevice(null);
+
+    if (Platform.OS !== 'web') {
+      startRealBleScan(() => true);
+    } else {
+      // Trigger Web Bluetooth browser/device chooser via user gesture
+      // NEVER call getSystemBluetoothDevices() which returns microphones/speakers!
+      try {
+        const found = await BluetoothService.scanNearbyDevices();
+        if (found) {
+          const lowerName = (found.name || '').toLowerCase();
+          if (
+            !lowerName.includes('microphone') &&
+            !lowerName.includes('audio') &&
+            !lowerName.includes('speaker') &&
+            !lowerName.includes('realtek')
+          ) {
+            setAvailableDevices([found]);
+            setFastPairDevice(found);
+            setPhase('DEVICE_FOUND');
+          }
+        } else {
+          setIsScanningActive(false);
+          setPhase('BLUETOOTH_STANDBY');
+        }
+      } catch (err: any) {
+        setIsScanningActive(false);
+        const msg = String(err.message || '').toLowerCase();
+        if (
+          msg.includes('disabled') ||
+          msg.includes('bluetooth_disabled') ||
+          msg.includes('poweredoff')
+        ) {
+          setPhase('BLUETOOTH_OFF');
+          onBluetoothOff();
+        } else if (
+          msg === 'user_cancelled' ||
+          msg === 'no_device_chosen' ||
+          err.name === 'NotFoundError'
+        ) {
+          setPhase('BLUETOOTH_STANDBY');
+        } else {
+          setErrorMessage(err.message || 'Scanning encountered an issue.');
+          setPhase('BLUETOOTH_STANDBY');
+        }
       }
+    }
+  };
+
+  const getSearchTitle = () => {
+    switch (phase) {
+      case 'CHECKING_BLUETOOTH':
+        return 'Checking Bluetooth...';
+      case 'BLUETOOTH_PERMISSION':
+        return 'Bluetooth Permission Required';
+      case 'BLUETOOTH_UNSUPPORTED':
+        return 'Bluetooth Not Supported';
+      case 'BLUETOOTH_STANDBY':
+        return 'Bluetooth Ready';
+      case 'DEVICE_FOUND':
+        return 'WSG-01 Found';
+      case 'SCANNING':
+      default:
+        return 'Searching...';
+    }
+  };
+
+  const getSearchSubtitle = () => {
+    switch (phase) {
+      case 'CHECKING_BLUETOOTH':
+        return 'Verifying Bluetooth adapter status...';
+      case 'BLUETOOTH_PERMISSION':
+        return 'Please grant Bluetooth permissions to discover and connect your WSG-01 device.';
+      case 'BLUETOOTH_UNSUPPORTED':
+        return 'Bluetooth Low Energy is not supported on this device.';
+      case 'BLUETOOTH_STANDBY':
+        return 'Make sure Bluetooth is turned on, then tap Scan to search for your WSG-01.';
+      case 'DEVICE_FOUND':
+        return 'Washroom Safety Gadget detected. Tap Connect to configure.';
+      case 'SCANNING':
+      default:
+        return 'Make sure your washroom safety gadget is in pairing mode';
     }
   };
 
@@ -889,50 +1058,52 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
               onPress={handleStartScan}
               activeOpacity={0.9}
             >
-              {/* Rotating radar sweep: Authentic smooth conic gradient with NO sharp cutoffs */}
-              <Animated.View
-                // @ts-ignore
-                className="moto-continuous-radar-sweep"
-                style={[
-                  styles.radarSweepCircle,
-                  {
-                    width: radarSize,
-                    height: radarSize,
-                    borderRadius: radarSize / 2,
-                    transform: [{ rotate: spinInterpolation }],
-                  },
-                ]}
-              >
-                {Platform.OS === 'web' ? (
-                  <View
-                    style={[
-                      styles.conicSweepView,
-                      {
-                        width: radarSize,
-                        height: radarSize,
-                        borderRadius: radarSize / 2,
-                      },
-                    ]}
-                  />
-                ) : (
-                  <Svg width={radarSize} height={radarSize} viewBox="0 0 210 210">
-                    <Defs>
-                      <LinearGradient id="sweepGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                        <Stop offset="0%" stopColor="#94A3B8" stopOpacity="0.85" />
-                        <Stop offset="35%" stopColor="#CBD5E1" stopOpacity="0.5" />
-                        <Stop offset="70%" stopColor="#E2E8F0" stopOpacity="0.2" />
-                        <Stop offset="100%" stopColor="#F8FAFC" stopOpacity="0.02" />
-                      </LinearGradient>
-                    </Defs>
-                    <Circle cx="105" cy="105" r="100" fill="url(#sweepGrad)" />
-                  </Svg>
-                )}
-              </Animated.View>
+              {/* Rotating radar sweep: Only visible when isScanningActive is true */}
+              {isScanningActive && (
+                <Animated.View
+                  // @ts-ignore
+                  className="moto-continuous-radar-sweep"
+                  style={[
+                    styles.radarSweepCircle,
+                    {
+                      width: radarSize,
+                      height: radarSize,
+                      borderRadius: radarSize / 2,
+                      transform: [{ rotate: spinInterpolation }],
+                    },
+                  ]}
+                >
+                  {Platform.OS === 'web' ? (
+                    <View
+                      style={[
+                        styles.conicSweepView,
+                        {
+                          width: radarSize,
+                          height: radarSize,
+                          borderRadius: radarSize / 2,
+                        },
+                      ]}
+                    />
+                  ) : (
+                    <Svg width={radarSize} height={radarSize} viewBox="0 0 210 210">
+                      <Defs>
+                        <LinearGradient id="sweepGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                          <Stop offset="0%" stopColor="#94A3B8" stopOpacity="0.85" />
+                          <Stop offset="35%" stopColor="#CBD5E1" stopOpacity="0.5" />
+                          <Stop offset="70%" stopColor="#E2E8F0" stopOpacity="0.2" />
+                          <Stop offset="100%" stopColor="#F8FAFC" stopOpacity="0.02" />
+                        </LinearGradient>
+                      </Defs>
+                      <Circle cx="105" cy="105" r="100" fill="url(#sweepGrad)" />
+                    </Svg>
+                  )}
+                </Animated.View>
+              )}
 
               {/* Dark Search Disc with Magnifying Glass Logo */}
               <Animated.View
                 // @ts-ignore
-                className="moto-continuous-disc-pulse"
+                className={isScanningActive ? 'moto-continuous-disc-pulse' : undefined}
                 style={[
                   styles.darkSearchDisc,
                   {
@@ -943,26 +1114,36 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
                   },
                 ]}
               >
-                <Search size={isCompactMobile ? 32 : 36} color="#FFFFFF" strokeWidth={2.4} />
+                {phase === 'CHECKING_BLUETOOTH' ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Search size={isCompactMobile ? 32 : 36} color="#FFFFFF" strokeWidth={2.4} />
+                )}
               </Animated.View>
             </TouchableOpacity>
 
             <Text style={[styles.searchingTitle, isCompactMobile && { fontSize: 24, marginBottom: 6 }]}>
-              Searching...
+              {getSearchTitle()}
             </Text>
             <Text style={[styles.searchingSubtitle, isCompactMobile && { fontSize: 14, marginBottom: 18 }]}>
-              Make sure your washroom safety gadget is in pairing mode
+              {getSearchSubtitle()}
             </Text>
 
             {/* Quick 1-Tap Search Button */}
-            <TouchableOpacity
-              style={styles.tapToScanBtn}
-              onPress={handleStartScan}
-              activeOpacity={0.85}
-            >
-              <RefreshCw size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
-              <Text style={styles.tapToScanText}>Scan for Nearby Devices</Text>
-            </TouchableOpacity>
+            {phase !== 'CHECKING_BLUETOOTH' && (
+              <TouchableOpacity
+                style={styles.tapToScanBtn}
+                onPress={handleStartScan}
+                activeOpacity={0.85}
+              >
+                <RefreshCw size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
+                <Text style={styles.tapToScanText}>
+                  {phase === 'BLUETOOTH_PERMISSION'
+                    ? 'Grant Bluetooth Permission'
+                    : 'Scan for Nearby Devices'}
+                </Text>
+              </TouchableOpacity>
+            )}
 
             {errorMessage ? (
               <View style={styles.warningBox}>
@@ -1010,7 +1191,18 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
             </View>
 
             <View style={styles.devicesCardList}>
-              {availableDevices.map((dev, idx) => (
+              {availableDevices.length === 0 ? (
+                <View style={{ paddingVertical: 18, alignItems: 'center' }}>
+                  <Text style={{ fontSize: 13, color: '#94A3B8' }}>
+                    {phase === 'SCANNING'
+                      ? 'Listening for nearby WSG-01 BLE broadcasts...'
+                      : phase === 'CHECKING_BLUETOOTH'
+                      ? 'Checking Bluetooth...'
+                      : 'No devices found. Tap "Scan for Nearby Devices" above.'}
+                  </Text>
+                </View>
+              ) : (
+                availableDevices.map((dev, idx) => (
                 <TouchableOpacity
                   key={dev.id || idx}
                   style={styles.deviceListItem}
@@ -1034,7 +1226,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
                     <Settings size={20} color="#64748B" />
                   </TouchableOpacity>
                 </TouchableOpacity>
-              ))}
+              )))}
             </View>
           </View>
 
