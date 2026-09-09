@@ -16,8 +16,10 @@ import {
   Clock,
   User,
   ArrowRight,
+  ShieldAlert,
 } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
+import { EmergencyPushService } from '../services/EmergencyPushService';
 
 export const DemoScreen: React.FC = () => {
   const navigation = useNavigation<any>();
@@ -200,6 +202,22 @@ export const DemoScreen: React.FC = () => {
             icon={<Play size={20} color={colors.surface} />} 
             onPress={() => handleAction(() => deviceService.demoEmergencyButton())}
             color={colors.emergency}
+          />
+          <DemoButton 
+            title="Test Emergency Alert" 
+            desc="Verify push, sound & screen"
+            icon={<ShieldAlert size={20} color={colors.surface} />} 
+            onPress={() => {
+              const testPayload = EmergencyPushService.createPayload({
+                deviceId: 'WSG-000001',
+                deviceName: 'Washroom Safety Guardian (Demo)',
+                severity: 'CRITICAL',
+                presenceDuration: 1112,
+                isTest: true,
+              });
+              EmergencyPushService.handleIncomingPush(testPayload);
+            }}
+            color="#DC2626"
           />
         </View>
       </View>

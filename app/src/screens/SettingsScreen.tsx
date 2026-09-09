@@ -12,6 +12,9 @@ import {
 } from 'react-native';
 import { colors, typography, spacing, borderRadius } from '../utils/theme';
 import { useAppStore } from '../store/useAppStore';
+import { useContactStore } from '../store/useContactStore';
+import { EmergencyPushService } from '../services/EmergencyPushService';
+import { EmergencySoundService } from '../services/EmergencySoundService';
 import { DeviceConfig } from '../types';
 import {
   Pencil,
@@ -24,6 +27,11 @@ import {
   Plus,
   Trash2,
   CheckCircle2,
+  Bell,
+  Volume2,
+  Smartphone,
+  ShieldAlert,
+  Phone,
 } from 'lucide-react-native';
 
 const thresholdOptions = [15, 30, 60, 90, 120];
@@ -38,13 +46,54 @@ export const SettingsScreen: React.FC = () => {
     isOnline,
     user,
     signOut,
+    setActiveEmergency,
   } = useAppStore();
+
+  const { getPrimaryContact } = useContactStore();
+  const primaryContact = getPrimaryContact();
 
   const [isEditing, setIsEditing] = useState(false);
   const [draftConfig, setDraftConfig] = useState<DeviceConfig | null>(deviceConfig);
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
   const [newKeyword, setNewKeyword] = useState('');
   const [showKeywordInput, setShowKeywordInput] = useState(false);
+
+  // Emergency Alert Settings State
+  const [showTestConfirmModal, setShowTestConfirmModal] = useState(false);
+  const [emergencyAlertsEnabled, setEmergencyAlertsEnabled] = useState(true);
+  const [emergencySoundEnabled, setEmergencySoundEnabled] = useState(true);
+  const [emergencyVibrationEnabled, setEmergencyVibrationEnabled] = useState(true);
+
+  const handleTriggerTestAlert = () => {
+    setShowTestConfirmModal(false);
+    const eventId = `test_emg_${Date.now()}`;
+    const testPayload = {
+      type: 'EMERGENCY' as const,
+      eventId,
+      deviceId: activeConfig?.deviceId || 'WSG-000001',
+      deviceName: activeConfig?.deviceName || 'Washroom Safety Guardian',
+      severity: 'CRITICAL' as const,
+      presenceDuration: 1112,
+      timestamp: new Date().toISOString(),
+      isTest: true,
+      trigger: 'OTHER',
+    };
+    EmergencyPushService.handleIncomingPush(testPayload);
+    setActiveEmergency({
+      id: eventId,
+      eventId,
+      deviceId: testPayload.deviceId,
+      deviceName: testPayload.deviceName,
+      type: 'EMERGENCY',
+      eventType: 'EMERGENCY',
+      trigger: 'OTHER',
+      severity: 'CRITICAL',
+      presenceDuration: 1112,
+      timestamp: testPayload.timestamp,
+      status: 'ACTIVE',
+      isTestAlert: true,
+    });
+  };
 
   // Sync draftConfig when deviceConfig changes outside of editing
   useEffect(() => {
@@ -245,6 +294,71 @@ export const SettingsScreen: React.FC = () => {
             <Text style={[styles.settingValue, { color: isOnline ? '#10B981' : '#EF4444', fontWeight: '700' }]}>
               {isOnline ? '● CONNECTED' : '○ DISCONNECTED'}
             </Text>
+          </View>
+        </View>
+
+        {/* Emergency Alert System Section */}
+        <SectionHeader title="Emergency Alert System" />
+        <View style={styles.card}>
+          <View style={styles.emergencyChannelHeader}>
+            <View style={styles.emergencyChannelIconWrap}>
+              <ShieldAlert size={20} color="#DC2626" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.emergencyChannelTitle}>Channel: Emergency Alerts</Text>
+              <Text style={styles.emergencyChannelSubtitle}>
+                Highest Android importance (MAX) • Alarm sound & continuous vibration
+              </Text>
+            </View>
+          </View>
+
+          <ToggleRow
+            label="Emergency Push Alerts"
+            value={emergencyAlertsEnabled}
+            onToggle={(v) => setEmergencyAlertsEnabled(v)}
+            disabled={false}
+          />
+          <ToggleRow
+            label="Emergency Siren (960Hz / 770Hz)"
+            value={emergencySoundEnabled}
+            onToggle={(v) => setEmergencySoundEnabled(v)}
+            disabled={false}
+          />
+          <ToggleRow
+            label="Urgent Vibration Pattern"
+            value={emergencyVibrationEnabled}
+            onToggle={(v) => setEmergencyVibrationEnabled(v)}
+            disabled={false}
+          />
+
+          <View style={[styles.settingRow, { paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border }]}>
+            <View>
+              <Text style={styles.settingLabel}>Emergency Contact</Text>
+              <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>
+                {primaryContact ? `${primaryContact.name} (${primaryContact.relationship})` : 'No primary contact'}
+              </Text>
+            </View>
+            <Text style={[styles.settingValue, { color: colors.primary, fontWeight: '700' }]}>
+              {primaryContact ? primaryContact.phone : 'Not set'}
+            </Text>
+          </View>
+
+          {/* Test Emergency Alert Button */}
+          <View style={styles.testAlertBox}>
+            <Text style={styles.testAlertTitle}>Verify Alert Pipeline</Text>
+            <Text style={styles.testAlertSubtitle}>
+              Simulate an urgent LD2410C emergency event to test push delivery, alarm siren, vibration, and full-screen display.
+            </Text>
+            <TouchableOpacity
+              style={styles.testAlertBtn}
+              onPress={() => setShowTestConfirmModal(true)}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Test Emergency Alert"
+            >
+              <ShieldAlert size={18} color="#FFFFFF" />
+              <Text style={styles.testAlertBtnText}>Test Emergency Alert</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -465,6 +579,42 @@ export const SettingsScreen: React.FC = () => {
               >
                 <Save size={16} color={colors.surface} />
                 <Text style={styles.floatingSaveBtnText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* Test Emergency Alert Confirmation Modal */}
+      {showTestConfirmModal && (
+        <View style={styles.testModalBackdrop}>
+          <View style={styles.testModalCard}>
+            <View style={styles.testModalHeader}>
+              <ShieldAlert size={28} color="#DC2626" />
+              <Text style={styles.testModalTitle}>Send a test emergency alert?</Text>
+            </View>
+            <Text style={styles.testModalBody}>
+              This will test the complete emergency notification pipeline:
+              {'\n'}• High-importance push notification
+              {'\n'}• Emergency audio siren (960Hz / 770Hz)
+              {'\n'}• Urgent vibration pattern
+              {'\n'}• Full-screen emergency alarm interface
+              {'\n'}• Acknowledge and Resolve actions
+              {'\n\n'}
+              The test alert will be clearly labeled 🚨 TEST EMERGENCY ALERT.
+            </Text>
+            <View style={styles.testModalActions}>
+              <TouchableOpacity
+                style={styles.testModalCancelBtn}
+                onPress={() => setShowTestConfirmModal(false)}
+              >
+                <Text style={styles.testModalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.testModalSendBtn}
+                onPress={handleTriggerTestAlert}
+              >
+                <Text style={styles.testModalSendText}>Send Test</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -914,5 +1064,162 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: colors.surface,
+  },
+
+  // Emergency Alert System Settings Styles
+  emergencyChannelHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#FEF2F2',
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    marginBottom: spacing.sm,
+  },
+  emergencyChannelIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#FEE2E2',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  emergencyChannelTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#991B1B',
+  },
+  emergencyChannelSubtitle: {
+    fontSize: 12,
+    color: '#B91C1C',
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  settingSubLabel: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  testAlertBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginTop: spacing.md,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  testAlertTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginBottom: 4,
+  },
+  testAlertSubtitle: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  testAlertBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#DC2626',
+    paddingVertical: 12,
+    borderRadius: borderRadius.md,
+    shadowColor: '#DC2626',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 5,
+    elevation: 3,
+  },
+  testAlertBtnText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+
+  // Test Confirmation Modal Styles
+  testModalBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.md,
+    zIndex: 999999,
+  },
+  testModalCard: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    padding: spacing.xl,
+    width: '100%',
+    maxWidth: 440,
+    borderWidth: 2,
+    borderColor: '#EF4444',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+  testModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: spacing.md,
+  },
+  testModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: colors.textPrimary,
+    flex: 1,
+  },
+  testModalBody: {
+    fontSize: 14,
+    color: colors.textSecondary,
+    lineHeight: 22,
+    marginBottom: spacing.lg,
+  },
+  testModalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+  },
+  testModalCancelBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  testModalCancelText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  testModalSendBtn: {
+    backgroundColor: '#DC2626',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: borderRadius.md,
+    shadowColor: '#DC2626',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  testModalSendText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: 0.3,
   },
 });

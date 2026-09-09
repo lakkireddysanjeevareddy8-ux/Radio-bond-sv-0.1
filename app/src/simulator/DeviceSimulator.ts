@@ -145,10 +145,16 @@ export class DeviceSimulator {
   private emitEmergency(trigger: 'VOICE' | 'NO_RESPONSE' | 'BUTTON' | 'OTHER', keyword?: string, confidence?: number) {
     if (!this.onEmergencyEvent) return;
 
+    const eventId = `emg_sim_${Date.now()}`;
     this.onEmergencyEvent({
-      id: `sim-emg-${Date.now()}`,
+      id: eventId,
+      eventId: eventId,
       deviceId: this.config.deviceId,
+      deviceName: this.config.deviceName || 'Washroom Safety Guardian',
+      type: 'EMERGENCY',
       eventType: 'EMERGENCY',
+      severity: 'CRITICAL',
+      presenceDuration: 1112,
       trigger,
       keyword,
       confidence,

@@ -33,8 +33,8 @@ export const SafetyStatusCard: React.FC<Props> = ({ status }) => {
       break;
     case 'OFFLINE':
       backgroundColor = colors.offline;
-      text = 'OFFLINE';
-      subtext = 'Device status unavailable';
+      text = '⚠️ MONITORING UNAVAILABLE';
+      subtext = 'Device connection lost.';
       Icon = ShieldX;
       break;
   }

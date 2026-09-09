@@ -5,6 +5,7 @@ import { EmergencyScreen } from './src/screens/EmergencyScreen';
 import { deviceService } from './src/services/DeviceCommunicationService';
 import { useAppStore } from './src/store/useAppStore';
 import { EmergencySoundService } from './src/services/EmergencySoundService';
+import { EmergencyPushService } from './src/services/EmergencyPushService';
 
 export default function App() {
   const {
@@ -19,8 +20,11 @@ export default function App() {
 
   useEffect(() => {
     initializeSupabase();
-    // Prompt for browser notification permission early
-    EmergencySoundService.requestNotificationPermission();
+    // Initialize high-importance Android emergency channel and permissions
+    EmergencySoundService.initEmergencyChannel();
+    EmergencyPushService.setOnEmergencyReceived((event) => {
+      setActiveEmergency(event);
+    });
   }, []);
 
   useEffect(() => {

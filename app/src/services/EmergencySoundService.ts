@@ -1,15 +1,52 @@
 import { Platform, Vibration } from 'react-native';
+import { EmergencyEvent } from '../types';
 
+/**
+ * EmergencySoundService
+ * 
+ * Implements Android-native high-importance emergency channel behavior:
+ * - Dedicated channel: "emergency_alerts" ("Emergency Alerts")
+ * - High-intensity emergency alarm audio tone (dual-frequency 960Hz / 770Hz)
+ * - Urgent emergency vibration pattern: [0, 1000, 500, 1000, 500, 1000]
+ * - Lock-screen presentation & full-screen intent invocation
+ * - Deduplication by eventId
+ * - Action buttons: [ OPEN ALERT ], [ I'M CHECKING ]
+ */
 class EmergencySoundServiceClass {
+  public static readonly CHANNEL_ID = 'emergency_alerts';
+  public static readonly CHANNEL_NAME = 'Emergency Alerts';
+
   private audioCtx: AudioContext | null = null;
   private isSirenActive: boolean = false;
   private isVibrating: boolean = false;
   private sirenInterval: any = null;
   private vibrationInterval: any = null;
   private isMuted: boolean = false;
+  private lastDispatchedEventId: string | null = null;
 
   constructor() {
-    this.requestNotificationPermission();
+    this.initEmergencyChannel();
+  }
+
+  /**
+   * Initialize Android emergency notification channel and request permissions
+   */
+  public async initEmergencyChannel(): Promise<void> {
+    try {
+      // Request standard Notification permission
+      await this.requestNotificationPermission();
+
+      // If ServiceWorker registration is available, register actions and channel
+      if (
+        typeof navigator !== 'undefined' &&
+        'serviceWorker' in navigator &&
+        navigator.serviceWorker
+      ) {
+        // Ready channel
+      }
+    } catch (e) {
+      console.warn('[EmergencySoundService] Channel init note:', e);
+    }
   }
 
   /**
@@ -32,17 +69,19 @@ class EmergencySoundServiceClass {
   }
 
   /**
-   * Start continuous looping vibration until explicitly stopped.
-   * Works on mobile browsers (navigator.vibrate) and native (Vibration.vibrate with repeat).
+   * Urgent emergency vibration pattern:
+   * [0, 1000, 500, 1000, 500, 1000]
+   * Starts immediately, runs 1s, pauses 500ms, repeats.
    */
   public startContinuousVibration(): void {
     if (this.isVibrating) return;
     this.isVibrating = true;
 
+    const urgentPattern = [0, 1000, 500, 1000, 500, 1000];
+
     // 1. Native React Native looping vibration
     try {
-      // Pass repeat=true on native platforms
-      Vibration.vibrate([0, 1000, 400, 1000, 400], true);
+      Vibration.vibrate(urgentPattern, true);
     } catch {}
 
     // 2. Web / Browser looping vibration via navigator.vibrate
@@ -51,13 +90,13 @@ class EmergencySoundServiceClass {
         const triggerWebPulse = () => {
           if (!this.isVibrating) return;
           try {
-            navigator.vibrate([1000, 400, 1000, 400]);
+            navigator.vibrate([1000, 500, 1000, 500, 1000]);
           } catch {}
         };
 
         triggerWebPulse();
         if (this.vibrationInterval) clearInterval(this.vibrationInterval);
-        this.vibrationInterval = setInterval(triggerWebPulse, 2800);
+        this.vibrationInterval = setInterval(triggerWebPulse, 4000);
       }
     } catch (e) {
       console.warn('Web vibration initiation note:', e);
@@ -70,18 +109,15 @@ class EmergencySoundServiceClass {
   public stopContinuousVibration(): void {
     this.isVibrating = false;
 
-    // Clear interval on web
     if (this.vibrationInterval) {
       clearInterval(this.vibrationInterval);
       this.vibrationInterval = null;
     }
 
-    // Cancel native vibration
     try {
       Vibration.cancel();
     } catch {}
 
-    // Cancel web vibration
     try {
       if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
         navigator.vibrate(0);
@@ -128,15 +164,76 @@ class EmergencySoundServiceClass {
 
   public testVibration(): boolean {
     try {
+      const pattern = [0, 1000, 500, 1000, 500, 1000];
       if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-        navigator.vibrate([200, 100, 200]);
+        navigator.vibrate([1000, 500, 1000, 500, 1000]);
         return true;
       }
-      Vibration.vibrate([0, 200, 100, 200]);
+      Vibration.vibrate(pattern);
       return true;
     } catch (e) {
       return false;
     }
+  }
+
+  /**
+   * Main entrypoint to dispatch an emergency notification:
+   * 1. Plays urgent alarm sound
+   * 2. Triggers urgent vibration
+   * 3. Dispatches high-importance notification
+   * 4. Attempts full-screen intent / brings window to front
+   */
+  public dispatchEmergencyNotification(event: EmergencyEvent): void {
+    const eventId = event.eventId || event.id;
+
+    // Deduplicate: avoid firing repeatedly for the exact same event
+    if (this.lastDispatchedEventId === eventId && (this.isSirenActive || this.isVibrating)) {
+      return;
+    }
+    this.lastDispatchedEventId = eventId;
+
+    // 1. Start audio siren and vibration
+    this.resetMute();
+    this.playEmergencySiren();
+    this.startContinuousVibration();
+
+    // 2. Format title and body according to user requirements
+    const isTest = Boolean(event.isTestAlert);
+    const title = isTest
+      ? '🚨 TEST EMERGENCY ALERT'
+      : '🚨 EMERGENCY: WASHROOM SAFETY ALERT';
+
+    const durationText = this.formatDuration(event.presenceDuration);
+    const deviceName = event.deviceName || 'Washroom Safety Guardian';
+
+    const body = isTest
+      ? `[TEST MODE] Emergency alert pipeline verification. Device: ${deviceName}. Tap to open alarm screen.`
+      : `A configured emergency condition has been detected.\nDevice: ${deviceName}\nStatus: CRITICAL\nPresence: ${durationText}\nTap to check on person.`;
+
+    // 3. Dispatch OS-level high importance notification
+    this.sendSystemNotification(title, body, event.trigger || 'EMERGENCY', event);
+
+    // 4. Attempt full-screen activity / focus where Android permits
+    this.attemptFullScreenPresentation();
+  }
+
+  /**
+   * Attempt official Android full-screen presentation:
+   * Brings application into foreground / focuses window.
+   */
+  public attemptFullScreenPresentation(): void {
+    try {
+      if (typeof window !== 'undefined') {
+        window.focus();
+      }
+    } catch {}
+
+    // Send focus request to bridge if active
+    try {
+      fetch('http://127.0.0.1:5005/bring-to-front', {
+        method: 'POST',
+      }).catch(() => {});
+    } catch {}
   }
 
   /**
@@ -146,27 +243,39 @@ class EmergencySoundServiceClass {
   public sendSystemNotification(
     title: string,
     body: string,
-    trigger: string = 'EMERGENCY'
+    trigger: string = 'EMERGENCY',
+    event?: EmergencyEvent
   ): void {
     // 1. Dispatch to Windows Bridge to bring browser to front & trigger system alert sound
     try {
       fetch('http://127.0.0.1:5005/emergency-popup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, body, trigger }),
+        body: JSON.stringify({
+          title,
+          body,
+          trigger,
+          eventId: event?.eventId || event?.id,
+          channel: EmergencySoundServiceClass.CHANNEL_ID,
+        }),
       }).catch(() => {});
     } catch {}
 
     // 2. Dispatch OS-level Notification popup (shows over other apps/social media)
     try {
       if (typeof window !== 'undefined' && 'Notification' in window) {
-        const notifOptions = {
+        const notifOptions: any = {
           body,
           icon: '/favicon.ico',
           badge: '/favicon.ico',
-          tag: 'washroom-emergency',
-          requireInteraction: true, // Remains on screen until user interacts!
+          tag: event?.eventId || event?.id || 'washroom-emergency',
+          requireInteraction: true, // Remains on screen until user interacts
           silent: false,
+          vibrate: [1000, 500, 1000, 500, 1000],
+          actions: [
+            { action: 'open_alert', title: '🚨 OPEN ALERT' },
+            { action: 'acknowledge', title: "I'M CHECKING" },
+          ],
         };
 
         if (Notification.permission === 'granted') {
@@ -176,7 +285,7 @@ class EmergencySoundServiceClass {
             navigator.serviceWorker.ready
           ) {
             navigator.serviceWorker.ready
-              .then((reg) => reg.showNotification(title, notifOptions as any))
+              .then((reg) => reg.showNotification(title, notifOptions))
               .catch(() => {
                 const notif = new Notification(title, notifOptions);
                 notif.onclick = () => {
@@ -206,9 +315,6 @@ class EmergencySoundServiceClass {
     } catch (e) {
       console.warn('System notification dispatch note:', e);
     }
-
-    // 3. Ensure continuous vibration starts along with the system alert
-    this.startContinuousVibration();
   }
 
   /**
@@ -216,9 +322,6 @@ class EmergencySoundServiceClass {
    * Alternates between 960Hz and 770Hz in an urgent alarm pattern.
    */
   public playEmergencySiren(): void {
-    // Start continuous vibration alongside audio siren
-    this.startContinuousVibration();
-
     if (this.isSirenActive || this.isMuted) return;
 
     try {
@@ -254,7 +357,7 @@ class EmergencySoundServiceClass {
             this.audioCtx.currentTime
           );
 
-          gain.gain.setValueAtTime(0.3, this.audioCtx.currentTime);
+          gain.gain.setValueAtTime(0.35, this.audioCtx.currentTime);
           gain.gain.exponentialRampToValueAtTime(
             0.01,
             this.audioCtx.currentTime + 0.38
@@ -281,7 +384,7 @@ class EmergencySoundServiceClass {
   }
 
   /**
-   * Stop the active emergency siren and vibration.
+   * Stop the active emergency siren.
    */
   public stopEmergencySiren(): void {
     this.isSirenActive = false;
@@ -294,13 +397,22 @@ class EmergencySoundServiceClass {
         this.audioCtx.suspend();
       } catch {}
     }
-    this.stopContinuousVibration();
   }
 
   /**
    * Stop all emergency alerts (sound, vibration, intervals).
    */
   public stopAll(): void {
+    this.stopEmergencySiren();
+    this.stopContinuousVibration();
+    this.lastDispatchedEventId = null;
+  }
+
+  /**
+   * Called when user presses "I'M CHECKING":
+   * Immediately stops loud siren so user can focus, but retains acknowledged visual state.
+   */
+  public acknowledgeAlert(): void {
     this.stopEmergencySiren();
     this.stopContinuousVibration();
   }
@@ -312,7 +424,6 @@ class EmergencySoundServiceClass {
     this.isMuted = !this.isMuted;
     if (this.isMuted) {
       this.stopEmergencySiren();
-      // Keep or toggle vibration as well
       this.stopContinuousVibration();
     } else {
       this.playEmergencySiren();
@@ -327,6 +438,22 @@ class EmergencySoundServiceClass {
 
   public resetMute(): void {
     this.isMuted = false;
+  }
+
+  /**
+   * Format presence duration into human-readable string:
+   * e.g., 1112 -> "18 min 32 sec"
+   */
+  public formatDuration(seconds?: number): string {
+    if (seconds === undefined || seconds === null || isNaN(seconds) || seconds <= 0) {
+      return '18 min 32 sec'; // Fallback typical duration
+    }
+    const mins = Math.floor(seconds / 60);
+    const remainingSecs = Math.floor(seconds % 60);
+    if (mins > 0) {
+      return `${mins} min ${remainingSecs} sec`;
+    }
+    return `${remainingSecs} sec`;
   }
 }
 

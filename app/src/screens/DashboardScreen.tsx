@@ -65,7 +65,7 @@ export const DashboardScreen: React.FC = () => {
 
   let safetyStatus: 'SAFE' | 'MONITORING' | 'CHECKING' | 'EMERGENCY' | 'OFFLINE' = 'SAFE';
 
-  if (!isOnline) {
+  if (!isOnline || telemetry?.state === 'DEVICE_OFFLINE') {
     safetyStatus = 'OFFLINE';
   } else if (
     telemetry?.state === 'EMERGENCY' ||

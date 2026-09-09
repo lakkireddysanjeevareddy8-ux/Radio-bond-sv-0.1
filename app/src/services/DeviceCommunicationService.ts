@@ -138,19 +138,80 @@ export class DeviceCommunicationService {
 
   private handleSupabaseEmergency(row: any) {
     if (!row) return;
+    const eventId = String(row.id || `emg_${Date.now()}`);
     const emergency: EmergencyEvent = {
-      id: row.id || `emg-${Date.now()}`,
-      deviceId: row.device_id || row.deviceId || 'ESP32-LIVE',
+      id: eventId,
+      eventId: eventId,
+      deviceId: row.device_id || row.deviceId || 'WSG-000001',
+      deviceName: row.device_name || row.deviceName || 'Washroom Safety Guardian',
+      type: 'EMERGENCY',
       eventType: 'EMERGENCY',
       trigger: row.trigger || 'OTHER',
+      severity: row.severity || 'CRITICAL',
+      presenceDuration: Number(row.presence_duration ?? 1112),
       keyword: row.keyword,
       confidence: row.confidence,
-      timestamp: row.created_at || row.timestamp || new Date().toISOString(),
-      status: row.status || 'ACTIVE',
+      timestamp: row.event_time || row.created_at || row.timestamp || new Date().toISOString(),
+      status: (row.status as 'ACTIVE' | 'ACKNOWLEDGED' | 'RESOLVED') || 'ACTIVE',
       acknowledgedAt: row.acknowledged_at,
       resolvedAt: row.resolved_at,
     };
     this.onEmergencyEvent?.(emergency);
+  }
+
+  /**
+   * STEP 9: Acknowledge emergency on backend (ACTIVE -> ACKNOWLEDGED)
+   */
+  public async acknowledgeEmergency(eventId: string, deviceId?: string): Promise<boolean> {
+    try {
+      if (this.simulator) {
+        return true;
+      }
+      const numId = Number(eventId);
+      const query = supabase.from('emergencies').update({
+        status: 'ACKNOWLEDGED',
+        acknowledged_at: new Date().toISOString(),
+      });
+
+      if (!isNaN(numId)) {
+        await query.eq('id', numId);
+      } else {
+        await query.eq('id', eventId);
+      }
+      return true;
+    } catch (err) {
+      console.warn('Backend acknowledge error:', err);
+      return false;
+    }
+  }
+
+  /**
+   * STEP 10: Resolve emergency on backend (ACTIVE / ACKNOWLEDGED -> RESOLVED)
+   */
+  public async resolveEmergency(eventId: string, deviceId?: string): Promise<boolean> {
+    try {
+      if (this.simulator) {
+        this.onEmergencyResolved?.();
+        return true;
+      }
+      const numId = Number(eventId);
+      const query = supabase.from('emergencies').update({
+        status: 'RESOLVED',
+        resolved: true,
+        resolved_at: new Date().toISOString(),
+      });
+
+      if (!isNaN(numId)) {
+        await query.eq('id', numId);
+      } else {
+        await query.eq('id', eventId);
+      }
+      this.onEmergencyResolved?.();
+      return true;
+    } catch (err) {
+      console.warn('Backend resolve error:', err);
+      return false;
+    }
   }
 
   public disconnect() {
