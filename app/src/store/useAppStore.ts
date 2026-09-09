@@ -15,6 +15,14 @@ interface AppState {
   // Connection
   isOnline: boolean;
   setIsOnline: (isOnline: boolean) => void;
+  bluetoothStatus: 'CONNECTED' | 'DISCONNECTED';
+  setBluetoothStatus: (status: 'CONNECTED' | 'DISCONNECTED') => void;
+  wifiStatus: 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'FAILED';
+  setWifiStatus: (status: 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'FAILED') => void;
+  cloudStatus: 'CONNECTED' | 'DISCONNECTED';
+  setCloudStatus: (status: 'CONNECTED' | 'DISCONNECTED') => void;
+  fakeWifiConnected: boolean;
+  setFakeWifiConnected: (fake: boolean) => void;
 
   // Events
   activeEmergency: EmergencyEvent | null;
@@ -100,9 +108,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   telemetry: defaultTelemetry,
   setTelemetry: (telemetry) => set({ telemetry }),
 
-  // Connection status (default online in simulator mode)
+  // Connection status
   isOnline: true,
   setIsOnline: (isOnline) => set({ isOnline }),
+  bluetoothStatus: 'DISCONNECTED',
+  setBluetoothStatus: (bluetoothStatus) => set({ bluetoothStatus }),
+  wifiStatus: 'DISCONNECTED',
+  setWifiStatus: (wifiStatus) => set({ wifiStatus }),
+  cloudStatus: 'DISCONNECTED',
+  setCloudStatus: (cloudStatus) => set({ cloudStatus }),
+  fakeWifiConnected: false,
+  setFakeWifiConnected: (fakeWifiConnected) => set({ fakeWifiConnected }),
 
   // Emergency events
   activeEmergency: null,

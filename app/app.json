@@ -33,6 +33,16 @@
         "android.permission.WAKE_LOCK"
       ]
     },
+    "plugins": [
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "modes": ["peripheral", "central"],
+          "bluetoothAlwaysPermission": "Allow Washroom Safety Gadget to connect to WSG-01 via Bluetooth."
+        }
+      ]
+    ],
     "web": {
       "favicon": "./assets/favicon.png"
     }

@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   useWindowDimensions,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Path, Defs, LinearGradient, Stop } from 'react-native-svg';
@@ -30,23 +32,62 @@ export const BluetoothOffScreen: React.FC<BluetoothOffScreenProps> = ({
   const isTablet = width >= 600;
   const isCompactMobile = height < 700;
 
-  const handleTurnOn = async () => {
-    BluetoothService.openSystemBluetoothSettings();
+  // Listen for AppState changes when returning from Android Bluetooth Settings
+  useEffect(() => {
+    let isMounted = true;
 
-    // Check availability after prompt
-    try {
-      if (typeof navigator !== 'undefined' && (navigator as any).bluetooth?.getAvailability) {
-        const isAvail = await (navigator as any).bluetooth.getAvailability();
-        if (isAvail && onTurnedOn) {
-          onTurnedOn();
-          return;
-        }
+    const checkStateAndNotify = async () => {
+      const effectiveState = await BluetoothService.getEffectiveBluetoothState();
+      if (effectiveState === 'on' && isMounted && onTurnedOn) {
+        onTurnedOn();
       }
-    } catch {}
+    };
 
-    if (onTurnedOn) {
-      onTurnedOn();
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active') {
+        checkStateAndNotify();
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+
+    // Also listen to central BluetoothService state events (e.g. real adapter change or dev simulation toggle)
+    const unsubBtListener = BluetoothService.addBluetoothStateListener((effectiveState) => {
+      if (effectiveState === 'on' && isMounted && onTurnedOn) {
+        onTurnedOn();
+      }
+    });
+
+    // Initial check on mount
+    checkStateAndNotify();
+
+    return () => {
+      isMounted = false;
+      subscription.remove();
+      unsubBtListener();
+    };
+  }, [onTurnedOn]);
+
+  const handleTurnOn = async () => {
+    // 1. Check if Bluetooth is already ON
+    const effectiveState = await BluetoothService.getEffectiveBluetoothState();
+    if (effectiveState === 'on') {
+      if (onTurnedOn) onTurnedOn();
+      return;
     }
+
+    // 2. If fake simulation is currently active in development, allow clearing it
+    if (BluetoothService.isFakeBluetoothOff()) {
+      BluetoothService.setFakeBluetoothOff(false);
+      const realState = await BluetoothService.getRealBluetoothState();
+      if (realState === 'on') {
+        if (onTurnedOn) onTurnedOn();
+        return;
+      }
+    }
+
+    // 3. Open official Android / iOS / OS Bluetooth settings
+    BluetoothService.openSystemBluetoothSettings();
   };
 
   const handleAllow = () => {
@@ -135,7 +176,7 @@ export const BluetoothOffScreen: React.FC<BluetoothOffScreenProps> = ({
 
         {/* Title */}
         <Text style={[styles.title, isCompactMobile && { fontSize: 24, marginBottom: 8 }]}>
-          Your Bluetooth is off
+          Bluetooth is Off
         </Text>
 
         {/* Subtitle */}
@@ -145,7 +186,7 @@ export const BluetoothOffScreen: React.FC<BluetoothOffScreenProps> = ({
             isCompactMobile && { fontSize: 14, marginBottom: 32 },
           ]}
         >
-          {appName} needs permission to connect to Bluetooth devices
+          Turn on Bluetooth to connect your WSG-01 device.
         </Text>
 
         {/* Action Buttons */}

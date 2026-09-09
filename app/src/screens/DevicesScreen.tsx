@@ -22,6 +22,7 @@ import { DeviceOnboardingScreen } from './DeviceOnboardingScreen';
 import { BluetoothOffScreen } from './BluetoothOffScreen';
 import { AddDeviceSearchScreen } from './AddDeviceSearchScreen';
 import { BluetoothService } from '../services/bluetoothService';
+import { DeviceProvisioningService } from '../services/deviceProvisioningService';
 import { supabase } from '../services/supabaseClient';
 import {
   Wifi,
@@ -91,7 +92,14 @@ export const DevicesScreen: React.FC = () => {
     setIsOnline,
     isSimulatorMode,
     setIsSimulatorMode,
+    bluetoothStatus,
+    wifiStatus,
+    cloudStatus,
+    fakeWifiConnected,
+    setFakeWifiConnected,
   } = useAppStore();
+
+  const effectiveWifiStatus = DeviceProvisioningService.getEffectiveWifiStatus(wifiStatus);
 
   const { devices, activeDeviceId, setActiveDeviceId } = useDeviceStore();
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -119,16 +127,19 @@ export const DevicesScreen: React.FC = () => {
   // User Requested Flows: Bluetooth Off Modal & Add Device Search Screen
   const [showBluetoothOffScreen, setShowBluetoothOffScreen] = useState(false);
   const [showAddDeviceSearchScreen, setShowAddDeviceSearchScreen] = useState(false);
-  const [simulateBluetoothOff, setSimulateBluetoothOff] = useState(false);
+  const [fakeBtOffDev, setFakeBtOffDev] = useState(BluetoothService.isFakeBluetoothOff());
 
-  // Add device button click handler
+  useEffect(() => {
+    const unsub = BluetoothService.addBluetoothStateListener(() => {
+      setFakeBtOffDev(BluetoothService.isFakeBluetoothOff());
+    });
+    return unsub;
+  }, []);
+
+  // Add device button click handler using central effective state
   const handleAddDevicePress = async () => {
-    if (simulateBluetoothOff) {
-      setShowBluetoothOffScreen(true);
-      return;
-    }
-    const isBtAvailable = await BluetoothService.isBluetoothAvailable();
-    if (!isBtAvailable) {
+    const effectiveState = await BluetoothService.getEffectiveBluetoothState();
+    if (effectiveState === 'off') {
       setShowBluetoothOffScreen(true);
     } else {
       setShowAddDeviceSearchScreen(true);
@@ -726,20 +737,43 @@ export const DevicesScreen: React.FC = () => {
         <View style={styles.myDevicesHeaderRow}>
           <Text style={styles.myDevicesMainTitle}>My devices</Text>
           
-          {/* Quick simulation tester to test Bluetooth Off behavior */}
-          <TouchableOpacity
-            style={[
-              styles.testBtToggleBtn,
-              simulateBluetoothOff && styles.testBtToggleBtnActive,
-            ]}
-            onPress={() => setSimulateBluetoothOff(!simulateBluetoothOff)}
-            activeOpacity={0.8}
-          >
-            <BluetoothOff size={13} color={simulateBluetoothOff ? '#DC2626' : '#64748B'} />
-            <Text style={[styles.testBtToggleText, simulateBluetoothOff && { color: '#DC2626' }]}>
-              {simulateBluetoothOff ? 'BT Off Simulated' : 'Simulate BT Off'}
-            </Text>
-          </TouchableOpacity>
+          {/* Quick simulation testers (strictly dev-only, Test 5 & 6) */}
+          {Boolean(typeof __DEV__ !== 'undefined' && __DEV__) && (
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <TouchableOpacity
+                style={[
+                  styles.testBtToggleBtn,
+                  fakeBtOffDev && styles.testBtToggleBtnActive,
+                ]}
+                onPress={() => {
+                  const nextVal = !BluetoothService.isFakeBluetoothOff();
+                  BluetoothService.setFakeBluetoothOff(nextVal);
+                  setFakeBtOffDev(nextVal);
+                }}
+                activeOpacity={0.8}
+              >
+                <BluetoothOff size={13} color={fakeBtOffDev ? '#DC2626' : '#64748B'} />
+                <Text style={[styles.testBtToggleText, fakeBtOffDev && { color: '#DC2626' }]}>
+                  {fakeBtOffDev ? 'BT Off Sim' : 'Sim BT Off'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.testBtToggleBtn,
+                  fakeWifiConnected && styles.testBtToggleBtnActive,
+                  { marginLeft: 6 },
+                ]}
+                onPress={() => setFakeWifiConnected(!fakeWifiConnected)}
+                activeOpacity={0.8}
+              >
+                <Wifi size={13} color={fakeWifiConnected ? '#059669' : '#64748B'} />
+                <Text style={[styles.testBtToggleText, fakeWifiConnected && { color: '#059669' }]}>
+                  {fakeWifiConnected ? 'Wi-Fi Sim' : 'Sim Wi-Fi'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
 
         {/* Device Card (Screenshot 3 style) */}
@@ -905,6 +939,73 @@ export const DevicesScreen: React.FC = () => {
                   : '📡 REAL HARDWARE'}
               </Text>
             </View>
+          </View>
+        </View>
+
+        {/* 4-Pill Connectivity Status Row: Bluetooth, Wi-Fi, Cloud, Device */}
+        <View style={styles.connectivityStatusRow}>
+          <View style={styles.connPill}>
+            <View
+              style={[
+                styles.connDot,
+                { backgroundColor: bluetoothStatus === 'CONNECTED' ? colors.safe : colors.offline },
+              ]}
+            />
+            <Text style={styles.connText}>
+              Bluetooth: {bluetoothStatus === 'CONNECTED' ? 'Connected' : 'Disconnected'}
+            </Text>
+          </View>
+
+          <View style={styles.connPill}>
+            <View
+              style={[
+                styles.connDot,
+                {
+                  backgroundColor:
+                    effectiveWifiStatus === 'CONNECTED'
+                      ? colors.safe
+                      : effectiveWifiStatus === 'CONNECTING'
+                      ? '#F59E0B'
+                      : effectiveWifiStatus === 'FAILED'
+                      ? '#EF4444'
+                      : colors.offline,
+                },
+              ]}
+            />
+            <Text style={styles.connText}>
+              Wi-Fi:{' '}
+              {effectiveWifiStatus === 'CONNECTED'
+                ? 'Connected'
+                : effectiveWifiStatus === 'CONNECTING'
+                ? 'Connecting...'
+                : effectiveWifiStatus === 'FAILED'
+                ? 'Connection Failed'
+                : 'Disconnected'}
+            </Text>
+          </View>
+
+          <View style={styles.connPill}>
+            <View
+              style={[
+                styles.connDot,
+                { backgroundColor: cloudStatus === 'CONNECTED' ? colors.safe : colors.offline },
+              ]}
+            />
+            <Text style={styles.connText}>
+              Cloud: {cloudStatus === 'CONNECTED' ? 'Connected' : 'Disconnected'}
+            </Text>
+          </View>
+
+          <View style={styles.connPill}>
+            <View
+              style={[
+                styles.connDot,
+                { backgroundColor: isOnline ? colors.safe : colors.offline },
+              ]}
+            />
+            <Text style={styles.connText}>
+              Device: {isOnline ? 'Online' : 'Offline'}
+            </Text>
           </View>
         </View>
 
@@ -1745,7 +1846,8 @@ export const DevicesScreen: React.FC = () => {
           appName="Washroom Safety Gadget"
           onTurnedOn={() => {
             setShowBluetoothOffScreen(false);
-            setSimulateBluetoothOff(false);
+            BluetoothService.setFakeBluetoothOff(false);
+            setFakeBtOffDev(false);
             setShowAddDeviceSearchScreen(true);
           }}
           onLater={() => {
@@ -2599,5 +2701,33 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '600',
     color: '#0F172A',
+  },
+  connectivityStatusRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 14,
+    marginBottom: 6,
+  },
+  connPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  connDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  connText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155',
   },
 });

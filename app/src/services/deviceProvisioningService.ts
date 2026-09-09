@@ -1,4 +1,5 @@
 import { ConnectedBleSession } from './bluetoothService';
+import { useAppStore } from '../store/useAppStore';
 
 export interface ProvisioningCredentials {
   ssid: string;
@@ -22,6 +23,67 @@ export type ProvisioningStatusListener = (
 
 export class DeviceProvisioningService {
   /**
+   * Verifies whether Supabase backend is reachable over the Internet.
+   * Keeps Cloud status distinct from Wi-Fi status (Test 8).
+   */
+  public static async checkCloudConnectivity(timeoutMs: number = 3500): Promise<boolean> {
+    try {
+      const controller = new AbortController();
+      const tid = setTimeout(() => controller.abort(), timeoutMs);
+      const resp = await fetch('https://xobasrolmpmvrnjcikcq.supabase.co/rest/v1/', {
+        method: 'GET',
+        headers: {
+          apikey: 'sb_publishable_HMCLVIpmvtvvB5G7kkIyLw_oF1Zk1OI',
+        },
+        signal: controller.signal,
+      });
+      clearTimeout(tid);
+      return resp.status < 500;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Reads real-time Wi-Fi status from the physical ESP32 status characteristic.
+   * Differentiates CONNECTED, DISCONNECTED, CONNECTING, FAILED (Test 3 & 4).
+   */
+  public static async queryCurrentDeviceWifiStatus(
+    session: ConnectedBleSession | null | undefined
+  ): Promise<'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'FAILED'> {
+    if (!session?.statusChar) return 'DISCONNECTED';
+    try {
+      const val = await session.statusChar.readValue();
+      if (val && val.length > 0) {
+        const decoder = new TextDecoder('utf-8');
+        const rawStr = decoder.decode(val).trim();
+        if (rawStr.startsWith('{')) {
+          const parsed = JSON.parse(rawStr);
+          if (parsed.status === 'CONNECTED') return 'CONNECTED';
+          if (parsed.status === 'CONNECTING') return 'CONNECTING';
+          if (parsed.status === 'AUTH_FAILED' || parsed.status === 'TIMEOUT') return 'FAILED';
+          return 'DISCONNECTED';
+        }
+      }
+    } catch (e) {
+      console.warn('[Provisioning] Error reading current status:', e);
+    }
+    return 'DISCONNECTED';
+  }
+
+  /**
+   * Determines effective Wi-Fi state with __DEV__ simulation guard (Test 5 & 6).
+   */
+  public static getEffectiveWifiStatus(
+    realStatus: 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'FAILED'
+  ): 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'FAILED' {
+    if (typeof __DEV__ !== 'undefined' && __DEV__) {
+      const isFake = useAppStore.getState().fakeWifiConnected;
+      if (isFake) return 'CONNECTED';
+    }
+    return realStatus;
+  }
+  /**
    * Transmits Wi-Fi credentials to the ESP32 over the established BLE GATT connection.
    * Never transmits or logs credentials to external servers.
    */
@@ -35,7 +97,16 @@ export class DeviceProvisioningService {
     }
 
     // Path A: Provision via BLE GATT if BLE session is active
-    if (session && session.server && session.server.connected) {
+    const isBleConnected =
+      session &&
+      session.provisionChar &&
+      (session.isNative
+        ? typeof session.server?.isConnected === 'function'
+          ? await session.server.isConnected()
+          : true
+        : Boolean(session.server?.connected));
+
+    if (isBleConnected && session) {
       onProgress?.('ENCRYPTING', 'Packaging network credentials for secure BLE transfer...');
       await new Promise((r) => setTimeout(r, 400));
 
@@ -66,36 +137,75 @@ export class DeviceProvisioningService {
 
     onProgress?.('CONNECTING_ROUTER', `ESP32 is attempting connection to "${creds.ssid}"...`);
 
-    // Poll status characteristic or await IP assignment
+    // Poll status characteristic and listen for real IP assignment
     let assignedIp = '';
-    const maxPollAttempts = 15;
+    const maxPollAttempts = 20; // 20 attempts * 1200ms = 24 seconds for router DHCP
 
-    for (let i = 0; i < maxPollAttempts; i++) {
-      await new Promise((r) => setTimeout(r, 1000));
-      onProgress?.('OBTAINING_IP', `Awaiting DHCP IP address assignment (${i + 1}/${maxPollAttempts})...`);
+    // Optional notification listener if supported
+    let unsubscribeMonitor: (() => void) | undefined;
+    if (typeof session.statusChar?.monitor === 'function') {
+      try {
+        unsubscribeMonitor = session.statusChar.monitor((data: Uint8Array) => {
+          try {
+            const decoder = new TextDecoder('utf-8');
+            const respStr = decoder.decode(data).trim();
+            if (respStr.startsWith('{')) {
+              const resp = JSON.parse(respStr);
+              if (resp.status === 'CONNECTED' && resp.ip && resp.ip !== '0.0.0.0') {
+                assignedIp = resp.ip;
+              }
+            }
+          } catch {}
+        });
+      } catch {}
+    }
 
-      if (session.statusChar) {
-        try {
-          const val = await session.statusChar.readValue();
-          const decoder = new TextDecoder('utf-8');
-          const resp = JSON.parse(decoder.decode(val));
+    try {
+      for (let i = 0; i < maxPollAttempts; i++) {
+        if (assignedIp) break;
 
-          if (resp.status === 'CONNECTED' && resp.ip) {
-            assignedIp = resp.ip;
-            break;
-          } else if (resp.status === 'AUTH_FAILED') {
-            throw new Error('Wi-Fi connection failed: Incorrect Wi-Fi password or authentication rejected.');
-          } else if (resp.status === 'SSID_NOT_FOUND') {
-            throw new Error(`Wi-Fi connection failed: Network "${creds.ssid}" not found in range.`);
+        await new Promise((r) => setTimeout(r, 1200));
+        onProgress?.('OBTAINING_IP', `Awaiting DHCP IP address assignment (${i + 1}/${maxPollAttempts})...`);
+
+        if (session.statusChar) {
+          try {
+            const val = await session.statusChar.readValue();
+            if (val && val.length > 0) {
+              const decoder = new TextDecoder('utf-8');
+              const rawStr = decoder.decode(val).trim();
+              if (rawStr.startsWith('{')) {
+                const resp = JSON.parse(rawStr);
+
+                if (resp.status === 'CONNECTED' && resp.ip && resp.ip !== '0.0.0.0') {
+                  assignedIp = resp.ip;
+                  break;
+                } else if (resp.status === 'AUTH_FAILED') {
+                  throw new Error('Wi-Fi connection failed: Incorrect Wi-Fi password or authentication rejected.');
+                } else if (resp.status === 'SSID_NOT_FOUND') {
+                  throw new Error(`Wi-Fi connection failed: Network "${creds.ssid}" not found in range.`);
+                } else if (resp.status === 'TIMEOUT') {
+                  throw new Error(`Wi-Fi connection timed out: ESP32 could not connect to "${creds.ssid}".`);
+                }
+              }
+            }
+          } catch (e: any) {
+            if (e.message && (e.message.includes('Wi-Fi connection') || e.message.includes('timed out'))) throw e;
           }
-        } catch (e: any) {
-          if (e.message && e.message.includes('Wi-Fi connection failed')) throw e;
         }
+      }
+    } finally {
+      if (unsubscribeMonitor) {
+        try {
+          unsubscribeMonitor();
+        } catch {}
       }
     }
 
-    if (!assignedIp) {
-      assignedIp = '192.168.1.150';
+    // STRICT CHECK: ESP32 must have confirmed real connection
+    if (!assignedIp || assignedIp === '0.0.0.0') {
+      throw new Error(
+        `Wi-Fi connection timed out: The ESP32 hardware did not confirm router connection to "${creds.ssid}". Ensure the router is 2.4GHz and credentials are correct.`
+      );
     }
 
     onProgress?.('SUCCESS', `Connected to Wi-Fi successfully! IP: ${assignedIp}`);
@@ -108,19 +218,18 @@ export class DeviceProvisioningService {
     };
   }
 
-  // Path B: Direct Local HTTP Provisioning (e.g. SoftAP at 192.168.4.1 or bridge)
+  // Path B: Fallback only if device is accessed via direct local HTTP gateway
   onProgress?.('ENCRYPTING', 'Packaging Wi-Fi credentials for device...');
   await new Promise((r) => setTimeout(r, 400));
   onProgress?.('SENDING_CREDENTIALS', 'Sending credentials to device gateway...');
 
-  let targetIp = '192.168.1.150';
-  const endpoints = ['http://192.168.4.1/api/wifi/configure', 'http://127.0.0.1:5005/api/wifi/configure'];
+  let targetIp = '';
+  const endpoints = ['http://192.168.4.1/api/wifi/configure'];
 
-  let sent = false;
   for (const ep of endpoints) {
     try {
       const controller = new AbortController();
-      const tid = setTimeout(() => controller.abort(), 2000);
+      const tid = setTimeout(() => controller.abort(), 3000);
       const resp = await fetch(ep, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -135,24 +244,25 @@ export class DeviceProvisioningService {
       clearTimeout(tid);
       if (resp.ok) {
         const d = await resp.json();
-        if (d.ip) targetIp = d.ip;
-        sent = true;
-        break;
+        if (d.ip && d.ip !== '0.0.0.0') {
+          targetIp = d.ip;
+          break;
+        }
       }
     } catch {}
   }
 
-  onProgress?.('CONNECTING_ROUTER', `ESP32 is attempting connection to "${creds.ssid}"...`);
-  await new Promise((r) => setTimeout(r, 1200));
-
-  onProgress?.('OBTAINING_IP', 'Awaiting DHCP IP address assignment...');
-  await new Promise((r) => setTimeout(r, 1000));
+  if (!targetIp) {
+    throw new Error(
+      'Device provisioning failed: No active Bluetooth connection to WSG-01. Please pair and connect to the gadget via Bluetooth first.'
+    );
+  }
 
   onProgress?.('SUCCESS', `Connected to Wi-Fi! IP: ${targetIp}`);
   return {
     success: true,
     ipAddress: targetIp,
-    deviceId: 'WSG01-ESP32-E8F4',
+    deviceId: 'WSG01-ESP32',
     model: 'WSG-01',
   };
 }

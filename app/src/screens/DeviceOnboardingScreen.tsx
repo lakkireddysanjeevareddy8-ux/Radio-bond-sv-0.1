@@ -1294,7 +1294,7 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
               </View>
               <View style={styles.verifiedRow}>
                 <Text style={styles.verifiedLabel}>IP Address:</Text>
-                <Text style={styles.verifiedVal}>{assignedIp || '192.168.1.150'}</Text>
+                <Text style={styles.verifiedVal}>{assignedIp || 'Not Assigned'}</Text>
               </View>
               <View style={styles.verifiedRow}>
                 <Text style={styles.verifiedLabel}>Connection:</Text>
