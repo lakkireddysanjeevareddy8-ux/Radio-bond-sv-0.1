@@ -667,20 +667,20 @@ export const DevicesScreen: React.FC = () => {
       });
     }
 
-    // Feed real telemetry
+    // Feed real telemetry without placeholder values
     setTelemetry({
       deviceId: finalId,
       timestamp: new Date().toISOString(),
-      presence: true,
-      movement: true,
+      presence: false,
+      movement: false,
       stillnessSeconds: 0,
       state: 'IDLE',
       voiceDetected: false,
-      wifiRSSI: selectedDevice.rssi ?? -45,
-      uptime: 120,
+      wifiRSSI: selectedDevice.rssi ?? 0,
+      uptime: 0,
       firmwareVersion:
         selectedDevice.firmware ||
-        (selectedDevice.isEarbuds ? 'Windows Bluetooth Audio' : 'v1.0.0-esp32'),
+        (selectedDevice.isEarbuds ? 'Windows Bluetooth Audio' : 'v1.2.0-esp32'),
       batteryLevel: batteryPct,
     });
 
@@ -693,8 +693,6 @@ export const DevicesScreen: React.FC = () => {
       playAudioChime();
     }
   };
-
-
 
   // Connect via Manual UUID entry
   const handleConnectManual = () => {
@@ -710,12 +708,15 @@ export const DevicesScreen: React.FC = () => {
         deviceId: manualDeviceId.trim(),
       });
     }
-    setIsSimulatorMode(false);
-    setIsOnline(true);
+    const isDev = Boolean(typeof __DEV__ !== 'undefined' && __DEV__);
+    setIsSimulatorMode(isDev);
+    setIsOnline(isDev);
     setShowPairingModal(false);
     Alert.alert(
       'Device Configured',
-      `Now listening for live hardware telemetry from "${manualDeviceId.trim()}".`
+      isDev
+        ? `Added in demo simulation mode for testing.`
+        : `Registered device "${manualDeviceId.trim()}". It will be shown online once verified telemetry is received from hardware.`
     );
   };
 

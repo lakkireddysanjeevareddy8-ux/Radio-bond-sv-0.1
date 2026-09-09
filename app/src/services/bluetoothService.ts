@@ -523,36 +523,34 @@ export class BluetoothService {
 
       if (server && server.connected) {
         try {
-          // Attempt to find WSG-01 service
+          // Strictly verify WSG-01 primary service UUID - NEVER fall back to generic services
+          service = await server.getPrimaryService(discovered.product.bleServiceUuid.toLowerCase());
+          if (!service) {
+            throw new Error(
+              `WSG-01 Service Not Found: Device does not expose the required safety service (${discovered.product.bleServiceUuid}).`
+            );
+          }
+
+          // Strictly verify WSG-01 provisioning characteristic
+          provisionChar = await service.getCharacteristic(
+            discovered.product.bleProvisionCharUuid.toLowerCase()
+          );
+          if (!provisionChar) {
+            throw new Error(
+              `WSG-01 Characteristic Not Found: Required provisioning characteristic (${discovered.product.bleProvisionCharUuid}) was not found.`
+            );
+          }
+
           try {
-            service = await server.getPrimaryService(discovered.product.bleServiceUuid.toLowerCase());
-          } catch {
-            const services = await server.getPrimaryServices();
-            if (services && services.length > 0) {
-              service = services[0];
-            }
-          }
-
-          if (service) {
-            try {
-              provisionChar = await service.getCharacteristic(
-                discovered.product.bleProvisionCharUuid.toLowerCase()
-              );
-            } catch {
-              const chars = await service.getCharacteristics();
-              if (chars && chars.length > 0) {
-                provisionChar = chars[0];
-              }
-            }
-
-            try {
-              statusChar = await service.getCharacteristic(
-                discovered.product.bleStatusCharUuid.toLowerCase()
-              );
-            } catch {}
-          }
-        } catch (servErr) {
-          console.warn('Service discovery note:', servErr);
+            statusChar = await service.getCharacteristic(
+              discovered.product.bleStatusCharUuid.toLowerCase()
+            );
+          } catch {}
+        } catch (servErr: any) {
+          console.warn('[WebBLE] Service discovery error:', servErr);
+          throw new Error(
+            servErr.message || 'WSG-01 GATT service verification failed. Ensure the physical ESP32 device is running WSG-01 firmware.'
+          );
         }
       }
     }

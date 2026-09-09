@@ -382,16 +382,14 @@ class NativeBluetoothServiceClass {
         }
       }
 
-      // If exact service UUID not found, fall back to first custom service
-      if (!matchedService && services.length > 0) {
-        matchedService = services.find((s) => !s.uuid.startsWith('000018')) || services[0];
-      }
-
+      // Strictly verify WSG-01 primary service UUID - NEVER fall back to generic services
       if (!matchedService) {
-        throw new Error('SERVICE_NOT_FOUND');
+        throw new Error(
+          `WSG-01 Service Not Found: Device does not expose the required safety service (${targetServiceUuid}).`
+        );
       }
 
-      // 4. Discover characteristics for service
+      // 4. Discover characteristics for WSG-01 service
       const characteristics = await matchedService.characteristics();
       let rawProvChar: Characteristic | null = null;
       let rawStatusChar: Characteristic | null = null;
@@ -405,16 +403,11 @@ class NativeBluetoothServiceClass {
         }
       }
 
-      // Fallback if specific characteristic UUIDs differ in prototype
-      if (!rawProvChar && characteristics.length > 0) {
-        rawProvChar = characteristics[0];
-      }
-      if (!rawStatusChar && characteristics.length > 1) {
-        rawStatusChar = characteristics[1];
-      }
-
+      // Strictly verify WSG-01 provisioning characteristic - NEVER fall back to unrelated characteristics
       if (!rawProvChar) {
-        throw new Error('CHARACTERISTIC_NOT_FOUND');
+        throw new Error(
+          `WSG-01 Characteristic Not Found: Required provisioning characteristic (${targetProvUuid}) was not found.`
+        );
       }
 
       // 5. Wrap characteristics into uniform API

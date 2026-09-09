@@ -586,18 +586,43 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
         });
       }
 
+      // Initialize real telemetry without hardcoded fake values
+      const realRssi = typeof result.rssi === 'number' ? result.rssi : 0;
       setTelemetry({
         deviceId: finalId,
         timestamp: new Date().toISOString(),
-        presence: true,
-        movement: true,
+        presence: false,
+        movement: false,
         stillnessSeconds: 0,
         state: 'IDLE',
         voiceDetected: false,
-        wifiRSSI: -45,
-        uptime: 120,
+        wifiRSSI: realRssi,
+        uptime: 0,
         firmwareVersion: 'v1.2.0-esp32',
       });
+
+      // Query live device telemetry directly from ESP32 local HTTP REST API
+      try {
+        fetch(`http://${ip}/api/device/telemetry`)
+          .then((res) => res.json())
+          .then((t) => {
+            if (t) {
+              setTelemetry({
+                deviceId: finalId,
+                timestamp: new Date().toISOString(),
+                presence: Boolean(t.presence),
+                movement: Boolean(t.movement),
+                stillnessSeconds: Number(t.stillness_seconds || 0),
+                state: t.state || 'IDLE',
+                voiceDetected: false,
+                wifiRSSI: Number(t.wifi_rssi ?? realRssi),
+                uptime: Number(t.uptime || 0),
+                firmwareVersion: t.firmware_version || 'v1.2.0-esp32',
+              });
+            }
+          })
+          .catch(() => {});
+      } catch {}
 
       playSuccessChime();
       setPhase('SUCCESS');
@@ -661,14 +686,16 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
       return;
     }
 
+    // Manual device addition is strictly isolated to development/demo mode
+    const isDev = Boolean(typeof __DEV__ !== 'undefined' && __DEV__);
     addOrUpdateDevice({
       deviceId: manualId.trim(),
       name: manualName.trim(),
       model: 'WSG-01',
       room: manualRoom.trim() || 'Washroom',
-      isOnline: true,
+      isOnline: isDev,
       lastSeen: new Date().toISOString(),
-      firmwareVersion: 'v1.0.0-esp32',
+      firmwareVersion: 'v1.2.0-esp32',
       sensor: 'LD2410C',
       connectionType: 'BLE',
     });
@@ -681,8 +708,8 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
         deviceId: manualId.trim(),
       });
     }
-    setIsSimulatorMode(false);
-    setIsOnline(true);
+    setIsSimulatorMode(isDev);
+    setIsOnline(isDev);
 
     playSuccessChime();
     setShowManualModal(false);
@@ -1230,14 +1257,16 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
             </View>
           </View>
 
-          {/* Add Manually Pill Button */}
-          <TouchableOpacity
-            style={styles.addManuallyButton}
-            onPress={() => setShowManualModal(true)}
-            activeOpacity={0.85}
-          >
-            <Text style={styles.addManuallyText}>Add manually</Text>
-          </TouchableOpacity>
+          {/* Add Manually Button (Restricted strictly to Development/Demo mode) */}
+          {Boolean(typeof __DEV__ !== 'undefined' && __DEV__) && (
+            <TouchableOpacity
+              style={styles.addManuallyButton}
+              onPress={() => setShowManualModal(true)}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.addManuallyText}>Add manually (Dev Demo)</Text>
+            </TouchableOpacity>
+          )}
         </ScrollView>
       )}
 

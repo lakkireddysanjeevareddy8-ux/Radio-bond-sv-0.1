@@ -13,27 +13,31 @@ export interface ProvisioningResult {
   ipAddress: string;
   deviceId: string;
   model: string;
+  rssi?: number;
+  ssid?: string;
   message?: string;
 }
 
 export type ProvisioningStatusListener = (
-  step: 'ENCRYPTING' | 'SENDING_CREDENTIALS' | 'CONNECTING_ROUTER' | 'OBTAINING_IP' | 'SUCCESS' | 'FAILED',
+  step: 'PREPARING' | 'SENDING_CREDENTIALS' | 'CONNECTING_ROUTER' | 'OBTAINING_IP' | 'SUCCESS' | 'FAILED',
   details?: string
 ) => void;
 
 export class DeviceProvisioningService {
   /**
    * Verifies whether Supabase backend is reachable over the Internet.
-   * Keeps Cloud status distinct from Wi-Fi status (Test 8).
+   * Keeps Cloud status distinct from Wi-Fi status.
    */
   public static async checkCloudConnectivity(timeoutMs: number = 3500): Promise<boolean> {
     try {
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://xobasrolmpmvrnjcikcq.supabase.co';
+      const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
       const controller = new AbortController();
       const tid = setTimeout(() => controller.abort(), timeoutMs);
-      const resp = await fetch('https://xobasrolmpmvrnjcikcq.supabase.co/rest/v1/', {
+      const resp = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/`, {
         method: 'GET',
         headers: {
-          apikey: 'sb_publishable_HMCLVIpmvtvvB5G7kkIyLw_oF1Zk1OI',
+          apikey: supabaseKey,
         },
         signal: controller.signal,
       });
@@ -46,7 +50,7 @@ export class DeviceProvisioningService {
 
   /**
    * Reads real-time Wi-Fi status from the physical ESP32 status characteristic.
-   * Differentiates CONNECTED, DISCONNECTED, CONNECTING, FAILED (Test 3 & 4).
+   * Differentiates CONNECTED, DISCONNECTED, CONNECTING, FAILED.
    */
   public static async queryCurrentDeviceWifiStatus(
     session: ConnectedBleSession | null | undefined
@@ -72,7 +76,7 @@ export class DeviceProvisioningService {
   }
 
   /**
-   * Determines effective Wi-Fi state with __DEV__ simulation guard (Test 5 & 6).
+   * Determines effective Wi-Fi state with __DEV__ simulation guard.
    */
   public static getEffectiveWifiStatus(
     realStatus: 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'FAILED'
@@ -83,6 +87,7 @@ export class DeviceProvisioningService {
     }
     return realStatus;
   }
+
   /**
    * Transmits Wi-Fi credentials to the ESP32 over the established BLE GATT connection.
    * Never transmits or logs credentials to external servers.
@@ -96,19 +101,13 @@ export class DeviceProvisioningService {
       throw new Error('Please specify a valid 2.4GHz Wi-Fi network SSID.');
     }
 
-    // Path A: Provision via BLE GATT if BLE session is active
-    const isBleConnected =
-      session &&
-      session.provisionChar &&
-      (session.isNative
-        ? typeof session.server?.isConnected === 'function'
-          ? await session.server.isConnected()
-          : true
-        : Boolean(session.server?.connected));
+    if (!session || !session.provisionChar) {
+      throw new Error(
+        'Device provisioning requires an active Bluetooth BLE connection to WSG-01. Please pair and connect to the gadget via Bluetooth first.'
+      );
+    }
 
-    if (isBleConnected && session) {
-      onProgress?.('ENCRYPTING', 'Packaging network credentials for secure BLE transfer...');
-      await new Promise((r) => setTimeout(r, 400));
+    onProgress?.('PREPARING', 'Preparing network credentials for WSG-01...');
 
     // Construct provisioning payload (Espressif compatible JSON structure)
     const payload = JSON.stringify({
@@ -139,6 +138,8 @@ export class DeviceProvisioningService {
 
     // Poll status characteristic and listen for real IP assignment
     let assignedIp = '';
+    let assignedRssi: number | undefined;
+    let assignedSsid: string | undefined;
     const maxPollAttempts = 20; // 20 attempts * 1200ms = 24 seconds for router DHCP
 
     // Optional notification listener if supported
@@ -153,6 +154,8 @@ export class DeviceProvisioningService {
               const resp = JSON.parse(respStr);
               if (resp.status === 'CONNECTED' && resp.ip && resp.ip !== '0.0.0.0') {
                 assignedIp = resp.ip;
+                if (typeof resp.rssi === 'number') assignedRssi = resp.rssi;
+                if (resp.ssid) assignedSsid = resp.ssid;
               }
             }
           } catch {}
@@ -178,6 +181,8 @@ export class DeviceProvisioningService {
 
                 if (resp.status === 'CONNECTED' && resp.ip && resp.ip !== '0.0.0.0') {
                   assignedIp = resp.ip;
+                  if (typeof resp.rssi === 'number') assignedRssi = resp.rssi;
+                  if (resp.ssid) assignedSsid = resp.ssid;
                   break;
                 } else if (resp.status === 'AUTH_FAILED') {
                   throw new Error('Wi-Fi connection failed: Incorrect Wi-Fi password or authentication rejected.');
@@ -215,55 +220,8 @@ export class DeviceProvisioningService {
       ipAddress: assignedIp,
       deviceId: session.device.id,
       model: session.device.product.model,
+      rssi: assignedRssi,
+      ssid: assignedSsid || creds.ssid,
     };
   }
-
-  // Path B: Fallback only if device is accessed via direct local HTTP gateway
-  onProgress?.('ENCRYPTING', 'Packaging Wi-Fi credentials for device...');
-  await new Promise((r) => setTimeout(r, 400));
-  onProgress?.('SENDING_CREDENTIALS', 'Sending credentials to device gateway...');
-
-  let targetIp = '';
-  const endpoints = ['http://192.168.4.1/api/wifi/configure'];
-
-  for (const ep of endpoints) {
-    try {
-      const controller = new AbortController();
-      const tid = setTimeout(() => controller.abort(), 3000);
-      const resp = await fetch(ep, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ssid: creds.ssid.trim(),
-          password: creds.password || '',
-          deviceName: creds.customDeviceName || 'WSG-01',
-          room: creds.room || 'Washroom',
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(tid);
-      if (resp.ok) {
-        const d = await resp.json();
-        if (d.ip && d.ip !== '0.0.0.0') {
-          targetIp = d.ip;
-          break;
-        }
-      }
-    } catch {}
-  }
-
-  if (!targetIp) {
-    throw new Error(
-      'Device provisioning failed: No active Bluetooth connection to WSG-01. Please pair and connect to the gadget via Bluetooth first.'
-    );
-  }
-
-  onProgress?.('SUCCESS', `Connected to Wi-Fi! IP: ${targetIp}`);
-  return {
-    success: true,
-    ipAddress: targetIp,
-    deviceId: 'WSG01-ESP32',
-    model: 'WSG-01',
-  };
-}
 }
