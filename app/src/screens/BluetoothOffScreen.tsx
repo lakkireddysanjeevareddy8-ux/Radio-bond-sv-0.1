@@ -35,11 +35,19 @@ export const BluetoothOffScreen: React.FC<BluetoothOffScreenProps> = ({
   // Listen for AppState changes when returning from Android Bluetooth Settings
   useEffect(() => {
     let isMounted = true;
+    let hasFiredTurnedOn = false;
+
+    const fireTurnedOnOnce = () => {
+      if (!hasFiredTurnedOn && isMounted && onTurnedOn) {
+        hasFiredTurnedOn = true;
+        onTurnedOn();
+      }
+    };
 
     const checkStateAndNotify = async () => {
       const effectiveState = await BluetoothService.getEffectiveBluetoothState();
-      if (effectiveState === 'on' && isMounted && onTurnedOn) {
-        onTurnedOn();
+      if (effectiveState === 'on') {
+        fireTurnedOnOnce();
       }
     };
 
@@ -53,8 +61,8 @@ export const BluetoothOffScreen: React.FC<BluetoothOffScreenProps> = ({
 
     // Also listen to central BluetoothService state events (e.g. real adapter change or dev simulation toggle)
     const unsubBtListener = BluetoothService.addBluetoothStateListener((effectiveState) => {
-      if (effectiveState === 'on' && isMounted && onTurnedOn) {
-        onTurnedOn();
+      if (effectiveState === 'on') {
+        fireTurnedOnOnce();
       }
     });
 
@@ -69,24 +77,19 @@ export const BluetoothOffScreen: React.FC<BluetoothOffScreenProps> = ({
   }, [onTurnedOn]);
 
   const handleTurnOn = async () => {
-    // 1. Check if Bluetooth is already ON
-    const effectiveState = await BluetoothService.getEffectiveBluetoothState();
-    if (effectiveState === 'on') {
-      if (onTurnedOn) onTurnedOn();
-      return;
-    }
-
-    // 2. If fake simulation is currently active in development, allow clearing it
+    // Clear fake-off simulation if active (dev only) — the state listener
+    // will pick up the resulting real/effective state and fire onTurnedOn itself.
     if (BluetoothService.isFakeBluetoothOff()) {
       BluetoothService.setFakeBluetoothOff(false);
-      const realState = await BluetoothService.getRealBluetoothState();
-      if (realState === 'on') {
-        if (onTurnedOn) onTurnedOn();
-        return;
-      }
     }
 
-    // 3. Open official Android / iOS / OS Bluetooth settings
+    const effectiveState = await BluetoothService.getEffectiveBluetoothState();
+    if (effectiveState === 'on') {
+      return; // listener will handle the transition
+    }
+
+    // Still off (or unknown, e.g. web) — always open settings so the user
+    // has a consistent, visible action on every platform.
     BluetoothService.openSystemBluetoothSettings();
   };
 

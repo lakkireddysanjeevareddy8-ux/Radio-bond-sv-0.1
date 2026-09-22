@@ -268,7 +268,7 @@ export const LoginScreen = () => {
           {/* Google Single Sign-On Button */}
           <TouchableOpacity
             style={styles.googleSsoButton}
-            onPress={() => executeWithTermsCheck(handleGoogleSignIn)}
+            onPress={handleGoogleSignIn}
             disabled={googleLoading}
             activeOpacity={0.85}
           >
@@ -331,7 +331,7 @@ export const LoginScreen = () => {
           {/* Submit Action Button */}
           <TouchableOpacity
             style={styles.primaryActionButton}
-            onPress={() => executeWithTermsCheck(handleEmailAuth)}
+            onPress={handleEmailAuth}
             disabled={loading}
             activeOpacity={0.9}
           >
@@ -347,7 +347,7 @@ export const LoginScreen = () => {
           {/* Local Preview Mode Button (Instant Access for localhost testing) */}
           <TouchableOpacity
             style={styles.localDevButton}
-            onPress={() => executeWithTermsCheck(doLocalLogin)}
+            onPress={doLocalLogin}
             activeOpacity={0.85}
           >
             <Text style={styles.localDevButtonText}>⚡ Local Preview Mode (Instant Access)</Text>

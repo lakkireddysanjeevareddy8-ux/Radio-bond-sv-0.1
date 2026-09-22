@@ -7,7 +7,11 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "Washroom Safety Gadget uses Bluetooth to discover and connect to your WSG-01 device during setup.",
+        "NSLocationWhenInUseUsageDescription": "Location access is used only to enable Bluetooth device scanning, as required by iOS. Your location is never stored or transmitted."
+      }
     },
     "android": {
       "adaptiveIcon": {

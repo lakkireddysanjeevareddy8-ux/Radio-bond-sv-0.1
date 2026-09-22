@@ -133,6 +133,33 @@ class EmergencyPushServiceClass {
   }
 
   /**
+   * Request Notification permission for emergency alerts across Android (13+ POST_NOTIFICATIONS),
+   * iOS, and Web.
+   */
+  public async requestNotificationPermission(): Promise<boolean> {
+    try {
+      const { PermissionService } = require('./PermissionService');
+      const status = await PermissionService.requestNotificationPermission();
+      return status === 'granted';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Check if notification permission is currently granted
+   */
+  public async checkNotificationPermission(): Promise<boolean> {
+    try {
+      const { PermissionService } = require('./PermissionService');
+      const status = await PermissionService.checkNotificationPermission();
+      return status === 'granted';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Reset deduplication cache (useful for testing)
    */
   public clearDeduplicationCache() {

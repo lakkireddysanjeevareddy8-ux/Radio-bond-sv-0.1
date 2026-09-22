@@ -44,6 +44,8 @@ import { BluetoothService, DiscoveredBleDevice, ConnectedBleSession } from '../s
 import { DeviceProvisioningService } from '../services/deviceProvisioningService';
 import { useDeviceStore } from '../store/useDeviceStore';
 import { useAppStore } from '../store/useAppStore';
+import { PermissionPrimerModal } from '../components/PermissionPrimerModal';
+import { PermissionService } from '../services/PermissionService';
 
 interface AddDeviceSearchScreenProps {
   onBack: () => void;
@@ -71,6 +73,8 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     setBluetoothStatus,
     setWifiStatus,
     setCloudStatus,
+    hasPrimedPermissions,
+    setPermissionPrimed,
   } = useAppStore();
 
   type SetupPhase =
@@ -101,6 +105,83 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const [connectingDeviceName, setConnectingDeviceName] = useState<string>('');
 
+  // Permission Priming State
+  const [primerModalVisible, setPrimerModalVisible] = useState(false);
+  const [primerType, setPrimerType] = useState<'bluetooth' | 'notifications' | 'location'>('bluetooth');
+  const [primerBlocked, setPrimerBlocked] = useState(false);
+  const [pendingPrimerAction, setPendingPrimerAction] = useState<(() => Promise<void> | void) | null>(null);
+
+  const ensureBluetoothPermission = async (): Promise<boolean> => {
+    if (Platform.OS === 'web') return true;
+
+    const currentStatus = await PermissionService.checkBluetoothPermission();
+    if (currentStatus === 'granted') {
+      return true;
+    }
+
+    const permType: 'bluetooth' | 'location' =
+      Platform.OS === 'android' && Number(Platform.Version) < 31 ? 'location' : 'bluetooth';
+
+    if (currentStatus === 'blocked') {
+      setPrimerType(permType);
+      setPrimerBlocked(true);
+      setPrimerModalVisible(true);
+      return false;
+    }
+
+    // If not primed yet, show friendly primer modal first
+    if (!hasPrimedPermissions[permType]) {
+      return new Promise<boolean>((resolve) => {
+        setPrimerType(permType);
+        setPrimerBlocked(false);
+        setPendingPrimerAction(() => async () => {
+          setPermissionPrimed(permType);
+          setPrimerModalVisible(false);
+          const granted = await BluetoothService.requestPermissions();
+          if (!granted) {
+            const afterStatus = await PermissionService.checkBluetoothPermission();
+            if (afterStatus === 'blocked') {
+              setPrimerBlocked(true);
+              setPrimerModalVisible(true);
+            }
+          }
+          resolve(granted);
+        });
+        setPrimerModalVisible(true);
+      });
+    }
+
+    // Already primed before: request directly from OS
+    const granted = await BluetoothService.requestPermissions();
+    if (!granted) {
+      const afterStatus = await PermissionService.checkBluetoothPermission();
+      if (afterStatus === 'blocked') {
+        setPrimerType(permType);
+        setPrimerBlocked(true);
+        setPrimerModalVisible(true);
+      }
+    }
+    return granted;
+  };
+
+  const primeNotificationPermissionIfNeeded = async () => {
+    if (hasPrimedPermissions.notifications) return;
+    const currentStatus = await PermissionService.checkNotificationPermission();
+    if (currentStatus === 'granted') {
+      setPermissionPrimed('notifications');
+      return;
+    }
+
+    setPrimerType('notifications');
+    setPrimerBlocked(currentStatus === 'blocked');
+    setPendingPrimerAction(() => async () => {
+      setPermissionPrimed('notifications');
+      setPrimerModalVisible(false);
+      await PermissionService.requestNotificationPermission();
+    });
+    setPrimerModalVisible(true);
+  };
+
   // Manual Add Modal state
   const [showManualModal, setShowManualModal] = useState<boolean>(false);
   const [manualName, setManualName] = useState<string>('Washroom SafeGuard WSG-01');
@@ -110,6 +191,10 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
   // Radar continuous rotation animation
   const rotateAnim = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  // Ref-based transition tracker to prevent duplicate 'off' transitions and duplicate 'on' recovery logic
+  const lastFiredStateRef = useRef<'on' | 'off' | null>(null);
+  const isMountedRef = useRef<boolean>(true);
 
   // Audio chime for connection confirmation
   const playSuccessChime = () => {
@@ -240,10 +325,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
             msg.includes('disabled') ||
             msg.includes('poweredoff')
           ) {
-            if (mountedCheck()) {
-              setPhase('BLUETOOTH_OFF');
-              onBluetoothOff();
-            }
+            handleBluetoothOff();
           } else if (mountedCheck()) {
             setErrorMessage(scanErr.message);
           }
@@ -253,111 +335,122 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     }
   };
 
+  const handleBluetoothOff = () => {
+    if (lastFiredStateRef.current === 'off' || !isMountedRef.current) return;
+    lastFiredStateRef.current = 'off';
+    setIsScanningActive(false);
+    setPhase('BLUETOOTH_OFF');
+    BluetoothService.stopScan();
+    onBluetoothOff();
+  };
+
+  const handleBluetoothOn = () => {
+    if (lastFiredStateRef.current === 'on' || !isMountedRef.current) return;
+    lastFiredStateRef.current = 'on';
+    runBluetoothPreflight();
+  };
+
+  const runBluetoothPreflight = async () => {
+    if (!isMountedRef.current) return;
+    setErrorMessage('');
+    setPhase('CHECKING_BLUETOOTH');
+    setIsScanningActive(false);
+
+    // 1. Determine effective Bluetooth state
+    const effectiveState = await BluetoothService.getEffectiveBluetoothState();
+    if (!isMountedRef.current) return;
+
+    // 2. If state === "off":
+    //    call handleBluetoothOff()
+    //    DO NOT call startDeviceScan()
+    //    DO NOT call scanNearbyDevices()
+    if (effectiveState === 'off') {
+      handleBluetoothOff();
+      return;
+    }
+
+    // 3. If state === "unauthorized":
+    //    request Bluetooth permissions with primer.
+    //    If permission denied: show appropriate permission UI. Do not start scanning.
+    if (effectiveState === 'unauthorized') {
+      const granted = await ensureBluetoothPermission();
+      if (!isMountedRef.current) return;
+      if (!granted) {
+        setPhase('BLUETOOTH_PERMISSION');
+        setIsScanningActive(false);
+        return;
+      }
+    }
+
+    // 4. If state === "unsupported":
+    //    show appropriate unsupported Bluetooth message. Do not start scanning.
+    if (effectiveState === 'unsupported') {
+      setPhase('BLUETOOTH_UNSUPPORTED');
+      setIsScanningActive(false);
+      setErrorMessage('Bluetooth Low Energy is not supported on this device.');
+      return;
+    }
+
+    // 5. On Web / Windows Desktop:
+    //    Do NOT assume physical radio is ON or auto-scan without user gesture.
+    //    Use safe state: ask user to check Bluetooth then scan via user gesture.
+    if (Platform.OS === 'web') {
+      lastFiredStateRef.current = 'on';
+      setPhase('BLUETOOTH_STANDBY');
+      setIsScanningActive(false);
+      return;
+    }
+
+    // 6. If state === "on":
+    //    request permissions if necessary.
+    //    only after permission succeeds: start REAL BLE scanning.
+    if (effectiveState === 'on') {
+      lastFiredStateRef.current = 'on';
+      const granted = await ensureBluetoothPermission();
+      if (!isMountedRef.current) return;
+      if (!granted) {
+        setPhase('BLUETOOTH_PERMISSION');
+        setIsScanningActive(false);
+        return;
+      }
+
+      startRealBleScan(() => isMountedRef.current);
+    }
+  };
+
   // Bluetooth Preflight check and AppState monitoring
   useEffect(() => {
-    let isMounted = true;
+    isMountedRef.current = true;
 
     // Listen for AppState changes: if user disables Bluetooth while app is backgrounded, detect it on resume
     const appStateSub = AppState.addEventListener('change', async (nextState: AppStateStatus) => {
       if (nextState === 'active') {
         const effectiveState = await BluetoothService.getEffectiveBluetoothState();
         if (effectiveState === 'off') {
-          if (isMounted) {
-            setIsScanningActive(false);
-            setPhase('BLUETOOTH_OFF');
-            BluetoothService.stopScan();
-            onBluetoothOff();
-          }
+          handleBluetoothOff();
         } else if (effectiveState === 'on') {
-          if (isMounted && (phase === 'BLUETOOTH_OFF' || phase === 'CHECKING_BLUETOOTH')) {
-            runBluetoothPreflight();
-          }
+          handleBluetoothOn();
         }
       }
     });
 
     // Listen for central Bluetooth state changes (real OS toggle or dev simulation toggle)
     const btStateSub = BluetoothService.addBluetoothStateListener((effectiveState) => {
-      if (effectiveState === 'off' && isMounted) {
-        setIsScanningActive(false);
-        setPhase('BLUETOOTH_OFF');
-        BluetoothService.stopScan();
-        onBluetoothOff();
+      if (!isMountedRef.current) return;
+      if (effectiveState === 'off') {
+        handleBluetoothOff();
+      } else if (effectiveState === 'on') {
+        handleBluetoothOn();
       }
     });
-
-    const runBluetoothPreflight = async () => {
-      setErrorMessage('');
-      setPhase('CHECKING_BLUETOOTH');
-      setIsScanningActive(false);
-
-      // 1. Determine effective Bluetooth state
-      const effectiveState = await BluetoothService.getEffectiveBluetoothState();
-      if (!isMounted) return;
-
-      // 2. If state === "off":
-      //    call onBluetoothOff()
-      //    DO NOT call startDeviceScan()
-      //    DO NOT call scanNearbyDevices()
-      if (effectiveState === 'off') {
-        setPhase('BLUETOOTH_OFF');
-        setIsScanningActive(false);
-        BluetoothService.stopScan();
-        onBluetoothOff();
-        return;
-      }
-
-      // 3. If state === "unauthorized":
-      //    request Bluetooth permissions.
-      //    If permission denied: show appropriate permission UI. Do not start scanning.
-      if (effectiveState === 'unauthorized') {
-        const granted = await BluetoothService.requestPermissions();
-        if (!isMounted) return;
-        if (!granted) {
-          setPhase('BLUETOOTH_PERMISSION');
-          setIsScanningActive(false);
-          return;
-        }
-      }
-
-      // 4. If state === "unsupported":
-      //    show appropriate unsupported Bluetooth message. Do not start scanning.
-      if (effectiveState === 'unsupported') {
-        setPhase('BLUETOOTH_UNSUPPORTED');
-        setIsScanningActive(false);
-        setErrorMessage('Bluetooth Low Energy is not supported on this device.');
-        return;
-      }
-
-      // 5. On Web / Windows Desktop:
-      //    Do NOT assume physical radio is ON or auto-scan without user gesture.
-      //    Use safe state: ask user to check Bluetooth then scan via user gesture.
-      if (Platform.OS === 'web') {
-        setPhase('BLUETOOTH_STANDBY');
-        setIsScanningActive(false);
-        return;
-      }
-
-      // 6. If state === "on":
-      //    request permissions if necessary.
-      //    only after permission succeeds: start REAL BLE scanning.
-      if (effectiveState === 'on') {
-        const granted = await BluetoothService.requestPermissions();
-        if (!isMounted) return;
-        if (!granted) {
-          setPhase('BLUETOOTH_PERMISSION');
-          setIsScanningActive(false);
-          return;
-        }
-
-        startRealBleScan(() => isMounted);
-      }
-    };
 
     runBluetoothPreflight();
 
     return () => {
-      isMounted = false;
+      isMountedRef.current = false;
+      // Note: lastFiredStateRef is component-scoped and recreated on remount,
+      // but explicitly setting to null on unmount ensures complete cleanup.
+      lastFiredStateRef.current = null;
       appStateSub.remove();
       btStateSub();
       BluetoothService.stopScan();
@@ -373,16 +466,13 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
 
     // 2. If OFF: show BluetoothOffScreen
     if (effectiveState === 'off') {
-      setIsScanningActive(false);
-      setPhase('BLUETOOTH_OFF');
-      BluetoothService.stopScan();
-      onBluetoothOff();
+      handleBluetoothOff();
       return;
     }
 
     // 3. If unauthorized: request permission
     if (effectiveState === 'unauthorized') {
-      const granted = await BluetoothService.requestPermissions();
+      const granted = await ensureBluetoothPermission();
       if (!granted) {
         setPhase('BLUETOOTH_PERMISSION');
         setIsScanningActive(false);
@@ -406,6 +496,12 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     setFastPairDevice(null);
 
     if (Platform.OS !== 'web') {
+      const granted = await ensureBluetoothPermission();
+      if (!granted) {
+        setIsScanningActive(false);
+        setPhase('BLUETOOTH_PERMISSION');
+        return;
+      }
       startRealBleScan(() => true);
     } else {
       // Trigger Web Bluetooth browser/device chooser via user gesture
@@ -436,8 +532,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
           msg.includes('bluetooth_disabled') ||
           msg.includes('poweredoff')
         ) {
-          setPhase('BLUETOOTH_OFF');
-          onBluetoothOff();
+          handleBluetoothOff();
         } else if (
           msg === 'user_cancelled' ||
           msg === 'no_device_chosen' ||
@@ -626,6 +721,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
 
       playSuccessChime();
       setPhase('SUCCESS');
+      primeNotificationPermissionIfNeeded();
     } catch (err: any) {
       console.warn('Wi-Fi Provisioning failed:', err);
       let friendlyMsg = err.message || 'Wi-Fi connection failed.\nPlease check the network name and password.';
@@ -677,6 +773,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
 
     playSuccessChime();
     setPhase('SUCCESS');
+    primeNotificationPermissionIfNeeded();
   };
 
   // Manual connection fallback
@@ -1187,7 +1284,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
                 <View style={styles.fastPairThumbBox}>
                   <Image
                     source={require('../../assets/wsg01_product.jpg')}
-                    style={styles.fastPairThumb}
+                    style={styles.fastPairThumb as any}
                     resizeMode="contain"
                   />
                 </View>
@@ -1327,6 +1424,25 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
           </View>
         </View>
       </Modal>
+
+      {/* Reusable Permission Primer Modal */}
+      <PermissionPrimerModal
+        visible={primerModalVisible}
+        type={primerType}
+        isBlocked={primerBlocked}
+        onContinue={async () => {
+          if (pendingPrimerAction) {
+            await pendingPrimerAction();
+            setPendingPrimerAction(null);
+          } else {
+            setPrimerModalVisible(false);
+          }
+        }}
+        onDismiss={() => {
+          setPrimerModalVisible(false);
+          setPendingPrimerAction(null);
+        }}
+      />
     </View>
   );
 };

@@ -11,6 +11,12 @@ interface AppState {
   setHardwareMode: (mode: HardwareMode) => void;
   hasCompletedSafetyOnboarding: boolean;
   setHasCompletedSafetyOnboarding: (completed: boolean) => void;
+  hasPrimedPermissions: {
+    bluetooth: boolean;
+    notifications: boolean;
+    location: boolean;
+  };
+  setPermissionPrimed: (type: 'bluetooth' | 'notifications' | 'location') => void;
 
   // Device
   deviceConfig: DeviceConfig | null;
@@ -104,6 +110,20 @@ const loadPersistedOnboarding = (): boolean => {
   return false;
 };
 
+const PRIMED_PERMISSIONS_STORAGE_KEY = 'wsg_primed_permissions';
+
+const loadPersistedPrimedPermissions = (): { bluetooth: boolean; notifications: boolean; location: boolean } => {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = window.localStorage.getItem(PRIMED_PERMISSIONS_STORAGE_KEY);
+      if (raw) {
+        return JSON.parse(raw);
+      }
+    }
+  } catch {}
+  return { bluetooth: false, notifications: false, location: false };
+};
+
 const loadPersistedHardwareMode = (): HardwareMode => {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
@@ -147,6 +167,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch {}
     set({ hasCompletedSafetyOnboarding: completed });
+  },
+
+  hasPrimedPermissions: loadPersistedPrimedPermissions(),
+  setPermissionPrimed: (type) => {
+    const current = get().hasPrimedPermissions;
+    const next = { ...current, [type]: true };
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(PRIMED_PERMISSIONS_STORAGE_KEY, JSON.stringify(next));
+      }
+    } catch {}
+    set({ hasPrimedPermissions: next });
   },
 
   // Device config

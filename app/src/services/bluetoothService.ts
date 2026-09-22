@@ -73,6 +73,7 @@ export const isFakeBluetoothOffEnabled = (): boolean => {
 export class BluetoothService {
   private static listeners: Set<(state: BluetoothAdapterState) => void> = new Set();
   private static nativeUnsub: (() => void) | null = null;
+  private static lastEffectiveState: BluetoothAdapterState | null = null;
 
   /**
    * Set fake Bluetooth OFF simulation state.
@@ -176,6 +177,9 @@ export class BluetoothService {
 
     // Emit current state immediately to the new listener
     this.getEffectiveBluetoothState().then((initialState) => {
+      if (this.lastEffectiveState === null) {
+        this.lastEffectiveState = initialState;
+      }
       try {
         listener(initialState);
       } catch {}
@@ -188,9 +192,14 @@ export class BluetoothService {
 
   /**
    * Notify all registered listeners of effective Bluetooth state changes.
+   * Only fires when the effective state actually transitions to a new state.
    */
   public static async notifyListeners(): Promise<void> {
     const effectiveState = await this.getEffectiveBluetoothState();
+    if (this.lastEffectiveState === effectiveState) {
+      return;
+    }
+    this.lastEffectiveState = effectiveState;
     this.listeners.forEach((fn) => {
       try {
         fn(effectiveState);

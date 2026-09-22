@@ -29,13 +29,10 @@ class EmergencySoundServiceClass {
   }
 
   /**
-   * Initialize Android emergency notification channel and request permissions
+   * Initialize Android emergency notification channel
    */
   public async initEmergencyChannel(): Promise<void> {
     try {
-      // Request standard Notification permission
-      await this.requestNotificationPermission();
-
       // If ServiceWorker registration is available, register actions and channel
       if (
         typeof navigator !== 'undefined' &&
@@ -50,22 +47,35 @@ class EmergencySoundServiceClass {
   }
 
   /**
-   * Request browser system-level Notification permission so pop-ups
-   * appear outside the browser (over social media, home screen, or calls).
+   * Request system-level Notification permission so pop-ups
+   * appear outside the browser or app (over lock-screen, calls, or other apps).
+   * Branches by platform: Web Notification API on web, PermissionService (including Android 13+ POST_NOTIFICATIONS) on native.
    */
   public async requestNotificationPermission(): Promise<boolean> {
-    try {
-      if (typeof window !== 'undefined' && 'Notification' in window) {
-        if (Notification.permission === 'default') {
-          const res = await Notification.requestPermission();
-          return res === 'granted';
+    if (Platform.OS === 'web') {
+      try {
+        if (typeof window !== 'undefined' && 'Notification' in window) {
+          if (Notification.permission === 'default') {
+            const res = await Notification.requestPermission();
+            return res === 'granted';
+          }
+          return Notification.permission === 'granted';
         }
-        return Notification.permission === 'granted';
+      } catch (e) {
+        console.warn('Notification permission request note:', e);
       }
-    } catch (e) {
-      console.warn('Notification permission request note:', e);
+      return false;
     }
-    return false;
+
+    // Native Android (including Android 13+ POST_NOTIFICATIONS) & iOS
+    try {
+      const { PermissionService } = require('./PermissionService');
+      const status = await PermissionService.requestNotificationPermission();
+      return status === 'granted';
+    } catch (e) {
+      console.warn('[EmergencySoundService] Native notification request error:', e);
+      return false;
+    }
   }
 
   /**
