@@ -46,6 +46,8 @@ import { useDeviceStore } from '../store/useDeviceStore';
 import { useAppStore } from '../store/useAppStore';
 import { PermissionPrimerModal } from '../components/PermissionPrimerModal';
 import { PermissionService } from '../services/PermissionService';
+import { EmergencyPushService } from '../services/EmergencyPushService';
+import { SignInScreen } from './SignInScreen';
 
 interface AddDeviceSearchScreenProps {
   onBack: () => void;
@@ -65,6 +67,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
 
   const { addOrUpdateDevice, setActiveDeviceId } = useDeviceStore();
   const {
+    user,
     deviceConfig,
     setDeviceConfig,
     setTelemetry,
@@ -420,6 +423,9 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
 
   // Bluetooth Preflight check and AppState monitoring
   useEffect(() => {
+    if (!user) {
+      return;
+    }
     isMountedRef.current = true;
 
     // Listen for AppState changes: if user disables Bluetooth while app is backgrounded, detect it on resume
@@ -455,7 +461,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
       btStateSub();
       BluetoothService.stopScan();
     };
-  }, []);
+  }, [user]);
 
   // Manual "Scan for Nearby Devices" button preflight check
   const handleStartScan = async () => {
@@ -673,6 +679,9 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
       });
       setActiveDeviceId(finalId);
 
+      // Register physical hardware push token for background emergency alerts
+      EmergencyPushService.registerForPushNotifications(finalId).catch(() => {});
+
       if (deviceConfig) {
         setDeviceConfig({
           ...deviceConfig,
@@ -815,6 +824,18 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
 
   const radarSize = isCompactMobile ? 180 : isTablet ? 230 : 210;
   const darkDiscSize = isCompactMobile ? 84 : isTablet ? 104 : 96;
+
+  // Email OTP Auth Gate: Require sign-in specifically for Add Device
+  if (!user) {
+    return (
+      <SignInScreen
+        onCancel={onBack}
+        onSuccess={() => {
+          // Session state updates will trigger re-render and initiate Bluetooth preflight
+        }}
+      />
+    );
+  }
 
   return (
     <View

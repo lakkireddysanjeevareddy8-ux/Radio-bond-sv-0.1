@@ -75,14 +75,12 @@ const MainTabs = () => {
 };
 
 export const AppNavigator = () => {
-  const { user, hasCompletedSafetyOnboarding, setHasCompletedSafetyOnboarding } = useAppStore();
+  const { hasCompletedSafetyOnboarding, setHasCompletedSafetyOnboarding } = useAppStore();
 
   return (
     <NavigationContainer>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
-        {!user ? (
-          <Stack.Screen name="Login" component={LoginScreen} />
-        ) : !hasCompletedSafetyOnboarding ? (
+        {!hasCompletedSafetyOnboarding ? (
           <Stack.Screen name="SafetySetup">
             {() => (
               <SafetySetupScreen

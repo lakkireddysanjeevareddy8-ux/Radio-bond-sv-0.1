@@ -21,13 +21,35 @@ class EmergencyPushServiceClass {
    * Process incoming push payload (from FCM, Supabase Webhook, or local device bridge).
    * Validates type = EMERGENCY, deduplicates by eventId, and triggers urgent notification flow.
    */
+  /**
+   * Check if an emergency event has already been handled by either Realtime or Push.
+   */
+  public isEventAlreadyProcessed(eventId: string): boolean {
+    return this.processedEventIds.has(eventId);
+  }
+
+  /**
+   * Explicitly record an event as processed to prevent duplicate alerts.
+   */
+  public markEventProcessed(eventId: string): void {
+    this.processedEventIds.add(eventId);
+    if (this.processedEventIds.size > 100) {
+      const oldest = Array.from(this.processedEventIds)[0];
+      this.processedEventIds.delete(oldest);
+    }
+  }
+
+  /**
+   * Process incoming push payload (from FCM, Expo Push, Supabase Webhook, or local device bridge).
+   * Validates type = EMERGENCY / WSG01_EMERGENCY, deduplicates by eventId, and triggers urgent notification flow.
+   */
   public handleIncomingPush(rawPayload: any): boolean {
     if (!rawPayload) return false;
 
     // Normalize payload properties
     const type = rawPayload.type || (rawPayload.data && rawPayload.data.type);
-    if (type !== 'EMERGENCY') {
-      return false; // Route only EMERGENCY events
+    if (type !== 'EMERGENCY' && type !== 'WSG01_EMERGENCY') {
+      return false; // Route only WSG-01 emergency events
     }
 
     const eventId = String(
@@ -42,13 +64,7 @@ class EmergencyPushServiceClass {
       console.log(`[EmergencyPushService] Ignoring duplicate emergency event: ${eventId}`);
       return false; // Deduplicated
     }
-    this.processedEventIds.add(eventId);
-
-    // Keep set bounded (last 100 events)
-    if (this.processedEventIds.size > 100) {
-      const oldest = Array.from(this.processedEventIds)[0];
-      this.processedEventIds.delete(oldest);
-    }
+    this.markEventProcessed(eventId);
 
     const deviceId =
       rawPayload.deviceId ||
@@ -89,7 +105,7 @@ class EmergencyPushServiceClass {
       deviceName: deviceName,
       type: 'EMERGENCY',
       eventType: 'EMERGENCY',
-      trigger: rawPayload.trigger || (isTest ? 'OTHER' : 'BUTTON'),
+      trigger: rawPayload.trigger || (rawPayload.data && rawPayload.data.trigger) || (isTest ? 'OTHER' : 'BUTTON'),
       severity: severity,
       presenceDuration: presenceDuration,
       timestamp: timestamp,
@@ -106,6 +122,80 @@ class EmergencyPushServiceClass {
     }
 
     return true;
+  }
+
+  /**
+   * Register physical hardware device with Expo Push Service and store
+   * token securely in Supabase device_push_tokens table.
+   */
+  public async registerForPushNotifications(deviceId: string): Promise<string | null> {
+    if (Platform.OS === 'web') {
+      return null;
+    }
+
+    try {
+      const { PermissionService } = require('./PermissionService');
+      const permStatus = await PermissionService.requestNotificationPermission();
+      if (permStatus !== 'granted') {
+        console.log('[EmergencyPushService] Push registration skipped: Notification permission not granted');
+        return null;
+      }
+
+      const Notifications = require('expo-notifications');
+      let tokenData: any;
+      try {
+        tokenData = await Notifications.getExpoPushTokenAsync();
+      } catch (tokenErr) {
+        console.warn('[EmergencyPushService] Error getting Expo push token:', tokenErr);
+        return null;
+      }
+
+      const token = tokenData?.data;
+      if (!token || typeof token !== 'string') {
+        return null;
+      }
+
+      // Upsert into Supabase device_push_tokens table
+      try {
+        const { supabase } = require('./supabaseClient');
+        const user = require('../store/useAppStore').useAppStore.getState().user;
+        let userId = user?.id;
+        if (!userId) {
+          try {
+            const authRes = await supabase.auth.getUser();
+            userId = authRes?.data?.user?.id;
+          } catch {}
+        }
+
+        const { error } = await supabase
+          .from('device_push_tokens')
+          .upsert(
+            {
+              device_id: deviceId,
+              push_token: token,
+              platform: Platform.OS,
+              provider: 'expo',
+              user_id: userId,
+              active: true,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'device_id,push_token' }
+          );
+
+        if (error) {
+          console.warn('[EmergencyPushService] Error saving push token to Supabase:', error);
+        } else {
+          console.log(`[EmergencyPushService] Push token registered for ${deviceId}: ${token.slice(0, 20)}...`);
+        }
+      } catch (dbErr) {
+        console.warn('[EmergencyPushService] Database error saving push token:', dbErr);
+      }
+
+      return token;
+    } catch (err) {
+      console.warn('[EmergencyPushService] Registration error:', err);
+      return null;
+    }
   }
 
   /**
@@ -168,3 +258,4 @@ class EmergencyPushServiceClass {
 }
 
 export const EmergencyPushService = new EmergencyPushServiceClass();
+

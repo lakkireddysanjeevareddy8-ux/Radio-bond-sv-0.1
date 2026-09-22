@@ -173,6 +173,17 @@ export class DeviceCommunicationService {
   private handleSupabaseEmergency(row: any) {
     if (!row) return;
     const eventId = String(row.id || `emg_${Date.now()}`);
+
+    // Deduplicate against push notifications that arrived first
+    try {
+      const { EmergencyPushService } = require('./EmergencyPushService');
+      if (EmergencyPushService.isEventAlreadyProcessed(eventId)) {
+        console.log(`[DeviceCommunicationService] Skipping already-processed emergency event: ${eventId}`);
+        return;
+      }
+      EmergencyPushService.markEventProcessed(eventId);
+    } catch {}
+
     const emergency: EmergencyEvent = {
       id: eventId,
       eventId: eventId,

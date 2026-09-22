@@ -24,6 +24,8 @@ class EmergencySoundServiceClass {
   private isMuted: boolean = false;
   private lastDispatchedEventId: string | null = null;
 
+  private nativeAudioPlayer: any = null;
+
   constructor() {
     this.initEmergencyChannel();
   }
@@ -32,17 +34,39 @@ class EmergencySoundServiceClass {
    * Initialize Android emergency notification channel
    */
   public async initEmergencyChannel(): Promise<void> {
+    // 1. Native Android Notification Channel setup
+    if (Platform.OS === 'android') {
+      try {
+        const Notifications = require('expo-notifications');
+        await Notifications.setNotificationChannelAsync(EmergencySoundServiceClass.CHANNEL_ID, {
+          name: EmergencySoundServiceClass.CHANNEL_NAME,
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 1000, 500, 1000, 500, 1000],
+          lightColor: '#EF4444',
+          sound: 'emergency_siren.wav',
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+          bypassDnd: true,
+          enableLights: true,
+          enableVibrate: true,
+          showBadge: true,
+        });
+      } catch (e) {
+        console.warn('[EmergencySoundService] Native Android channel init note:', e);
+      }
+    }
+
+    // 2. Web ServiceWorker channel setup
     try {
-      // If ServiceWorker registration is available, register actions and channel
       if (
+        Platform.OS === 'web' &&
         typeof navigator !== 'undefined' &&
         'serviceWorker' in navigator &&
         navigator.serviceWorker
       ) {
-        // Ready channel
+        // Ready channel for web notifications
       }
     } catch (e) {
-      console.warn('[EmergencySoundService] Channel init note:', e);
+      console.warn('[EmergencySoundService] Web channel init note:', e);
     }
   }
 
@@ -256,7 +280,39 @@ class EmergencySoundServiceClass {
     trigger: string = 'EMERGENCY',
     event?: EmergencyEvent
   ): void {
-    // 1. Dispatch to Windows Bridge to bring browser to front & trigger system alert sound
+    // 1. Native Android & iOS Notification Dispatch via expo-notifications
+    if (Platform.OS !== 'web') {
+      try {
+        const Notifications = require('expo-notifications');
+        Notifications.scheduleNotificationAsync({
+          content: {
+            title,
+            body,
+            sound: 'emergency_siren.wav',
+            channelId: EmergencySoundServiceClass.CHANNEL_ID,
+            priority: Notifications.AndroidNotificationPriority.MAX,
+            categoryIdentifier: 'emergency',
+            data: {
+              type: 'WSG01_EMERGENCY',
+              eventId: event?.eventId || event?.id,
+              deviceId: event?.deviceId,
+              deviceName: event?.deviceName,
+              trigger: trigger,
+              timestamp: event?.timestamp || new Date().toISOString(),
+              status: 'ACTIVE',
+            },
+          },
+          trigger: null, // deliver immediately
+        }).catch((err: any) => {
+          console.warn('[EmergencySoundService] Native scheduleNotification note:', err);
+        });
+      } catch (nativeNotifErr) {
+        console.warn('[EmergencySoundService] Native notification dispatch error:', nativeNotifErr);
+      }
+      return;
+    }
+
+    // 2. Dispatch to Windows Bridge to bring browser to front & trigger system alert sound
     try {
       fetch('http://127.0.0.1:5005/emergency-popup', {
         method: 'POST',
@@ -330,10 +386,36 @@ class EmergencySoundServiceClass {
   /**
    * Start the continuous high-intensity emergency audio siren and vibration.
    * Alternates between 960Hz and 770Hz in an urgent alarm pattern.
+   * Uses native expo-audio on Android/iOS, and Web AudioContext on browsers.
    */
-  public playEmergencySiren(): void {
+  public async playEmergencySiren(): Promise<void> {
     if (this.isSirenActive || this.isMuted) return;
 
+    // 1. Native Android & iOS audio playback via expo-audio
+    if (Platform.OS !== 'web') {
+      try {
+        const { createAudioPlayer, setAudioModeAsync } = require('expo-audio');
+        await setAudioModeAsync({
+          playsInSilentMode: true,
+          shouldPlayInBackground: true,
+          interruptionMode: 'doNotMix',
+        });
+
+        if (!this.nativeAudioPlayer) {
+          this.nativeAudioPlayer = createAudioPlayer(require('../../assets/emergency_siren.wav'));
+          this.nativeAudioPlayer.loop = true;
+          this.nativeAudioPlayer.volume = 1.0;
+        }
+
+        this.nativeAudioPlayer.play();
+        this.isSirenActive = true;
+      } catch (nativeAudioErr) {
+        console.warn('[EmergencySoundService] Native siren play error:', nativeAudioErr);
+      }
+      return;
+    }
+
+    // 2. Web browser AudioContext synthesis
     try {
       if (typeof window === 'undefined') return;
 
@@ -346,7 +428,7 @@ class EmergencySoundServiceClass {
       }
 
       if (this.audioCtx.state === 'suspended') {
-        this.audioCtx.resume();
+        await this.audioCtx.resume();
       }
 
       this.isSirenActive = true;
@@ -398,6 +480,17 @@ class EmergencySoundServiceClass {
    */
   public stopEmergencySiren(): void {
     this.isSirenActive = false;
+
+    // 1. Stop native player
+    if (this.nativeAudioPlayer) {
+      try {
+        this.nativeAudioPlayer.pause();
+      } catch (e) {
+        console.warn('[EmergencySoundService] Native audio stop note:', e);
+      }
+    }
+
+    // 2. Stop web siren
     if (this.sirenInterval) {
       clearInterval(this.sirenInterval);
       this.sirenInterval = null;

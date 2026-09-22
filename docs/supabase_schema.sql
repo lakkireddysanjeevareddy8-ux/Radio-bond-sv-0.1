@@ -138,3 +138,28 @@ SET name = EXCLUDED.name,
 -- Initial test telemetry record
 INSERT INTO telemetry (device_id, presence, movement, stillness_seconds, state, wifi_rssi, uptime, firmware_version)
 VALUES ('demo-device-uuid', false, false, 0, 'SAFE', -58, 60, 'v1.0.0-esp32');
+
+-- ============================================================================
+-- 8. DEVICE PUSH TOKENS TABLE
+-- Stores physical device FCM / APNs / Expo push tokens tied to paired WSG-01 devices
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS device_push_tokens (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id TEXT,
+    device_id TEXT REFERENCES devices(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    push_token TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'expo',
+    active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(device_id, push_token)
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_tokens_device_active ON device_push_tokens(device_id, active);
+
+ALTER TABLE device_push_tokens ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow anon read device_push_tokens" ON device_push_tokens FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "Allow anon insert device_push_tokens" ON device_push_tokens FOR INSERT TO anon, authenticated WITH CHECK (true);
+CREATE POLICY "Allow anon update device_push_tokens" ON device_push_tokens FOR UPDATE TO anon, authenticated USING (true);
+CREATE POLICY "Allow anon delete device_push_tokens" ON device_push_tokens FOR DELETE TO anon, authenticated USING (true);
