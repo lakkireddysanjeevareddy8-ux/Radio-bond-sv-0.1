@@ -25,6 +25,7 @@ export interface Telemetry {
   uptime: number;
   firmwareVersion: string;
   batteryLevel?: number;
+  batteryPct?: number;
 }
 
 export interface EmergencyEvent {
@@ -44,6 +45,9 @@ export interface EmergencyEvent {
   acknowledgedAt?: string;
   resolvedAt?: string;
   isTestAlert?: boolean;
+  feedbackStatus?: EmergencyFeedbackStatus;
+  feedbackNotes?: string;
+  feedbackSubmittedAt?: string;
 }
 
 export interface EmergencyPushPayload {
@@ -89,4 +93,64 @@ export interface Contact {
   relationship: string;
   isPrimary: boolean;
 }
+
+// Feature 1: Trusted Contacts & Caregivers
+export type TrustedContactStatus = 'pending' | 'accepted' | 'rejected';
+
+export interface TrustedContact {
+  id: string;
+  deviceId: string;
+  ownerUserId: string;
+  contactUserId?: string | null;
+  contactEmail: string;
+  contactName?: string | null;
+  status: TrustedContactStatus;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+// Feature 2: Daily Check-in & Wellness Visits
+export type VisitOutcome = 'NORMAL' | 'EMERGENCY' | 'FALSE_ALARM';
+
+export interface VisitRecord {
+  id: string;
+  deviceId: string;
+  startedAt: string;
+  endedAt: string;
+  durationSeconds: number;
+  outcome: VisitOutcome;
+  createdAt: string;
+}
+
+export interface WellnessStats {
+  todayVisitCount: number;
+  avgDurationSeconds: number;
+  lastVisitEndedAt: string | null;
+  interVisitAvgMinutes: number;
+  hasAnomaly: boolean;
+  anomalyReason?: string;
+}
+
+// Feature 3: Battery & Device Health Monitoring
+export type PowerSourceType = 'BATTERY' | 'MAINS';
+
+export interface DeviceHealth {
+  deviceId: string;
+  batteryPct: number;
+  rssi: number;
+  powerSource: PowerSourceType;
+  isCharging: boolean;
+  lastSeenAt: string;
+  updatedAt: string;
+}
+
+// Feature 4: False Alarm Feedback
+export type EmergencyFeedbackStatus = 'CONFIRMED_REAL' | 'FALSE_ALARM' | 'NOT_SURE';
+
+export interface EmergencyFeedback {
+  status: EmergencyFeedbackStatus;
+  notes?: string;
+  submittedAt: string;
+}
+
 

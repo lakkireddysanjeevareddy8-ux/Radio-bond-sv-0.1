@@ -24,8 +24,11 @@ class PermissionServiceClass {
     }
 
     if (Platform.OS === 'android') {
-      const apiLevel = Platform.Version;
-      if (typeof apiLevel === 'number' && apiLevel >= 31) {
+      const apiLevel =
+        typeof Platform.Version === 'number'
+          ? Platform.Version
+          : parseInt(String(Platform.Version), 10) || 0;
+      if (apiLevel >= 31) {
         try {
           const scanGranted = await PermissionsAndroid.check(
             PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN
@@ -65,9 +68,12 @@ class PermissionServiceClass {
     }
 
     if (Platform.OS === 'android') {
-      const apiLevel = Platform.Version;
+      const apiLevel =
+        typeof Platform.Version === 'number'
+          ? Platform.Version
+          : parseInt(String(Platform.Version), 10) || 0;
       try {
-        if (typeof apiLevel === 'number' && apiLevel >= 31) {
+        if (apiLevel >= 31) {
           const results = await PermissionsAndroid.requestMultiple([
             PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
             PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
@@ -120,18 +126,39 @@ class PermissionServiceClass {
     }
 
     if (Platform.OS === 'android') {
-      const apiLevel = Platform.Version;
+      const apiLevel =
+        typeof Platform.Version === 'number'
+          ? Platform.Version
+          : parseInt(String(Platform.Version), 10) || 0;
       // Android 13+ (API 33+) requires runtime POST_NOTIFICATIONS
-      if (typeof apiLevel === 'number' && apiLevel >= 33) {
+      if (apiLevel >= 33) {
         try {
           const postNotif = 'android.permission.POST_NOTIFICATIONS' as any;
           const granted = await PermissionsAndroid.check(postNotif);
-          return granted ? 'granted' : 'denied';
+          if (granted) return 'granted';
+
+          // Also check expo-notifications if available
+          try {
+            const Notifications = require('expo-notifications');
+            const settings = await Notifications.getPermissionsAsync();
+            if (settings.granted || settings.status === 'granted') return 'granted';
+          } catch {}
+
+          return 'denied';
         } catch {
           return 'denied';
         }
       }
       // On older Android, notification permission is granted on install
+      return 'granted';
+    }
+
+    if (Platform.OS === 'ios') {
+      try {
+        const Notifications = require('expo-notifications');
+        const settings = await Notifications.getPermissionsAsync();
+        if (settings.granted || settings.status === 'granted') return 'granted';
+      } catch {}
       return 'granted';
     }
 
@@ -157,18 +184,37 @@ class PermissionServiceClass {
     }
 
     if (Platform.OS === 'android') {
-      const apiLevel = Platform.Version;
-      if (typeof apiLevel === 'number' && apiLevel >= 33) {
+      const apiLevel =
+        typeof Platform.Version === 'number'
+          ? Platform.Version
+          : parseInt(String(Platform.Version), 10) || 0;
+      if (apiLevel >= 33) {
         try {
           const postNotif = 'android.permission.POST_NOTIFICATIONS' as any;
           const res = await PermissionsAndroid.request(postNotif);
           if (res === PermissionsAndroid.RESULTS.GRANTED) return 'granted';
           if (res === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN) return 'blocked';
+
+          try {
+            const Notifications = require('expo-notifications');
+            const req = await Notifications.requestPermissionsAsync();
+            if (req.granted || req.status === 'granted') return 'granted';
+          } catch {}
+
           return 'denied';
         } catch {
           return 'denied';
         }
       }
+      return 'granted';
+    }
+
+    if (Platform.OS === 'ios') {
+      try {
+        const Notifications = require('expo-notifications');
+        const req = await Notifications.requestPermissionsAsync();
+        if (req.granted || req.status === 'granted') return 'granted';
+      } catch {}
       return 'granted';
     }
 

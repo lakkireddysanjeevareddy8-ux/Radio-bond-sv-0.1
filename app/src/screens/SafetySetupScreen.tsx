@@ -18,6 +18,7 @@ import {
   SafetyPermissionsReport,
 } from '../services/PermissionService';
 import { useAppStore } from '../store/useAppStore';
+import { APP_VERSION_STRING } from '../utils/version';
 import {
   ShieldAlert,
   Bluetooth,
@@ -63,12 +64,15 @@ export const SafetySetupScreen: React.FC<SafetySetupScreenProps> = ({
     try {
       const res = await PermissionService.checkAllPermissions();
       setReport(res);
+      if (res.allEssentialGranted && !isSettingsModal) {
+        setHasCompletedSafetyOnboarding(true);
+      }
     } catch (e) {
       console.warn('Permissions audit error:', e);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isSettingsModal, setHasCompletedSafetyOnboarding]);
 
   useEffect(() => {
     refreshPermissions();
@@ -186,6 +190,9 @@ export const SafetySetupScreen: React.FC<SafetySetupScreenProps> = ({
             <ShieldAlert size={36} color="#2563EB" />
           </View>
           <Text style={styles.title}>WSG-01 Safety Setup</Text>
+          <View style={styles.versionPill}>
+            <Text style={styles.versionPillText}>{APP_VERSION_STRING}</Text>
+          </View>
           <Text style={styles.subtitle}>
             Allow the required permissions so WSG-01 can connect to your safety gadget and deliver
             emergency alerts.
@@ -369,6 +376,8 @@ export const SafetySetupScreen: React.FC<SafetySetupScreenProps> = ({
               <Text style={styles.skipBtnText}>Skip for now</Text>
             </TouchableOpacity>
           )}
+
+          <Text style={styles.footerVersionText}>WSG-01 Safety Guardian • {APP_VERSION_STRING}</Text>
         </View>
       </ScrollView>
     </View>
@@ -584,5 +593,27 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#64748B',
+  },
+  versionPill: {
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 12,
+    paddingVertical: 3,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    marginTop: 6,
+    marginBottom: 8,
+  },
+  versionPillText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#2563EB',
+  },
+  footerVersionText: {
+    fontSize: 12,
+    color: '#94A3B8',
+    marginTop: 8,
+    textAlign: 'center',
+    fontWeight: '500',
   },
 });

@@ -26,6 +26,7 @@ import {
 } from 'lucide-react-native';
 import { EmergencySoundService } from '../services/EmergencySoundService';
 import { deviceService } from '../services/DeviceCommunicationService';
+import { FalseAlarmFeedbackModal } from '../components/FalseAlarmFeedbackModal';
 
 export const EmergencyScreen: React.FC = () => {
   const { activeEmergency, setActiveEmergency, deviceConfig } = useAppStore();
@@ -33,6 +34,7 @@ export const EmergencyScreen: React.FC = () => {
   const [isMuted, setIsMuted] = useState(false);
   const [isAcknowledged, setIsAcknowledged] = useState(false);
   const [showPersonCheckModal, setShowPersonCheckModal] = useState(false);
+  const [feedbackModalInfo, setFeedbackModalInfo] = useState<{ eventId: string; deviceId: string } | null>(null);
   const [pulseAnim] = useState(new Animated.Value(1));
 
   useEffect(() => {
@@ -65,6 +67,24 @@ export const EmergencyScreen: React.FC = () => {
       EmergencySoundService.stopAll();
     };
   }, [activeEmergency?.id, activeEmergency?.eventId]);
+
+  if (feedbackModalInfo) {
+    return (
+      <FalseAlarmFeedbackModal
+        visible={true}
+        eventId={feedbackModalInfo.eventId}
+        deviceId={feedbackModalInfo.deviceId}
+        onDismiss={() => {
+          setFeedbackModalInfo(null);
+          setActiveEmergency(null);
+        }}
+        onSubmitComplete={() => {
+          setFeedbackModalInfo(null);
+          setActiveEmergency(null);
+        }}
+      />
+    );
+  }
 
   if (!activeEmergency) return null;
 
@@ -114,13 +134,14 @@ export const EmergencyScreen: React.FC = () => {
   /**
    * STEP 10: RESOLVE FLOW
    * ACTIVE / ACKNOWLEDGED -> RESOLVED
-   * Updates backend, dismisses alarm.
+   * Updates backend, dismisses alarm, and prompts for feedback.
    */
   const handleResolve = async () => {
     EmergencySoundService.stopAll();
     const eventId = activeEmergency.eventId || activeEmergency.id;
-    await deviceService.resolveEmergency(eventId, activeEmergency.deviceId);
-    setActiveEmergency(null);
+    const devId = activeEmergency.deviceId;
+    await deviceService.resolveEmergency(eventId, devId);
+    setFeedbackModalInfo({ eventId, deviceId: devId });
   };
 
   /**

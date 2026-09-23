@@ -12,15 +12,17 @@ interface SafetyEvent {
   detail: string;
   category: EventCategory;
   severity: 'LOW' | 'MEDIUM' | 'HIGH';
+  feedbackStatus?: 'CONFIRMED_REAL' | 'FALSE_ALARM' | 'NOT_SURE';
 }
 
 const MOCK_EVENTS: SafetyEvent[] = [
-  { id: '1', time: '16:42', title: 'Emergency voice detected', detail: '"HELP" keyword — 92% confidence', category: 'EMERGENCY', severity: 'HIGH' },
-  { id: '2', time: '16:40', title: 'Wellbeing check triggered', detail: 'Stillness threshold reached (15s)', category: 'WELLBEING', severity: 'MEDIUM' },
+  { id: '1', time: '16:42', title: 'Emergency voice detected', detail: '"HELP" keyword — 92% confidence', category: 'EMERGENCY', severity: 'HIGH', feedbackStatus: 'CONFIRMED_REAL' },
+  { id: '2', time: '16:40', title: 'Wellbeing check triggered', detail: 'Stillness threshold reached (25s)', category: 'WELLBEING', severity: 'MEDIUM' },
   { id: '3', time: '16:38', title: 'Person became still', detail: 'No movement detected', category: 'MOVEMENT', severity: 'LOW' },
   { id: '4', time: '16:35', title: 'Movement detected', detail: 'Person is active', category: 'MOVEMENT', severity: 'LOW' },
-  { id: '5', time: '16:34', title: 'Person detected', detail: 'Presence sensor triggered', category: 'PRESENCE', severity: 'LOW' },
-  { id: '6', time: '15:10', title: 'Device came online', detail: 'Wi-Fi connected', category: 'DEVICE', severity: 'LOW' },
+  { id: '5', time: '14:20', title: 'Stillness emergency resolved', detail: 'Inactivity alarm triggered', category: 'EMERGENCY', severity: 'HIGH', feedbackStatus: 'FALSE_ALARM' },
+  { id: '6', time: '12:15', title: 'Manual SOS button pressed', detail: 'Wall button triggered by occupant', category: 'EMERGENCY', severity: 'HIGH', feedbackStatus: 'CONFIRMED_REAL' },
+  { id: '7', time: '11:10', title: 'Device came online', detail: 'Wi-Fi connected', category: 'DEVICE', severity: 'LOW' },
 ];
 
 const SEVERITY_COLORS = { LOW: colors.safe, MEDIUM: colors.warning, HIGH: colors.emergency };
@@ -34,6 +36,29 @@ export const EventsScreen: React.FC = () => {
   const filters: EventCategory[] = ['ALL', 'EMERGENCY', 'WELLBEING', 'PRESENCE', 'MOVEMENT', 'DEVICE'];
 
   const filtered = activeFilter === 'ALL' ? MOCK_EVENTS : MOCK_EVENTS.filter(e => e.category === activeFilter);
+
+  const renderFeedbackBadge = (status?: 'CONFIRMED_REAL' | 'FALSE_ALARM' | 'NOT_SURE') => {
+    if (!status) return null;
+    if (status === 'CONFIRMED_REAL') {
+      return (
+        <View style={[styles.feedbackBadge, { backgroundColor: '#FEF2F2' }]}>
+          <Text style={[styles.feedbackBadgeText, { color: '#DC2626' }]}>✓ Real Incident</Text>
+        </View>
+      );
+    }
+    if (status === 'FALSE_ALARM') {
+      return (
+        <View style={[styles.feedbackBadge, { backgroundColor: '#FFFBEB' }]}>
+          <Text style={[styles.feedbackBadgeText, { color: '#D97706' }]}>⚠ False Alarm</Text>
+        </View>
+      );
+    }
+    return (
+      <View style={[styles.feedbackBadge, { backgroundColor: '#F1F5F9' }]}>
+        <Text style={[styles.feedbackBadgeText, { color: '#64748B' }]}>Unconfirmed</Text>
+      </View>
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -59,7 +84,10 @@ export const EventsScreen: React.FC = () => {
                 <Icon size={20} color={SEVERITY_COLORS[event.severity]} />
               </View>
               <View style={styles.eventInfo}>
-                <Text style={styles.eventTitle}>{event.title}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <Text style={styles.eventTitle}>{event.title}</Text>
+                  {renderFeedbackBadge(event.feedbackStatus)}
+                </View>
                 <Text style={styles.eventDetail}>{event.detail}</Text>
               </View>
               <View style={styles.eventMeta}>
@@ -100,4 +128,13 @@ const styles = StyleSheet.create({
   eventMeta: { alignItems: 'flex-end', gap: 6 },
   eventTime: { ...typography.caption, color: colors.textSecondary, fontWeight: '600' },
   severityDot: { width: 8, height: 8, borderRadius: 4 },
+  feedbackBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  feedbackBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
 });

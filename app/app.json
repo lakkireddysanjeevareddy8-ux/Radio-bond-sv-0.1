@@ -2,7 +2,7 @@
   "expo": {
     "name": "app",
     "slug": "app",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -14,6 +14,7 @@
       }
     },
     "android": {
+      "versionCode": 2,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -35,14 +36,18 @@
         "android.permission.USE_FULL_SCREEN_INTENT",
         "android.permission.VIBRATE",
         "android.permission.WAKE_LOCK"
-      ]
+      ],
+      "package": "com.sanjuamazing.app"
     },
     "plugins": [
       [
         "react-native-ble-plx",
         {
           "isBackgroundEnabled": false,
-          "modes": ["peripheral", "central"],
+          "modes": [
+            "peripheral",
+            "central"
+          ],
           "bluetoothAlwaysPermission": "Allow Washroom Safety Gadget to connect to WSG-01 via Bluetooth."
         }
       ],
@@ -51,12 +56,20 @@
         {
           "icon": "./assets/icon.png",
           "color": "#EF4444",
-          "sounds": ["./assets/emergency_siren.wav"]
+          "sounds": [
+            "./assets/emergency_siren.wav"
+          ]
         }
       ]
     ],
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "e138e27e-ca73-416e-a6e8-49f4e1a1ebdf"
+      }
+    },
+    "owner": "sanjuamazing"
   }
 }

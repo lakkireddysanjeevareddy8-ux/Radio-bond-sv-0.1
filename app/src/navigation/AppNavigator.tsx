@@ -1,8 +1,10 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useAppStore } from '../store/useAppStore';
+import { PermissionService } from '../services/PermissionService';
 import { LoginScreen } from '../screens/LoginScreen';
 import { AnimatedBottomTabBar } from './AnimatedTabBar';
 import { DashboardScreen } from '../screens/DashboardScreen';
@@ -75,7 +77,52 @@ const MainTabs = () => {
 };
 
 export const AppNavigator = () => {
-  const { hasCompletedSafetyOnboarding, setHasCompletedSafetyOnboarding } = useAppStore();
+  const {
+    hasCompletedSafetyOnboarding,
+    setHasCompletedSafetyOnboarding,
+    initAppStore,
+  } = useAppStore();
+
+  const [isInitializing, setIsInitializing] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const checkInitialState = async () => {
+      try {
+        // 1. Initialize persisted state from AsyncStorage
+        const persistedCompleted = await initAppStore();
+
+        // 2. Audit actual OS permissions (Bluetooth, Notifications, etc.)
+        const report = await PermissionService.checkAllPermissions();
+
+        // If the user already completed onboarding previously OR if OS permissions are already allowed
+        if (persistedCompleted || report.allEssentialGranted) {
+          setHasCompletedSafetyOnboarding(true);
+        }
+      } catch (err) {
+        console.warn('[AppNavigator] Error checking permissions/onboarding state:', err);
+      } finally {
+        if (isMounted) {
+          setIsInitializing(false);
+        }
+      }
+    };
+
+    checkInitialState();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [initAppStore, setHasCompletedSafetyOnboarding]);
+
+  if (isInitializing) {
+    return (
+      <View style={styles.splashContainer}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
 
   return (
     <NavigationContainer>
@@ -96,3 +143,13 @@ export const AppNavigator = () => {
     </NavigationContainer>
   );
 };
+
+const styles = StyleSheet.create({
+  splashContainer: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+});
+

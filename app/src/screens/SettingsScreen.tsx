@@ -18,6 +18,7 @@ import { EmergencyPushService } from '../services/EmergencyPushService';
 import { EmergencySoundService } from '../services/EmergencySoundService';
 import { DeviceConfig } from '../types';
 import { SafetySetupScreen } from './SafetySetupScreen';
+import { APP_VERSION_STRING, APP_DETAILS } from '../utils/version';
 import {
   Pencil,
   Save,
@@ -35,6 +36,7 @@ import {
   ShieldAlert,
   Phone,
   ChevronRight,
+  Info,
 } from 'lucide-react-native';
 
 const thresholdOptions = [15, 30, 60, 90, 120];
@@ -445,6 +447,25 @@ export const SettingsScreen: React.FC = () => {
           })}
         </View>
 
+        {/* False-Alarm Adaptive Tuning Recommendation */}
+        <View style={styles.tuningRecommendationCard}>
+          <View style={styles.tuningHeader}>
+            <AlertCircle size={16} color="#D97706" />
+            <Text style={styles.tuningTitle}>Adaptive Tuning Advice</Text>
+          </View>
+          <Text style={styles.tuningBody}>
+            Frequent false alarms during still bathing or quiet moments? Increasing Stillness Threshold to 45s or 60s prevents premature alerts while maintaining fall-detection safety.
+          </Text>
+          {isEditing && (activeConfig?.stillnessThreshold ?? 30) < 60 && (
+            <TouchableOpacity
+              style={styles.tuningBtn}
+              onPress={() => updateDraft({ stillnessThreshold: 60 })}
+            >
+              <Text style={styles.tuningBtnText}>Apply Recommended 60s Threshold</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
         {/* Response Timeout */}
         <View style={styles.sectionHeaderRow}>
           <SectionHeader title="Response Timeout" />
@@ -585,6 +606,51 @@ export const SettingsScreen: React.FC = () => {
               </TouchableOpacity>
             );
           })}
+        </View>
+
+        {/* About Application & Version Info */}
+        <View style={styles.sectionHeaderRow}>
+          <SectionHeader title="About Application" />
+        </View>
+        <View style={styles.card}>
+          <View style={styles.aboutRow}>
+            <View style={styles.aboutLeft}>
+              <View style={[styles.permissionsIconWrapper, { backgroundColor: '#EFF6FF' }]}>
+                <Info size={18} color={colors.primary} />
+              </View>
+              <View>
+                <Text style={styles.aboutTitle}>Application Version</Text>
+                <Text style={styles.aboutSubtitle}>{APP_DETAILS.name}</Text>
+              </View>
+            </View>
+            <View style={styles.versionBadge}>
+              <Text style={styles.versionBadgeText}>{APP_VERSION_STRING}</Text>
+            </View>
+          </View>
+
+          <View style={styles.divider} />
+
+          <View style={styles.aboutRow}>
+            <Text style={styles.aboutLabel}>Platform & Architecture</Text>
+            <Text style={styles.aboutValue}>{APP_DETAILS.platform.toUpperCase()} • Build {APP_DETAILS.build}</Text>
+          </View>
+
+          <View style={styles.divider} />
+
+          <View style={styles.aboutRow}>
+            <Text style={styles.aboutLabel}>Package ID</Text>
+            <Text style={styles.aboutValueMonospace}>com.sanjuamazing.app</Text>
+          </View>
+
+          <View style={styles.divider} />
+
+          <View style={styles.aboutRow}>
+            <Text style={styles.aboutLabel}>Build Status</Text>
+            <View style={styles.statusBadge}>
+              <CheckCircle2 size={12} color="#059669" />
+              <Text style={styles.statusBadgeText}>Installed & Ready</Text>
+            </View>
+          </View>
         </View>
       </ScrollView>
 
@@ -1299,5 +1365,110 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.textSecondary,
     lineHeight: 16,
+  },
+  aboutRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+  },
+  aboutLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  aboutTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  aboutSubtitle: {
+    fontSize: 12,
+    color: colors.textSecondary,
+  },
+  versionBadge: {
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  versionBadgeText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1D4ED8',
+  },
+  aboutLabel: {
+    fontSize: 14,
+    color: colors.textSecondary,
+    fontWeight: '500',
+  },
+  aboutValue: {
+    fontSize: 14,
+    color: colors.textPrimary,
+    fontWeight: '600',
+  },
+  aboutValueMonospace: {
+    fontSize: 13,
+    color: colors.textPrimary,
+    fontWeight: '600',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#ECFDF5',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  statusBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#059669',
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#F1F5F9',
+    marginVertical: 4,
+  },
+  tuningRecommendationCard: {
+    backgroundColor: '#FFFBEB',
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    padding: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  tuningHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  tuningTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#92400E',
+  },
+  tuningBody: {
+    fontSize: 12,
+    color: '#78350F',
+    lineHeight: 17,
+  },
+  tuningBtn: {
+    marginTop: 8,
+    backgroundColor: '#F59E0B',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: borderRadius.sm,
+    alignSelf: 'flex-start',
+  },
+  tuningBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
   },
 });

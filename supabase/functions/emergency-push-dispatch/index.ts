@@ -55,22 +55,57 @@ serve(async (req: Request) => {
       });
     }
 
-    // 1. Fetch active push tokens for this device
-    const { data: tokens, error: tokensErr } = await supabase
+    // 1. Fetch active push tokens directly linked to this device
+    const { data: deviceTokens, error: tokensErr } = await supabase
       .from('device_push_tokens')
-      .select('push_token, platform, provider')
+      .select('push_token, platform, provider, user_id')
       .eq('device_id', deviceId)
       .eq('active', true);
 
     if (tokensErr) {
-      console.error('[PushDispatch] Error querying push tokens:', tokensErr);
-      return new Response(JSON.stringify({ error: tokensErr.message }), { status: 500 });
+      console.error('[PushDispatch] Error querying device push tokens:', tokensErr);
     }
 
-    if (!tokens || tokens.length === 0) {
-      console.log(`[PushDispatch] No active push tokens registered for device: ${deviceId}`);
+    // 2. Fetch all accepted trusted contacts for this device
+    const { data: trustedContacts, error: contactsErr } = await supabase
+      .from('trusted_contacts')
+      .select('contact_user_id, contact_email, contact_name')
+      .eq('device_id', deviceId)
+      .eq('status', 'accepted');
+
+    if (contactsErr) {
+      console.warn('[PushDispatch] Note querying trusted contacts:', contactsErr);
+    }
+
+    // 3. Collect trusted contact user IDs and fetch their push tokens
+    const contactUserIds = (trustedContacts || [])
+      .map((c: any) => c.contact_user_id)
+      .filter((id: any) => Boolean(id));
+
+    let contactTokens: any[] = [];
+    if (contactUserIds.length > 0) {
+      const { data: cTokens } = await supabase
+        .from('device_push_tokens')
+        .select('push_token, platform, provider, user_id')
+        .in('user_id', contactUserIds)
+        .eq('active', true);
+      contactTokens = cTokens || [];
+    }
+
+    // Combine and deduplicate tokens
+    const allTokensMap = new Map<string, any>();
+    for (const t of (deviceTokens || [])) {
+      if (t?.push_token) allTokensMap.set(t.push_token, t);
+    }
+    for (const t of contactTokens) {
+      if (t?.push_token) allTokensMap.set(t.push_token, t);
+    }
+    const tokens = Array.from(allTokensMap.values());
+
+    if (tokens.length === 0) {
+      console.log(`[PushDispatch] No active push tokens for device ${deviceId} or its trusted contacts.`);
       return new Response(
-        JSON.stringify({ message: 'No registered push tokens for device', deviceId }),
+        JSON.stringify({ message: 'No registered push tokens for device or trusted contacts', deviceId }),
         { status: 200 }
       );
     }

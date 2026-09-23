@@ -1,8 +1,10 @@
 import { create } from 'zustand';
 import { Contact } from '../types';
+import { storage } from '../utils/storage';
 
 interface ContactStoreState {
   contacts: Contact[];
+  initContactStore: () => Promise<void>;
   addContact: (newContact: {
     name: string;
     phone: string;
@@ -22,7 +24,7 @@ const DEFAULT_CONTACTS: Contact[] = [
   { id: '2', name: 'John Smith', phone: '+1 555-0102', relationship: 'Caregiver', isPrimary: false },
 ];
 
-const loadPersistedContacts = (): Contact[] => {
+const loadPersistedContactsSync = (): Contact[] => {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
       const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -33,24 +35,27 @@ const loadPersistedContacts = (): Contact[] => {
         }
       }
     }
-  } catch (e) {
-    console.warn('Could not load contacts from local storage:', e);
-  }
+  } catch (e) {}
   return DEFAULT_CONTACTS;
 };
 
 const persistContacts = (contacts: Contact[]) => {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(contacts));
-    }
-  } catch (e) {
-    console.warn('Could not persist contacts to local storage:', e);
-  }
+  storage.setJSON(STORAGE_KEY, contacts);
 };
 
 export const useContactStore = create<ContactStoreState>((set, get) => ({
-  contacts: loadPersistedContacts(),
+  contacts: loadPersistedContactsSync(),
+
+  initContactStore: async () => {
+    try {
+      const loaded = await storage.getJSON<Contact[]>(STORAGE_KEY, DEFAULT_CONTACTS);
+      if (Array.isArray(loaded) && loaded.length > 0) {
+        set({ contacts: loaded });
+      }
+    } catch (e) {
+      console.warn('[useContactStore] init error:', e);
+    }
+  },
 
   addContact: (newContact) => {
     set((state) => {

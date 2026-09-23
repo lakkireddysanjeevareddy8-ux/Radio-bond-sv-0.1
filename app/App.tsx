@@ -5,6 +5,8 @@ import { AppNavigator } from './src/navigation/AppNavigator';
 import { EmergencyScreen } from './src/screens/EmergencyScreen';
 import { deviceService } from './src/services/DeviceCommunicationService';
 import { useAppStore } from './src/store/useAppStore';
+import { useDeviceStore } from './src/store/useDeviceStore';
+import { useContactStore } from './src/store/useContactStore';
 import { EmergencySoundService } from './src/services/EmergencySoundService';
 import { EmergencyPushService } from './src/services/EmergencyPushService';
 
@@ -43,6 +45,9 @@ export default function App() {
 
   useEffect(() => {
     initializeSupabase();
+    useDeviceStore.getState().initDeviceStore?.();
+    useContactStore.getState().initContactStore?.();
+
     // Initialize high-importance Android emergency channel and permissions
     EmergencySoundService.initEmergencyChannel();
     EmergencyPushService.setOnEmergencyReceived((event) => {

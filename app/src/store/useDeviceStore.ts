@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { Telemetry } from '../types';
+import { storage } from '../utils/storage';
 
 export interface SavedDevice {
   deviceId: string;
@@ -20,6 +21,7 @@ interface DeviceStoreState {
   activeDeviceId: string | null;
 
   // Actions
+  initDeviceStore: () => Promise<void>;
   addOrUpdateDevice: (device: SavedDevice) => void;
   removeDevice: (deviceId: string) => void;
   setActiveDeviceId: (deviceId: string) => void;
@@ -44,18 +46,26 @@ const loadPersistedDevices = (): SavedDevice[] => {
 };
 
 const persistDevices = (devices: SavedDevice[]) => {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(devices));
-    }
-  } catch (e) {
-    console.warn('Could not persist devices to local storage:', e);
-  }
+  storage.setJSON(STORAGE_KEY, devices);
 };
 
 export const useDeviceStore = create<DeviceStoreState>((set, get) => ({
   devices: loadPersistedDevices(),
   activeDeviceId: loadPersistedDevices()[0]?.deviceId || null,
+
+  initDeviceStore: async () => {
+    try {
+      const loaded = await storage.getJSON<SavedDevice[]>(STORAGE_KEY, []);
+      if (Array.isArray(loaded) && loaded.length > 0) {
+        set({
+          devices: loaded,
+          activeDeviceId: get().activeDeviceId || loaded[0]?.deviceId || null,
+        });
+      }
+    } catch (e) {
+      console.warn('[useDeviceStore] init error:', e);
+    }
+  },
 
   addOrUpdateDevice: (newDevice) => {
     set((state) => {

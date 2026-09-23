@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { DeviceConfig, Telemetry, EmergencyEvent, SafetyState } from '../types';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '../services/supabaseClient';
+import { storage } from '../utils/storage';
 
 export type HardwareMode = 'REAL_HARDWARE' | 'DEMO_SIMULATOR';
 
@@ -11,6 +12,8 @@ interface AppState {
   setHardwareMode: (mode: HardwareMode) => void;
   hasCompletedSafetyOnboarding: boolean;
   setHasCompletedSafetyOnboarding: (completed: boolean) => void;
+  isStorageLoaded: boolean;
+  initAppStore: () => Promise<boolean>;
   hasPrimedPermissions: {
     bluetooth: boolean;
     notifications: boolean;
@@ -74,8 +77,10 @@ const defaultConfig: DeviceConfig = {
 const CONFIG_STORAGE_KEY = 'washroom_safeguard_config_v1';
 const ONBOARDING_STORAGE_KEY = 'washroom_safety_onboarding_v1';
 const HARDWARE_MODE_STORAGE_KEY = 'washroom_hardware_mode_v1';
+const PRIMED_PERMISSIONS_STORAGE_KEY = 'wsg_primed_permissions';
 
-const loadPersistedConfig = (): DeviceConfig => {
+// Synchronous initial fallbacks (for web / immediate rendering before async hydrate)
+const loadPersistedConfigSync = (): DeviceConfig => {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
       const raw = window.localStorage.getItem(CONFIG_STORAGE_KEY);
@@ -83,36 +88,20 @@ const loadPersistedConfig = (): DeviceConfig => {
         return { ...defaultConfig, ...JSON.parse(raw) };
       }
     }
-  } catch (e) {
-    console.warn('Could not load config from local storage:', e);
-  }
+  } catch (e) {}
   return defaultConfig;
 };
 
-const persistConfig = (config: DeviceConfig) => {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
-    }
-  } catch (e) {
-    console.warn('Could not persist config to local storage:', e);
-  }
-};
-
-const loadPersistedOnboarding = (): boolean => {
+const loadPersistedOnboardingSync = (): boolean => {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
       return window.localStorage.getItem(ONBOARDING_STORAGE_KEY) === 'true';
     }
-  } catch (e) {
-    console.warn('Could not load onboarding flag:', e);
-  }
+  } catch (e) {}
   return false;
 };
 
-const PRIMED_PERMISSIONS_STORAGE_KEY = 'wsg_primed_permissions';
-
-const loadPersistedPrimedPermissions = (): { bluetooth: boolean; notifications: boolean; location: boolean } => {
+const loadPersistedPrimedPermissionsSync = (): { bluetooth: boolean; notifications: boolean; location: boolean } => {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
       const raw = window.localStorage.getItem(PRIMED_PERMISSIONS_STORAGE_KEY);
@@ -124,7 +113,7 @@ const loadPersistedPrimedPermissions = (): { bluetooth: boolean; notifications: 
   return { bluetooth: false, notifications: false, location: false };
 };
 
-const loadPersistedHardwareMode = (): HardwareMode => {
+const loadPersistedHardwareModeSync = (): HardwareMode => {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
       const mode = window.localStorage.getItem(HARDWARE_MODE_STORAGE_KEY);
@@ -133,58 +122,80 @@ const loadPersistedHardwareMode = (): HardwareMode => {
       }
     }
   } catch (e) {}
-  // Default to REAL_HARDWARE for production
   return 'REAL_HARDWARE';
 };
 
-const initialHardwareMode = loadPersistedHardwareMode();
+const initialHardwareMode = loadPersistedHardwareModeSync();
 
 export const useAppStore = create<AppState>((set, get) => ({
   // Runtime Mode
   hardwareMode: initialHardwareMode,
   setHardwareMode: (mode) => {
-    try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        window.localStorage.setItem(HARDWARE_MODE_STORAGE_KEY, mode);
-      }
-    } catch {}
-
+    storage.setItem(HARDWARE_MODE_STORAGE_KEY, mode);
     const isSim = mode === 'DEMO_SIMULATOR';
     set({
       hardwareMode: mode,
       isSimulatorMode: isSim,
-      fakeWifiConnected: false, // Reset fake wifi on mode toggle
-      telemetry: isSim ? get().telemetry : null, // Clear fake telemetry in hardware mode
-      isOnline: isSim ? true : false, // In hardware mode, online requires actual verified communication
+      fakeWifiConnected: false,
+      telemetry: isSim ? get().telemetry : null,
+      isOnline: isSim ? true : false,
     });
   },
 
-  hasCompletedSafetyOnboarding: loadPersistedOnboarding(),
-  setHasCompletedSafetyOnboarding: (completed) => {
+  isStorageLoaded: false,
+  initAppStore: async () => {
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        window.localStorage.setItem(ONBOARDING_STORAGE_KEY, completed ? 'true' : 'false');
+      const [onboardingVal, configVal, modeVal, primedVal] = await Promise.all([
+        storage.getItem(ONBOARDING_STORAGE_KEY),
+        storage.getJSON<DeviceConfig | null>(CONFIG_STORAGE_KEY, null),
+        storage.getItem(HARDWARE_MODE_STORAGE_KEY),
+        storage.getJSON<{ bluetooth: boolean; notifications: boolean; location: boolean } | null>(PRIMED_PERMISSIONS_STORAGE_KEY, null),
+      ]);
+
+      const isCompleted = onboardingVal === 'true';
+      const updates: Partial<AppState> = {
+        isStorageLoaded: true,
+        hasCompletedSafetyOnboarding: isCompleted,
+      };
+
+      if (configVal) {
+        updates.deviceConfig = { ...defaultConfig, ...configVal };
       }
-    } catch {}
+      if (modeVal === 'DEMO_SIMULATOR' || modeVal === 'REAL_HARDWARE') {
+        updates.hardwareMode = modeVal as HardwareMode;
+        updates.isSimulatorMode = modeVal === 'DEMO_SIMULATOR';
+      }
+      if (primedVal) {
+        updates.hasPrimedPermissions = primedVal;
+      }
+
+      set(updates);
+      return isCompleted;
+    } catch (e) {
+      console.warn('[useAppStore] initAppStore error:', e);
+      set({ isStorageLoaded: true });
+      return get().hasCompletedSafetyOnboarding;
+    }
+  },
+
+  hasCompletedSafetyOnboarding: loadPersistedOnboardingSync(),
+  setHasCompletedSafetyOnboarding: (completed) => {
+    storage.setItem(ONBOARDING_STORAGE_KEY, completed ? 'true' : 'false');
     set({ hasCompletedSafetyOnboarding: completed });
   },
 
-  hasPrimedPermissions: loadPersistedPrimedPermissions(),
+  hasPrimedPermissions: loadPersistedPrimedPermissionsSync(),
   setPermissionPrimed: (type) => {
     const current = get().hasPrimedPermissions;
     const next = { ...current, [type]: true };
-    try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        window.localStorage.setItem(PRIMED_PERMISSIONS_STORAGE_KEY, JSON.stringify(next));
-      }
-    } catch {}
+    storage.setJSON(PRIMED_PERMISSIONS_STORAGE_KEY, next);
     set({ hasPrimedPermissions: next });
   },
 
   // Device config
-  deviceConfig: loadPersistedConfig(),
+  deviceConfig: loadPersistedConfigSync(),
   setDeviceConfig: (config) => {
-    persistConfig(config);
+    storage.setJSON(CONFIG_STORAGE_KEY, config);
     set({ deviceConfig: config });
   },
 
