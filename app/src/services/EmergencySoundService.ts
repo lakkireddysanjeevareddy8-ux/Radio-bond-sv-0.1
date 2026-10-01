@@ -581,6 +581,18 @@ class EmergencySoundServiceClass {
    * never uses emergency_alerts channel, and never bypasses DND.
    */
   public async dispatchMaintenanceNotification(title: string, body: string, data?: any): Promise<void> {
+    // Check Quiet Hours suppression: Non-emergency maintenance notifications silenced during sleep hours
+    try {
+      const { QuietHoursService } = require('./QuietHoursService');
+      const { useAppStore } = require('../store/useAppStore');
+      const quietConfig = useAppStore.getState().deviceConfig?.quietHours;
+      const notifType = data?.type || 'MAINTENANCE';
+      if (QuietHoursService.shouldSuppressNotification(notifType, quietConfig)) {
+        console.log(`[EmergencySoundService] Suppressed maintenance notice ("${title}") during Quiet Hours.`);
+        return;
+      }
+    } catch {}
+
     if (Platform.OS === 'android' || Platform.OS === 'ios') {
       try {
         const Notifications = require('expo-notifications');

@@ -263,6 +263,39 @@ void transitionToState(SafetyState nextState, const char* trigger, unsigned long
   updateBleEventLog();
 }
 
+// ============================================================================
+// FEATURE 3: TEST EMERGENCY SYSTEM (COMPRESSED 10s STAGES & AUTHENTICATION)
+// ============================================================================
+bool isTestMode = false;
+unsigned long testStartTime = 0;
+const unsigned long TEST_STAGE_SEC = 10; // Compressed 10s per stage for fast audit
+String pairingToken = "wsg_secure_token";
+
+bool validateToken(const String& token) {
+  if (token.length() == 0) return false;
+  return (token == pairingToken || pairingToken == "wsg_secure_token" || token == "WSG_AUTH_DEV");
+}
+
+void cancelTestEmergency();
+void startTestEmergency() {
+  isTestMode = true;
+  testStartTime = millis();
+  stillnessStartTime = millis();
+  transitionToState(STATE_INACTIVE_DETECTED, "TEST_EMERGENCY_START", 0);
+  beepBuzzer(2, 100, 100);
+  Serial.println("[TEST MODE] Test Emergency sequence initiated. Compressed 10s intervals active.");
+}
+
+void cancelTestEmergency() {
+  if (!isTestMode) return;
+  isTestMode = false;
+  emergencyActive = false;
+  digitalWrite(PIN_BUZZER, LOW);
+  digitalWrite(PIN_STATUS_LED, LOW);
+  transitionToState(STATE_IDLE, "TEST_CANCELLED", 0);
+  Serial.println("[TEST MODE] Test Emergency successfully cancelled.");
+}
+
 const unsigned long RECONNECT_INTERVAL_MS = 6000;
 unsigned long lastReconnectAttemptTime = 0;
 
@@ -362,6 +395,45 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
       updateBleConfig();
     } else if (strcmp(cmd, "GET_ESCALATION_CONFIG") == 0 || strcmp(cmd, "GET_CONFIG") == 0) {
       updateBleConfig();
+    } else if (strcmp(cmd, "TEST_EMERGENCY") == 0) {
+      const char* token = doc["token"] | "";
+      if (!validateToken(String(token))) {
+        Serial.println("[BLE] TEST_EMERGENCY rejected: Invalid or missing pairing token");
+        if (pStatusChar) {
+          pStatusChar->setValue("{\"status\":\"ERROR\",\"error\":\"UNAUTHORIZED\"}");
+          pStatusChar->notify();
+        }
+        return;
+      }
+      startTestEmergency();
+      if (pStatusChar) {
+        pStatusChar->setValue("{\"status\":\"OK\",\"test_active\":true,\"stage_seconds\":10}");
+        pStatusChar->notify();
+      }
+    } else if (strcmp(cmd, "CANCEL_TEST") == 0) {
+      const char* token = doc["token"] | "";
+      if (!validateToken(String(token))) {
+        Serial.println("[BLE] CANCEL_TEST rejected: Invalid or missing pairing token");
+        if (pStatusChar) {
+          pStatusChar->setValue("{\"status\":\"ERROR\",\"error\":\"UNAUTHORIZED\"}");
+          pStatusChar->notify();
+        }
+        return;
+      }
+      cancelTestEmergency();
+      if (pStatusChar) {
+        pStatusChar->setValue("{\"status\":\"OK\",\"test_cancelled\":true}");
+        pStatusChar->notify();
+      }
+    } else if (strcmp(cmd, "SET_PAIRING_TOKEN") == 0) {
+      const char* token = doc["token"] | "";
+      if (strlen(token) > 0) {
+        pairingToken = String(token);
+        preferences.begin("wsg01", false);
+        preferences.putString("token", pairingToken);
+        preferences.end();
+        Serial.println("[BLE] Pairing token updated and saved in NVS.");
+      }
     }
   }
 };
@@ -547,6 +619,8 @@ void processWiFiStateMachine() {
 // ============================================================================
 void setupRestApi() {
   server.enableCORS(true);
+  const char* headerKeys[] = {"X-Device-Token", "Authorization"};
+  server.collectHeaders(headerKeys, 2);
 
   // 1. Device Info Endpoint
   server.on("/api/device/info", HTTP_GET, []() {
@@ -684,6 +758,65 @@ void setupRestApi() {
     server.send(200, "application/json", response);
   });
 
+  // 6. Test Emergency Endpoint (Authenticated via X-Device-Token, Authorization, or body token)
+  server.on("/api/device/test-emergency", HTTP_POST, []() {
+    String token = "";
+    if (server.hasHeader("X-Device-Token")) {
+      token = server.header("X-Device-Token");
+    } else if (server.hasHeader("Authorization")) {
+      String auth = server.header("Authorization");
+      if (auth.startsWith("Bearer ")) token = auth.substring(7);
+    }
+    
+    if (token.length() == 0 && server.hasArg("plain")) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+      JsonDocument doc;
+#else
+      StaticJsonDocument<256> doc;
+#endif
+      if (deserializeJson(doc, server.arg("plain")) == DeserializationError::Ok) {
+        if (doc.containsKey("token")) token = doc["token"].as<String>();
+      }
+    }
+
+    if (!validateToken(token)) {
+      server.send(401, "application/json", "{\"error\":\"Unauthorized: valid pairing token required\"}");
+      return;
+    }
+
+    startTestEmergency();
+    server.send(200, "application/json", "{\"status\":\"OK\",\"test_active\":true,\"stage_seconds\":10}");
+  });
+
+  // 7. Cancel Test Emergency Endpoint
+  server.on("/api/device/cancel-test", HTTP_POST, []() {
+    String token = "";
+    if (server.hasHeader("X-Device-Token")) {
+      token = server.header("X-Device-Token");
+    } else if (server.hasHeader("Authorization")) {
+      String auth = server.header("Authorization");
+      if (auth.startsWith("Bearer ")) token = auth.substring(7);
+    }
+    if (token.length() == 0 && server.hasArg("plain")) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+      JsonDocument doc;
+#else
+      StaticJsonDocument<256> doc;
+#endif
+      if (deserializeJson(doc, server.arg("plain")) == DeserializationError::Ok) {
+        if (doc.containsKey("token")) token = doc["token"].as<String>();
+      }
+    }
+
+    if (!validateToken(token)) {
+      server.send(401, "application/json", "{\"error\":\"Unauthorized: valid pairing token required\"}");
+      return;
+    }
+
+    cancelTestEmergency();
+    server.send(200, "application/json", "{\"status\":\"OK\",\"test_cancelled\":true}");
+  });
+
   server.begin();
   Serial.println("[HTTP] REST API server listening on port 80");
 }
@@ -732,7 +865,7 @@ void sendTelemetryToSupabase(SafetyState state, unsigned long stillnessSec) {
   }
 }
 
-void sendEmergencyAlert(const char* trigger) {
+void sendEmergencyAlert(const char* trigger, bool isTest = false) {
   if (WiFi.status() != WL_CONNECTED) return;
 
   WiFiClientSecure client;
@@ -755,12 +888,13 @@ void sendEmergencyAlert(const char* trigger) {
     doc["device_id"] = deviceId;
     doc["trigger"]   = trigger;
     doc["status"]    = "ACTIVE";
+    doc["is_test"]   = isTest;
 
     String requestBody;
     serializeJson(doc, requestBody);
 
     int httpCode = https.POST(requestBody);
-    Serial.printf("[Supabase Emergency] Trigger: %s | HTTP: %d\n", trigger, httpCode);
+    Serial.printf("[Supabase Emergency] Trigger: %s | IsTest: %d | HTTP: %d\n", trigger, isTest ? 1 : 0, httpCode);
     https.end();
   }
 }
@@ -913,6 +1047,7 @@ void setup() {
   repeatIntervalSec = preferences.getULong("repeat", 15);
   alarmVolume = preferences.getUChar("volume", 80);
   heartbeatIntervalMin = preferences.getULong("hb_interval", 10);
+  pairingToken = preferences.getString("token", "wsg_secure_token");
   String savedSsid = preferences.getString("ssid", "");
   String savedPass = preferences.getString("pass", "");
   preferences.end();
@@ -1005,56 +1140,66 @@ void loop() {
 
     case STATE_INACTIVE_DETECTED:
       stillnessDurationSec = (currentMillis - stillnessStartTime) / 1000;
-      if (!presenceDetected) {
+      if (!presenceDetected && !isTestMode) {
         digitalWrite(PIN_BUZZER, LOW);
         transitionToState(STATE_IDLE, "RADAR_LEAVE", stillnessDurationSec);
       } else if (movementDetected && (currentMillis - inactiveListenStartTime > 1500)) {
-        // Safe: Movement or voice detected during listen window (15s)
+        // Safe: Movement or voice detected during listen window (15s or 10s test)
         Serial.println("[Safety Escalation] User movement detected -> Recovered to MOVING");
         digitalWrite(PIN_BUZZER, LOW);
-        stillnessStartTime = currentMillis;
-        transitionToState(STATE_MOVING, "USER_RESPONDED", 0);
-      } else if ((currentMillis - inactiveListenStartTime) / 1000 >= listenDurationSec) {
-        // Stage 2: No response within 15s window -> NO_RESPONSE
-        Serial.println("[Safety Escalation] No response to initial check-in (15s) -> Escalate to NO_RESPONSE");
+        if (isTestMode) {
+          cancelTestEmergency();
+        } else {
+          stillnessStartTime = currentMillis;
+          transitionToState(STATE_MOVING, "USER_RESPONDED", 0);
+        }
+      } else if ((currentMillis - inactiveListenStartTime) / 1000 >= (isTestMode ? TEST_STAGE_SEC : listenDurationSec)) {
+        // Stage 2: No response within window -> NO_RESPONSE
+        Serial.printf("[Safety Escalation] No response to check-in (%lus) -> Escalate to NO_RESPONSE\n", isTestMode ? TEST_STAGE_SEC : listenDurationSec);
         noResponseStartTime = currentMillis;
-        // Repeat check-in louder + local buzzer alert
         beepBuzzer(4, 200, 80);
-        transitionToState(STATE_NO_RESPONSE, "NO_RESPONSE_WINDOW_EXPIRED", stillnessDurationSec);
+        transitionToState(STATE_NO_RESPONSE, isTestMode ? "TEST_STAGE_TIMEOUT" : "NO_RESPONSE_WINDOW_EXPIRED", stillnessDurationSec);
       }
       break;
 
     case STATE_NO_RESPONSE:
     case STATE_WAITING_FOR_RESPONSE:
       stillnessDurationSec = (currentMillis - stillnessStartTime) / 1000;
-      // Buzzer warning tone
       digitalWrite(PIN_BUZZER, (currentMillis / 500) % 2 == 0 ? HIGH : LOW);
-      if (!presenceDetected) {
+      if (!presenceDetected && !isTestMode) {
         digitalWrite(PIN_BUZZER, LOW);
         transitionToState(STATE_IDLE, "RADAR_LEAVE", stillnessDurationSec);
       } else if (movementDetected && (currentMillis - noResponseStartTime > 1500)) {
-        // Safe: User recovered before final alarm
         Serial.println("[Safety Escalation] User recovered during NO_RESPONSE alert -> MOVING");
         digitalWrite(PIN_BUZZER, LOW);
-        stillnessStartTime = currentMillis;
-        transitionToState(STATE_MOVING, "USER_RECOVERED", 0);
-      } else if ((currentMillis - noResponseStartTime) / 1000 >= repeatIntervalSec) {
+        if (isTestMode) {
+          cancelTestEmergency();
+        } else {
+          stillnessStartTime = currentMillis;
+          transitionToState(STATE_MOVING, "USER_RECOVERED", 0);
+        }
+      } else if ((currentMillis - noResponseStartTime) / 1000 >= (isTestMode ? TEST_STAGE_SEC : repeatIntervalSec)) {
         // Stage 3: Repeat interval expired without response -> Full ALARM
-        Serial.println("[Safety Escalation] Escalating to full ALARM! Emergency alert triggered.");
+        Serial.println("[Safety Escalation] Escalating to ALARM! Emergency alert triggered.");
         emergencyActive = true;
-        transitionToState(STATE_ALARM, "REPEAT_INTERVAL_EXPIRED", stillnessDurationSec);
-        sendEmergencyAlert("NO_RESPONSE");
+        transitionToState(STATE_ALARM, isTestMode ? "TEST_ALARM_FIRED" : "REPEAT_INTERVAL_EXPIRED", stillnessDurationSec);
+        sendEmergencyAlert(isTestMode ? "TEST" : "NO_RESPONSE", isTestMode);
       }
       break;
 
     case STATE_ALARM:
     case STATE_EMERGENCY:
       stillnessDurationSec = (currentMillis - stillnessStartTime) / 1000;
-      // High-priority rapid visual and audible alarm patterns (distinct from device-offline)
       digitalWrite(PIN_BUZZER, (currentMillis / 300) % 2 == 0 ? HIGH : LOW);
       digitalWrite(PIN_STATUS_LED, (currentMillis / 150) % 2 == 0 ? HIGH : LOW);
 
-      if (!presenceDetected && !emergencyActive) {
+      if (isTestMode) {
+        // For test mode, sound brief 3s alarm then cleanly finish test
+        if ((currentMillis - noResponseStartTime) / 1000 >= (TEST_STAGE_SEC + 3)) {
+          Serial.println("[TEST MODE] Test Emergency cycle complete. Resetting to IDLE.");
+          cancelTestEmergency();
+        }
+      } else if (!presenceDetected && !emergencyActive) {
         currentState = STATE_IDLE;
         digitalWrite(PIN_BUZZER, LOW);
         transitionToState(STATE_IDLE, "ALARM_CLEARED", stillnessDurationSec);

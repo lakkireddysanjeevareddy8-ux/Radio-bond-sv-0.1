@@ -49,6 +49,7 @@ export const DashboardScreen: React.FC = () => {
 
   const { devices, activeDeviceId, setActiveDeviceId, getActiveDevice } = useDeviceStore();
   const activeDevice = getActiveDevice();
+  const isSharedViewer = Boolean(activeDevice?.userRole === 'SHARED_VIEWER' || activeDevice?.isShared);
   const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'STATUS' | 'WELLNESS' | 'CAREGIVERS'>('STATUS');
   const [showDeviceDropdown, setShowDeviceDropdown] = useState<boolean>(false);
@@ -150,6 +151,12 @@ export const DashboardScreen: React.FC = () => {
                 </Text>
                 <View style={styles.deviceSubRow}>
                   <Text style={styles.roomBadgeText}>{currentRoom}</Text>
+                  {isSharedViewer && (
+                    <View style={styles.sharedRoleBadge}>
+                      <Users size={11} color="#1D4ED8" />
+                      <Text style={styles.sharedRoleBadgeText}>Caregiver</Text>
+                    </View>
+                  )}
                   <ChevronDown size={14} color={colors.textSecondary} />
                 </View>
               </View>
@@ -338,7 +345,9 @@ export const DashboardScreen: React.FC = () => {
               activeOpacity={0.85}
             >
               <Users size={16} color="#FFFFFF" />
-              <Text style={styles.openCaregiversBtnText}>Manage Trusted Contacts</Text>
+              <Text style={styles.openCaregiversBtnText}>
+                {isSharedViewer ? 'View Connected Caregivers' : 'Manage Trusted Contacts'}
+              </Text>
             </TouchableOpacity>
           </View>
         )}
@@ -377,6 +386,7 @@ export const DashboardScreen: React.FC = () => {
             ) : (
               devices.map((dev) => {
                 const isSelected = (dev.deviceId === activeDeviceId) || (!activeDeviceId && dev.deviceId === currentDeviceId);
+                const isDevShared = dev.userRole === 'SHARED_VIEWER' || dev.isShared;
                 return (
                   <TouchableOpacity
                     key={dev.deviceId}
@@ -386,10 +396,17 @@ export const DashboardScreen: React.FC = () => {
                       setShowDeviceDropdown(false);
                     }}
                   >
-                    <View>
-                      <Text style={[styles.deviceOptionName, isSelected && { color: colors.primary }]}>
-                        {dev.name || dev.deviceId}
-                      </Text>
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <Text style={[styles.deviceOptionName, isSelected && { color: colors.primary }]}>
+                          {dev.name || dev.deviceId}
+                        </Text>
+                        {isDevShared && (
+                          <View style={styles.dropdownSharedPill}>
+                            <Text style={styles.dropdownSharedPillText}>Caregiver</Text>
+                          </View>
+                        )}
+                      </View>
                       <Text style={styles.deviceOptionRoom}>
                         {dev.room || 'Washroom'} • {dev.deviceId}
                       </Text>
@@ -409,7 +426,10 @@ export const DashboardScreen: React.FC = () => {
         animationType="slide"
         onRequestClose={() => setShowCaregiversModal(false)}
       >
-        <ManageTrustedContactsScreen onClose={() => setShowCaregiversModal(false)} />
+        <ManageTrustedContactsScreen
+          onClose={() => setShowCaregiversModal(false)}
+          isReadOnlyViewer={isSharedViewer}
+        />
       </Modal>
     </View>
   );
@@ -693,5 +713,32 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.textSecondary,
     marginTop: 2,
+  },
+  sharedRoleBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: '#DBEAFE',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    marginRight: 6,
+  },
+  sharedRoleBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#1D4ED8',
+  },
+  dropdownSharedPill: {
+    backgroundColor: '#DBEAFE',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 6,
+    marginLeft: 6,
+  },
+  dropdownSharedPillText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#1D4ED8',
   },
 });

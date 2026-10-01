@@ -15,6 +15,7 @@ import { Mail, KeyRound, ArrowRight, ArrowLeft, CheckCircle2, AlertCircle, Refre
 import { colors, spacing, borderRadius } from '../utils/theme';
 import { supabase } from '../services/supabaseClient';
 import { useAppStore } from '../store/useAppStore';
+import { useDeviceStore } from '../store/useDeviceStore';
 
 interface SignInScreenProps {
   onSuccess?: () => void;
@@ -102,16 +103,30 @@ export const SignInScreen: React.FC<SignInScreenProps> = ({
         } else {
           setErrorMessage(error.message || 'Verification failed. Please try again.');
         }
-      } else if (data?.session) {
-        setUser(data.session.user);
-        setSession(data.session);
-        onSuccess?.();
       } else {
-        // Fallback: query session if not in direct response
-        const { data: sessionData } = await supabase.auth.getSession();
-        if (sessionData?.session) {
-          setUser(sessionData.session.user);
-          setSession(sessionData.session);
+        const verifiedSession = data?.session || (await supabase.auth.getSession()).data?.session;
+        if (verifiedSession) {
+          setUser(verifiedSession.user);
+          setSession(verifiedSession);
+
+          // Auto-link caregiver invitations for this verified email
+          if (verifiedSession.user?.email) {
+            try {
+              await supabase
+                .from('trusted_contacts')
+                .update({
+                  contact_user_id: verifiedSession.user.id,
+                  status: 'accepted',
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('contact_email', verifiedSession.user.email.toLowerCase().trim());
+
+              await useDeviceStore.getState().loadSharedDevices();
+            } catch (linkErr) {
+              console.warn('[SignIn] Could not link caregiver invite:', linkErr);
+            }
+          }
+
           onSuccess?.();
         }
       }

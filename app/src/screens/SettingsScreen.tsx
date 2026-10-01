@@ -10,14 +10,19 @@ import {
   TextInput,
   Platform,
   Modal,
+  ActivityIndicator,
 } from 'react-native';
 import { colors, typography, spacing, borderRadius } from '../utils/theme';
 import { useAppStore } from '../store/useAppStore';
+import { useDeviceStore } from '../store/useDeviceStore';
 import { useContactStore } from '../store/useContactStore';
 import { EmergencyPushService } from '../services/EmergencyPushService';
 import { EmergencySoundService } from '../services/EmergencySoundService';
 import { DeviceConfig } from '../types';
 import { SafetySetupScreen } from './SafetySetupScreen';
+import { ManageTrustedContactsScreen } from './ManageTrustedContactsScreen';
+import { useEmergencyContactStore } from '../store/useEmergencyContactStore';
+import { EmergencyContactService } from '../services/EmergencyContactService';
 import { APP_VERSION_STRING, APP_DETAILS } from '../utils/version';
 import {
   Pencil,
@@ -38,13 +43,20 @@ import {
   ChevronRight,
   Info,
   Activity,
+  Moon,
+  ShieldCheck,
+  Users,
+  MapPin,
 } from 'lucide-react-native';
+import { QuietHoursService, BypassPermissionStatus } from '../services/QuietHoursService';
 
 const thresholdOptions = [15, 30, 60, 90, 120];
 const timeoutOptions = [5, 10, 15, 30];
 const t1Options = [60, 180, 300, 420, 600]; // 1m, 3m, 5m (default), 7m, 10m
 const repeatOptions = [10, 15, 30, 45];
 const volumeOptions = [40, 60, 80, 100];
+const quietStartOptions = ['21:00', '22:00', '23:00', '00:00'];
+const quietEndOptions = ['05:00', '06:00', '07:00', '08:00'];
 
 export const SettingsScreen: React.FC = () => {
   const {
@@ -64,12 +76,17 @@ export const SettingsScreen: React.FC = () => {
   const { getPrimaryContact } = useContactStore();
   const primaryContact = getPrimaryContact();
 
+  const { getActiveDevice } = useDeviceStore();
+  const activeDevice = getActiveDevice();
+  const isSharedViewer = Boolean(activeDevice?.userRole === 'SHARED_VIEWER' || activeDevice?.isShared);
+
   const [isEditing, setIsEditing] = useState(false);
   const [draftConfig, setDraftConfig] = useState<DeviceConfig | null>(deviceConfig);
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
   const [newKeyword, setNewKeyword] = useState('');
   const [showKeywordInput, setShowKeywordInput] = useState(false);
   const [showPermissionsModal, setShowPermissionsModal] = useState(false);
+  const [showCaregiversModal, setShowCaregiversModal] = useState(false);
 
   // Emergency Alert Settings State
   const [showTestConfirmModal, setShowTestConfirmModal] = useState(false);
@@ -77,36 +94,99 @@ export const SettingsScreen: React.FC = () => {
   const [emergencyAlertsEnabled, setEmergencyAlertsEnabled] = useState(true);
   const [emergencySoundEnabled, setEmergencySoundEnabled] = useState(true);
   const [emergencyVibrationEnabled, setEmergencyVibrationEnabled] = useState(true);
+  const [bypassStatus, setBypassStatus] = useState<BypassPermissionStatus | null>(null);
 
-  const handleTriggerTestAlert = () => {
+  useEffect(() => {
+    QuietHoursService.checkBypassPermissions().then(setBypassStatus);
+  }, []);
+
+  // Emergency Escalation & App-Only Trusted Contact Settings
+  const { settings: emgSettings, saveSettings: saveEmgSettings, loadAll: loadEmgData } = useEmergencyContactStore();
+  const [showAuditModal, setShowAuditModal] = useState(false);
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [isLoadingAudit, setIsLoadingAudit] = useState(false);
+
+  useEffect(() => {
+    loadEmgData();
+  }, []);
+
+  const handleOpenAuditModal = async () => {
+    setShowAuditModal(true);
+    setIsLoadingAudit(true);
+    try {
+      const data = await EmergencyContactService.getEmergencyHistory();
+      setAuditLogs(data);
+    } catch (err) {
+      console.warn('Error fetching emergency history:', err);
+    } finally {
+      setIsLoadingAudit(false);
+    }
+  };
+
+  const [isTestRunning, setIsTestRunning] = useState(false);
+
+  const handleTriggerTestAlert = async () => {
     setShowTestConfirmModal(false);
+    setIsTestRunning(true);
     const eventId = `test_emg_${Date.now()}`;
+    const devId = activeConfig?.deviceId || 'WSG-000001';
+    const devName = activeConfig?.deviceName || 'Washroom Safety Guardian';
+
+    // 1. Dispatch authenticated command to ESP32 device if reachable
+    try {
+      fetch('http://192.168.4.1/api/device/test-emergency', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Device-Token': 'wsg_secure_token',
+        },
+        body: JSON.stringify({ token: 'wsg_secure_token' }),
+      }).catch(() => {});
+    } catch {}
+
+    // 2. Dispatch standardized test emergency in app (compressed 10s stages)
     const testPayload = {
       type: 'EMERGENCY' as const,
       eventId,
-      deviceId: activeConfig?.deviceId || 'WSG-000001',
-      deviceName: activeConfig?.deviceName || 'Washroom Safety Guardian',
+      deviceId: devId,
+      deviceName: devName,
       severity: 'CRITICAL' as const,
-      presenceDuration: 1112,
+      presenceDuration: 20,
       timestamp: new Date().toISOString(),
       isTest: true,
-      trigger: 'OTHER',
+      trigger: 'TEST',
     };
     EmergencyPushService.handleIncomingPush(testPayload);
     setActiveEmergency({
       id: eventId,
       eventId,
-      deviceId: testPayload.deviceId,
-      deviceName: testPayload.deviceName,
+      deviceId: devId,
+      deviceName: devName,
       type: 'EMERGENCY',
       eventType: 'EMERGENCY',
-      trigger: 'OTHER',
+      trigger: 'TEST',
       severity: 'CRITICAL',
-      presenceDuration: 1112,
+      presenceDuration: 20,
       timestamp: testPayload.timestamp,
       status: 'ACTIVE',
       isTestAlert: true,
+      isTest: true,
     });
+  };
+
+  const handleCancelTestAlert = async () => {
+    setIsTestRunning(false);
+    try {
+      fetch('http://192.168.4.1/api/device/cancel-test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Device-Token': 'wsg_secure_token',
+        },
+        body: JSON.stringify({ token: 'wsg_secure_token' }),
+      }).catch(() => {});
+    } catch {}
+    setActiveEmergency(null);
   };
 
   // Sync draftConfig when deviceConfig changes outside of editing
@@ -131,6 +211,7 @@ export const SettingsScreen: React.FC = () => {
       draftConfig.voiceDetectionEnabled !== deviceConfig.voiceDetectionEnabled ||
       draftConfig.speakerEnabled !== deviceConfig.speakerEnabled ||
       draftConfig.emergencyEscalation !== deviceConfig.emergencyEscalation ||
+      JSON.stringify(draftConfig.quietHours) !== JSON.stringify(deviceConfig.quietHours) ||
       JSON.stringify(draftConfig.emergencyKeywords) !== JSON.stringify(deviceConfig.emergencyKeywords)
     );
   }, [isEditing, draftConfig, deviceConfig]);
@@ -141,6 +222,13 @@ export const SettingsScreen: React.FC = () => {
   };
 
   const handleStartEdit = () => {
+    if (isSharedViewer) {
+      Alert.alert(
+        'Caregiver View Only',
+        'You are monitoring this device as an authorized family member or caregiver. Safety configuration changes are restricted to the device owner.'
+      );
+      return;
+    }
     if (deviceConfig) {
       setDraftConfig({ ...deviceConfig });
     }
@@ -160,6 +248,9 @@ export const SettingsScreen: React.FC = () => {
   const handleSaveSettings = () => {
     if (!draftConfig) return;
     setDeviceConfig(draftConfig);
+    if (draftConfig.quietHours && draftConfig.deviceId) {
+      QuietHoursService.saveQuietHours(draftConfig.deviceId, draftConfig.quietHours);
+    }
     setIsEditing(false);
     setShowKeywordInput(false);
     setNewKeyword('');
@@ -210,21 +301,40 @@ export const SettingsScreen: React.FC = () => {
           </View>
         )}
 
+        {/* Caregiver Notice Banner */}
+        {isSharedViewer && (
+          <View style={styles.caregiverNoticeBanner}>
+            <View style={styles.caregiverNoticeIconWrapper}>
+              <ShieldCheck size={24} color="#1D4ED8" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.caregiverNoticeTitle}>👥 Shared Caregiver Mode (View Only)</Text>
+              <Text style={styles.caregiverNoticeText}>
+                You are monitoring {activeDevice?.name || 'this device'} as an authorized family member or caregiver. Live status, health telemetry, and emergency alerts are active, but hardware configuration changes and device deletion are reserved for the device owner.
+              </Text>
+            </View>
+          </View>
+        )}
+
         {/* Edit / Save Action Bar Header */}
-        <View style={[styles.controlBar, isEditing ? styles.controlBarEditing : styles.controlBarLocked]}>
+        <View style={[styles.controlBar, isSharedViewer ? styles.controlBarCaregiver : isEditing ? styles.controlBarEditing : styles.controlBarLocked]}>
           <View style={styles.controlBarInfo}>
             <View style={styles.controlBarTitleRow}>
-              {isEditing ? (
+              {isSharedViewer ? (
+                <Lock size={18} color="#2563EB" />
+              ) : isEditing ? (
                 <Unlock size={18} color="#D97706" />
               ) : (
                 <Lock size={18} color={colors.textSecondary} />
               )}
-              <Text style={[styles.controlBarTitle, isEditing && { color: '#92400E' }]}>
-                {isEditing ? 'Editing Settings' : 'Settings View Only'}
+              <Text style={[styles.controlBarTitle, isSharedViewer ? { color: '#1D4ED8' } : isEditing ? { color: '#92400E' } : undefined]}>
+                {isSharedViewer ? 'Caregiver View Only' : isEditing ? 'Editing Settings' : 'Settings View Only'}
               </Text>
             </View>
             <Text style={styles.controlBarSubtitle}>
-              {isEditing
+              {isSharedViewer
+                ? 'Monitored under caregiver authorization'
+                : isEditing
                 ? hasChanges
                   ? '⚠️ You have unsaved changes'
                   : 'Modify any settings below, then tap Save'
@@ -233,7 +343,12 @@ export const SettingsScreen: React.FC = () => {
           </View>
 
           <View style={styles.controlBarActions}>
-            {!isEditing ? (
+            {isSharedViewer ? (
+              <View style={styles.caregiverLockPill}>
+                <Lock size={12} color="#1D4ED8" />
+                <Text style={styles.caregiverLockPillText}>Read-Only</Text>
+              </View>
+            ) : !isEditing ? (
               <TouchableOpacity
                 style={styles.editBtn}
                 onPress={handleStartEdit}
@@ -278,6 +393,35 @@ export const SettingsScreen: React.FC = () => {
           </View>
           <TouchableOpacity style={styles.signOutBtn} onPress={handleSignOut}>
             <Text style={styles.signOutBtnText}>🚪 Sign Out</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Family & Caregiver Sharing */}
+        <SectionHeader title="Family & Caregiver Sharing" />
+        <View style={styles.card}>
+          <View style={styles.sharingHeaderRow}>
+            <View style={[styles.permissionsIconWrapper, { backgroundColor: '#DBEAFE' }]}>
+              <Users size={20} color="#2563EB" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.sharingTitle}>Caregiver Network</Text>
+              <Text style={styles.sharingSubtitle}>
+                {isSharedViewer
+                  ? 'You have secure caregiver access to this unit. Emergency alerts and wellness data are shared in real-time.'
+                  : 'Authorize family members and trusted caregivers to monitor status and receive simultaneous emergency sirens.'}
+              </Text>
+            </View>
+          </View>
+
+          <TouchableOpacity
+            style={styles.manageSharingBtn}
+            onPress={() => setShowCaregiversModal(true)}
+            activeOpacity={0.85}
+          >
+            <Users size={16} color="#FFFFFF" />
+            <Text style={styles.manageSharingBtnText}>
+              {isSharedViewer ? 'View Connected Caregivers' : 'Manage & Invite Caregivers'}
+            </Text>
           </TouchableOpacity>
         </View>
 
@@ -402,6 +546,283 @@ export const SettingsScreen: React.FC = () => {
               <Text style={styles.testAlertBtnText}>Test Emergency Alert</Text>
             </TouchableOpacity>
           </View>
+        </View>
+
+        {/* Emergency Escalation & Trusted Settings Section */}
+        <SectionHeader title="Emergency Escalation & Safety Settings" />
+        <View style={styles.card}>
+          <View style={styles.emergencyChannelHeader}>
+            <View style={[styles.emergencyChannelIconWrap, { backgroundColor: '#FEE2E2' }]}>
+              <ShieldAlert size={20} color="#DC2626" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.emergencyChannelTitle}>Automated Escalation Engine</Text>
+              <Text style={styles.emergencyChannelSubtitle}>
+                App-only cloud notification pipeline for verified trusted contacts
+              </Text>
+            </View>
+          </View>
+
+          <ToggleRow
+            label="Automatic Escalation"
+            value={emgSettings.automaticEscalationEnabled}
+            onToggle={(val) => saveEmgSettings({ automaticEscalationEnabled: val })}
+            disabled={false}
+          />
+
+          <View style={[styles.settingRow, { flexDirection: 'column', alignItems: 'flex-start', paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border }]}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%', marginBottom: 6 }}>
+              <Text style={styles.settingLabel}>Escalation Delay</Text>
+              <Text style={{ fontSize: 13, fontWeight: '700', color: colors.primary }}>
+                {emgSettings.escalationDelaySeconds} seconds
+              </Text>
+            </View>
+            <Text style={{ fontSize: 12, color: colors.textSecondary, marginBottom: 8 }}>
+              Countdown before emergency escalates to trusted contact WSG-01 apps if unacknowledged:
+            </Text>
+            <View style={styles.optionGroup}>
+              {[10, 30, 60, 120].map((sec) => {
+                const isSelected = emgSettings.escalationDelaySeconds === sec;
+                return (
+                  <TouchableOpacity
+                    key={sec}
+                    style={[
+                      styles.optionPill,
+                      isSelected && styles.optionPillActive,
+                    ]}
+                    onPress={() => saveEmgSettings({ escalationDelaySeconds: sec as any })}
+                  >
+                    <Text
+                      style={[
+                        styles.optionText,
+                        isSelected && styles.optionTextActive,
+                      ]}
+                    >
+                      {sec}s
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+
+          <View style={[styles.settingRow, { flexDirection: 'column', alignItems: 'flex-start', paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border }]}>
+            <Text style={styles.settingLabel}>Escalation Strategy</Text>
+            <Text style={{ fontSize: 12, color: colors.textSecondary, marginVertical: 4 }}>
+              Choose how notifications are dispatched to registered emergency contacts:
+            </Text>
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 6, width: '100%' }}>
+              <TouchableOpacity
+                style={[
+                  styles.strategyPill,
+                  emgSettings.escalationStrategy === 'all' && styles.strategyPillActive,
+                ]}
+                onPress={() => saveEmgSettings({ escalationStrategy: 'all' })}
+              >
+                <Users size={15} color={emgSettings.escalationStrategy === 'all' ? '#FFFFFF' : colors.textPrimary} />
+                <Text
+                  style={[
+                    styles.strategyPillText,
+                    emgSettings.escalationStrategy === 'all' && styles.strategyPillTextActive,
+                  ]}
+                >
+                  Notify All Contacts
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.strategyPill,
+                  emgSettings.escalationStrategy === 'priority' && styles.strategyPillActive,
+                ]}
+                onPress={() => saveEmgSettings({ escalationStrategy: 'priority' })}
+              >
+                <Activity size={15} color={emgSettings.escalationStrategy === 'priority' ? '#FFFFFF' : colors.textPrimary} />
+                <Text
+                  style={[
+                    styles.strategyPillText,
+                    emgSettings.escalationStrategy === 'priority' && styles.strategyPillTextActive,
+                  ]}
+                >
+                  Priority (1 → 2 → 3)
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <ToggleRow
+            label="Share My Location During Emergencies"
+            value={emgSettings.shareLocationOnEmergency}
+            onToggle={(val) => saveEmgSettings({ shareLocationOnEmergency: val })}
+            disabled={false}
+          />
+          <Text style={{ fontSize: 12, color: colors.textSecondary, paddingHorizontal: spacing.sm, marginBottom: 8, marginTop: -4 }}>
+            When enabled, emergency alerts include GPS coordinates and map links for trusted caregivers.
+          </Text>
+
+          <ToggleRow
+            label="Notify Device Owner Immediately"
+            value={emgSettings.notifyOwner}
+            onToggle={(val) => saveEmgSettings({ notifyOwner: val })}
+            disabled={false}
+          />
+
+          <TouchableOpacity
+            style={styles.auditLogBtn}
+            onPress={handleOpenAuditModal}
+            activeOpacity={0.85}
+          >
+            <Activity size={16} color="#2563EB" />
+            <Text style={styles.auditLogBtnText}>View Emergency History & Push Logs</Text>
+            <ChevronRight size={16} color="#2563EB" />
+          </TouchableOpacity>
+        </View>
+
+        {/* Quiet Hours & Emergency Bypass Section */}
+        <View style={styles.sectionHeaderRow}>
+          <SectionHeader title="Quiet Hours & Emergency Bypass" />
+          {!isEditing && <Text style={styles.viewModeNotice}>Locked</Text>}
+        </View>
+        <View style={styles.card}>
+          <View style={styles.quietHoursHeader}>
+            <View style={[styles.permissionsIconWrapper, { backgroundColor: '#EDE9FE' }]}>
+              <Moon size={20} color="#7C3AED" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.quietHoursTitle}>Do Not Disturb (Sleep Schedule)</Text>
+              <Text style={styles.quietHoursSubtitle}>
+                Silences routine maintenance, offline alerts, and low battery notices while you sleep.
+              </Text>
+            </View>
+          </View>
+
+          <ToggleRow
+            label="Enable Quiet Hours"
+            value={Boolean(activeConfig?.quietHours?.enabled)}
+            onToggle={(val) =>
+              updateDraft({
+                quietHours: {
+                  enabled: val,
+                  startTime: activeConfig?.quietHours?.startTime || '22:00',
+                  endTime: activeConfig?.quietHours?.endTime || '07:00',
+                  emergencyBypass: true,
+                },
+              })
+            }
+            disabled={!isEditing}
+          />
+
+          {Boolean(activeConfig?.quietHours?.enabled) && (
+            <View style={styles.quietHoursTimeSection}>
+              {/* Start Time Selection */}
+              <Text style={styles.quietHoursFieldTitle}>Quiet Hours Start (Evening)</Text>
+              <View style={styles.optionGroup}>
+                {quietStartOptions.map((time) => {
+                  const isSelected = (activeConfig?.quietHours?.startTime || '22:00') === time;
+                  return (
+                    <TouchableOpacity
+                      key={time}
+                      disabled={!isEditing}
+                      style={[
+                        styles.optionPill,
+                        isSelected && styles.optionPillActive,
+                        !isEditing && !isSelected && styles.optionPillDisabled,
+                      ]}
+                      onPress={() =>
+                        updateDraft({
+                          quietHours: {
+                            ...(activeConfig?.quietHours || { enabled: true, emergencyBypass: true, endTime: '07:00' }),
+                            enabled: true,
+                            startTime: time,
+                            emergencyBypass: true,
+                          },
+                        })
+                      }
+                    >
+                      <Text
+                        style={[
+                          styles.optionText,
+                          isSelected && styles.optionTextActive,
+                          !isEditing && !isSelected && styles.optionTextDisabled,
+                        ]}
+                      >
+                        {time}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              {/* End Time Selection */}
+              <Text style={[styles.quietHoursFieldTitle, { marginTop: 12 }]}>Quiet Hours End (Morning)</Text>
+              <View style={styles.optionGroup}>
+                {quietEndOptions.map((time) => {
+                  const isSelected = (activeConfig?.quietHours?.endTime || '07:00') === time;
+                  return (
+                    <TouchableOpacity
+                      key={time}
+                      disabled={!isEditing}
+                      style={[
+                        styles.optionPill,
+                        isSelected && styles.optionPillActive,
+                        !isEditing && !isSelected && styles.optionPillDisabled,
+                      ]}
+                      onPress={() =>
+                        updateDraft({
+                          quietHours: {
+                            ...(activeConfig?.quietHours || { enabled: true, emergencyBypass: true, startTime: '22:00' }),
+                            enabled: true,
+                            endTime: time,
+                            emergencyBypass: true,
+                          },
+                        })
+                      }
+                    >
+                      <Text
+                        style={[
+                          styles.optionText,
+                          isSelected && styles.optionTextActive,
+                          !isEditing && !isSelected && styles.optionTextDisabled,
+                        ]}
+                      >
+                        {time}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+          )}
+
+          {/* Immutable Emergency Bypass Badge */}
+          <View style={styles.emergencyBypassBadge}>
+            <ShieldCheck size={20} color="#059669" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.emergencyBypassTitle}>Life-Safety Emergency Bypass Active</Text>
+              <Text style={styles.emergencyBypassBody}>
+                Emergency alarms, fall detection sirens, and SOS voice keywords strictly bypass quiet hours and DND at maximum volume. This protection cannot be disabled.
+              </Text>
+            </View>
+          </View>
+
+          {/* Warning Banner if DND override is not provisioned */}
+          {bypassStatus && !bypassStatus.canBypassDnd && (
+            <View style={styles.bypassWarningBanner}>
+              <AlertCircle size={18} color="#B45309" />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.bypassWarningTitle}>Permission Advisory</Text>
+                <Text style={styles.bypassWarningText}>
+                  {bypassStatus.warningMessage || 'Enable Do Not Disturb Override in device settings so emergency sirens can sound while your phone is silenced.'}
+                </Text>
+                <TouchableOpacity
+                  style={styles.bypassSettingsBtn}
+                  onPress={() => QuietHoursService.openSystemNotificationSettings()}
+                >
+                  <Text style={styles.bypassSettingsBtnText}>Open System Settings</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
         </View>
 
         {/* Device Name */}
@@ -915,6 +1336,143 @@ export const SettingsScreen: React.FC = () => {
                 onPress={() => setShowHistoryModal(false)}
               >
                 <Text style={styles.testModalCancelText}>Close History</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+      )}
+
+      {/* Manage Trusted Contacts Modal */}
+      {showCaregiversModal && (
+        <Modal
+          visible={showCaregiversModal}
+          animationType="slide"
+          onRequestClose={() => setShowCaregiversModal(false)}
+        >
+          <ManageTrustedContactsScreen
+            onClose={() => setShowCaregiversModal(false)}
+            isReadOnlyViewer={isSharedViewer}
+          />
+        </Modal>
+      )}
+
+      {/* Emergency Event & Notification Audit Modal */}
+      {showAuditModal && (
+        <Modal
+          visible={showAuditModal}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setShowAuditModal(false)}
+        >
+          <View style={styles.testModalBackdrop}>
+            <View style={[styles.testModalCard, { maxHeight: '85%', width: '92%' }]}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <ShieldAlert size={20} color="#DC2626" />
+                  <Text style={styles.testModalTitle}>Emergency Event Audit</Text>
+                </View>
+                <TouchableOpacity onPress={() => setShowAuditModal(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <X size={20} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+
+              <Text style={{ fontSize: 13, color: colors.textSecondary, marginBottom: 14 }}>
+                Real safety logs, trigger sources, and push delivery status recorded for this account:
+              </Text>
+
+              {isLoadingAudit ? (
+                <View style={{ padding: 32, alignItems: 'center', justifyContent: 'center' }}>
+                  <ActivityIndicator size="large" color={colors.primary} />
+                  <Text style={{ marginTop: 12, color: colors.textSecondary, fontSize: 13 }}>Loading audit records...</Text>
+                </View>
+              ) : (
+                <ScrollView style={{ maxHeight: 380 }}>
+                  {auditLogs && auditLogs.length > 0 ? (
+                    auditLogs.map((ev) => (
+                      <View key={ev.id} style={styles.auditItemCard}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <View style={[
+                              styles.auditStatusDot,
+                              { backgroundColor: ev.status === 'resolved' || ev.status === 'RESOLVED' ? '#10B981' : ev.status === 'cancelled' || ev.status === 'CANCELLED' ? '#6B7280' : '#EF4444' }
+                            ]} />
+                            <Text style={styles.auditItemTitle}>
+                              {ev.eventType || 'EMERGENCY'}
+                            </Text>
+                          </View>
+                          <Text style={styles.auditItemTime}>
+                            {new Date(ev.detectedAt).toLocaleDateString()} {new Date(ev.detectedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </Text>
+                        </View>
+
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                          <View style={styles.auditMetaPill}>
+                            <Text style={styles.auditMetaPillText}>Trigger: {ev.source || 'voice_keyword'}</Text>
+                          </View>
+                          <View style={styles.auditMetaPill}>
+                            <Text style={styles.auditMetaPillText}>Status: {ev.status}</Text>
+                          </View>
+                          {ev.locationShared ? (
+                            <View style={[styles.auditMetaPill, { backgroundColor: '#DCFCE7' }]}>
+                              <Text style={[styles.auditMetaPillText, { color: '#166534' }]}>📍 Location Shared</Text>
+                            </View>
+                          ) : (
+                            <View style={[styles.auditMetaPill, { backgroundColor: '#F3F4F6' }]}>
+                              <Text style={[styles.auditMetaPillText, { color: '#6B7280' }]}>🔒 Location Off</Text>
+                            </View>
+                          )}
+                        </View>
+
+                        {/* Push Notification Delivery Records */}
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: colors.textSecondary, textTransform: 'uppercase', marginBottom: 4 }}>
+                          App Push Notifications ({ev.notifications?.length || 0}):
+                        </Text>
+                        {ev.notifications && ev.notifications.length > 0 ? (
+                          ev.notifications.map((notif: any) => (
+                            <View key={notif.id} style={styles.auditNotificationRow}>
+                              <View style={{ flex: 1 }}>
+                                <Text style={styles.auditRecipientText} numberOfLines={1}>
+                                  Recipient: {notif.recipientUserId?.slice(0, 8)}... ({notif.notificationType})
+                                </Text>
+                                {notif.failureReason && (
+                                  <Text style={styles.auditFailureText}>Reason: {notif.failureReason}</Text>
+                                )}
+                              </View>
+                              <View style={[
+                                styles.auditDeliveryBadge,
+                                notif.status === 'delivered' ? styles.auditBadgeDelivered : notif.status === 'failed' ? styles.auditBadgeFailed : styles.auditBadgeSent
+                              ]}>
+                                <Text style={[
+                                  styles.auditDeliveryBadgeText,
+                                  notif.status === 'delivered' ? { color: '#166534' } : notif.status === 'failed' ? { color: '#991B1B' } : { color: '#1E40AF' }
+                                ]}>
+                                  {notif.status}
+                                </Text>
+                              </View>
+                            </View>
+                          ))
+                        ) : (
+                          <Text style={{ fontSize: 12, color: colors.textSecondary, fontStyle: 'italic' }}>
+                            No push notification dispatches triggered for this event.
+                          </Text>
+                        )}
+                      </View>
+                    ))
+                  ) : (
+                    <View style={{ padding: 24, alignItems: 'center' }}>
+                      <Text style={{ color: colors.textSecondary, fontSize: 13, textAlign: 'center' }}>
+                        No emergency events recorded yet in Supabase. Events triggered by LD2410C immobility, voice keywords, or manual alerts will appear here with delivery audit logs.
+                      </Text>
+                    </View>
+                  )}
+                </ScrollView>
+              )}
+
+              <TouchableOpacity
+                style={[styles.testModalCancelBtn, { marginTop: 16, alignSelf: 'stretch', alignItems: 'center' }]}
+                onPress={() => setShowAuditModal(false)}
+              >
+                <Text style={styles.testModalCancelText}>Close Audit Log</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1709,5 +2267,294 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.textSecondary,
     marginTop: 2,
+  },
+  quietHoursHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: spacing.md,
+  },
+  quietHoursTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  quietHoursSubtitle: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  quietHoursTimeSection: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginVertical: spacing.sm,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  quietHoursFieldTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textPrimary,
+    marginBottom: 6,
+  },
+  emergencyBypassBadge: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    backgroundColor: '#ECFDF5',
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginTop: spacing.sm,
+  },
+  emergencyBypassTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#065F46',
+  },
+  emergencyBypassBody: {
+    fontSize: 12,
+    color: '#047857',
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  bypassWarningBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginTop: spacing.sm,
+  },
+  bypassWarningTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#92400E',
+  },
+  bypassWarningText: {
+    fontSize: 12,
+    color: '#B45309',
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  bypassSettingsBtn: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    backgroundColor: '#D97706',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: borderRadius.sm,
+  },
+  bypassSettingsBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  controlBarCaregiver: {
+    borderColor: '#93C5FD',
+    backgroundColor: '#EFF6FF',
+  },
+  caregiverNoticeBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1.5,
+    borderColor: '#3B82F6',
+    borderRadius: borderRadius.lg,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  caregiverNoticeIconWrapper: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#DBEAFE',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 2,
+  },
+  caregiverNoticeTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1E40AF',
+    marginBottom: 4,
+  },
+  caregiverNoticeText: {
+    fontSize: 12,
+    color: '#1E3A8A',
+    lineHeight: 18,
+  },
+  caregiverLockPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#DBEAFE',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: borderRadius.full,
+    borderWidth: 1,
+    borderColor: '#93C5FD',
+  },
+  caregiverLockPillText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1D4ED8',
+  },
+  sharingHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: spacing.md,
+  },
+  sharingTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  sharingSubtitle: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  manageSharingBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#2563EB',
+    paddingVertical: 12,
+    borderRadius: borderRadius.md,
+  },
+  manageSharingBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  strategyPill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: borderRadius.md,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+  },
+  strategyPillActive: {
+    backgroundColor: '#2563EB',
+    borderColor: '#1D4ED8',
+  },
+  strategyPillText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textPrimary,
+  },
+  strategyPillTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  auditLogBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    paddingVertical: 12,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.md,
+    marginTop: spacing.md,
+  },
+  auditLogBtnText: {
+    flex: 1,
+    marginLeft: 8,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1D4ED8',
+  },
+  auditItemCard: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: spacing.sm + 4,
+    marginBottom: spacing.sm,
+  },
+  auditStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  auditItemTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  auditItemTime: {
+    fontSize: 11,
+    color: colors.textSecondary,
+  },
+  auditMetaPill: {
+    backgroundColor: '#E2E8F0',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: borderRadius.sm,
+  },
+  auditMetaPillText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  auditNotificationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: borderRadius.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    marginBottom: 4,
+  },
+  auditRecipientText: {
+    fontSize: 11,
+    color: colors.textPrimary,
+    fontWeight: '500',
+  },
+  auditFailureText: {
+    fontSize: 10,
+    color: '#DC2626',
+    marginTop: 2,
+  },
+  auditDeliveryBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  auditBadgeDelivered: {
+    backgroundColor: '#DCFCE7',
+  },
+  auditBadgeFailed: {
+    backgroundColor: '#FEE2E2',
+  },
+  auditBadgeSent: {
+    backgroundColor: '#DBEAFE',
+  },
+  auditDeliveryBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
   },
 });

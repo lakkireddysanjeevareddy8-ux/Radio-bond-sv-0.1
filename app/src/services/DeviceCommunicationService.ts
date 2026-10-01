@@ -144,6 +144,13 @@ export class DeviceCommunicationService {
       )
       .on(
         'postgres_changes',
+        { event: '*', schema: 'public', table: 'emergency_events', filter: `device_id=eq.${deviceId}` },
+        (payload) => {
+          this.handleSupabaseEmergency(payload.new);
+        }
+      )
+      .on(
+        'postgres_changes',
         { event: '*', schema: 'public', table: 'device_health', filter: `device_id=eq.${deviceId}` },
         (payload) => {
           this.handleSupabaseHealth(payload.new);
@@ -254,34 +261,144 @@ export class DeviceCommunicationService {
       EmergencyPushService.markEventProcessed(eventId);
     } catch {}
 
+    const rawStatus = String(row.status || 'active').toLowerCase();
+    let normalizedStatus: any = 'active';
+    if (rawStatus === 'acknowledged') normalizedStatus = 'acknowledged';
+    else if (rawStatus === 'resolved') normalizedStatus = 'resolved';
+    else if (rawStatus === 'cancelled') normalizedStatus = 'cancelled';
+    else if (rawStatus === 'escalating') normalizedStatus = 'escalating';
+    else if (rawStatus === 'detected') normalizedStatus = 'detected';
+
     const emergency: EmergencyEvent = {
       id: eventId,
       eventId: eventId,
+      ownerUserId: row.owner_user_id,
       deviceId: row.device_id || row.deviceId || 'WSG-000001',
       deviceName: row.device_name || row.deviceName || 'Washroom Safety Guardian',
       type: 'EMERGENCY',
       eventType: 'EMERGENCY',
-      trigger: row.trigger || 'OTHER',
-      severity: row.severity || 'CRITICAL',
-      presenceDuration: Number(row.presence_duration ?? 1112),
+      trigger: row.trigger || (row.source === 'voice_keyword' ? 'VOICE' : 'OTHER'),
+      source: row.source || (row.trigger === 'VOICE' ? 'voice_keyword' : 'manual_device_trigger'),
+      severity: (row.severity as any) || 'CRITICAL',
+      presenceDuration: Number(row.presence_duration ?? 0),
       keyword: row.keyword,
       confidence: row.confidence,
-      timestamp: row.event_time || row.created_at || row.timestamp || new Date().toISOString(),
-      status: (row.status as 'ACTIVE' | 'ACKNOWLEDGED' | 'RESOLVED') || 'ACTIVE',
+      timestamp: row.detected_at || row.event_time || row.created_at || row.timestamp || new Date().toISOString(),
+      detectedAt: row.detected_at,
+      status: normalizedStatus,
       acknowledgedAt: row.acknowledged_at,
       resolvedAt: row.resolved_at,
+      locationLat: row.location_lat,
+      locationLng: row.location_lng,
+      locationAccuracy: row.location_accuracy,
+      locationShared: Boolean(row.location_shared),
+      metadata: row.metadata || {},
     };
+
     this.onEmergencyEvent?.(emergency);
+
+    // If event is active / detected, start escalation countdown
+    if (normalizedStatus === 'active' || normalizedStatus === 'detected') {
+      try {
+        const { EscalationEngineService } = require('./EscalationEngineService');
+        EscalationEngineService.startEscalation(emergency);
+      } catch (escErr) {
+        console.warn('[DeviceCommunicationService] Escalation engine error:', escErr);
+      }
+    }
   }
 
   /**
-   * STEP 9: Acknowledge emergency on backend (ACTIVE -> ACKNOWLEDGED)
+   * Create an emergency event explicitly (from real BLE event, local trigger, or test)
+   */
+  public async createEmergencyEvent(params: {
+    deviceId: string;
+    trigger: string;
+    source?: any;
+    severity?: 'CRITICAL' | 'WARNING' | 'INFO';
+    isTest?: boolean;
+    metadata?: Record<string, any>;
+  }): Promise<EmergencyEvent> {
+    const eventId = `emg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const user = useAppStore.getState().user;
+
+    const event: EmergencyEvent = {
+      id: eventId,
+      eventId: eventId,
+      ownerUserId: user?.id,
+      deviceId: params.deviceId,
+      deviceName: useAppStore.getState().deviceConfig?.deviceName || 'Washroom Safety Guardian',
+      type: 'EMERGENCY',
+      eventType: 'EMERGENCY',
+      trigger: params.trigger,
+      source: params.source || 'manual_device_trigger',
+      severity: params.severity || 'CRITICAL',
+      status: 'active',
+      timestamp: new Date().toISOString(),
+      isTest: params.isTest,
+      isTestAlert: params.isTest,
+      metadata: params.metadata || {},
+    };
+
+    // 1. Dispatch locally
+    this.onEmergencyEvent?.(event);
+
+    // 2. Persist to Supabase if connected
+    try {
+      await supabase.from('emergency_events').insert({
+        id: eventId.startsWith('emg_') ? undefined : eventId,
+        owner_user_id: user?.id,
+        device_id: params.deviceId,
+        event_type: 'emergency',
+        severity: (params.severity || 'CRITICAL').toLowerCase(),
+        status: 'active',
+        source: params.source || 'manual_device_trigger',
+        metadata: params.metadata || {},
+      });
+
+      // Also insert into legacy emergencies table for ESP32 compatibility
+      await supabase.from('emergencies').insert({
+        device_id: params.deviceId,
+        trigger: params.trigger,
+        status: 'ACTIVE',
+        is_test: Boolean(params.isTest),
+      });
+    } catch (e) {
+      console.warn('[DeviceCommunicationService] Could not persist emergency event to Supabase:', e);
+    }
+
+    // 3. Start escalation
+    try {
+      const { EscalationEngineService } = require('./EscalationEngineService');
+      EscalationEngineService.startEscalation(event);
+    } catch {}
+
+    return event;
+  }
+
+  /**
+   * STEP 9: Acknowledge emergency (ACTIVE -> ACKNOWLEDGED)
+   * Stops escalation countdown immediately.
    */
   public async acknowledgeEmergency(eventId: string, deviceId?: string): Promise<boolean> {
     try {
+      const { EscalationEngineService } = require('./EscalationEngineService');
+      EscalationEngineService.stopEscalation();
+
       if (this.simulator) {
         return true;
       }
+
+      // Update emergency_events
+      await supabase
+        .from('emergency_events')
+        .update({
+          status: 'acknowledged',
+          acknowledged_at: new Date().toISOString(),
+        })
+        .eq('id', eventId);
+
+      // Update legacy emergencies
       const numId = Number(eventId);
       const query = supabase.from('emergencies').update({
         status: 'ACKNOWLEDGED',
@@ -301,14 +418,74 @@ export class DeviceCommunicationService {
   }
 
   /**
-   * STEP 10: Resolve emergency on backend (ACTIVE / ACKNOWLEDGED -> RESOLVED)
+   * Cancel emergency (e.g. false alarm).
+   * Stops escalation countdown immediately.
    */
-  public async resolveEmergency(eventId: string, deviceId?: string): Promise<boolean> {
+  public async cancelEmergency(eventId: string, deviceId?: string): Promise<boolean> {
     try {
+      const { EscalationEngineService } = require('./EscalationEngineService');
+      EscalationEngineService.stopEscalation();
+
+      const { EmergencySoundService } = require('./EmergencySoundService');
+      EmergencySoundService.stopAll();
+
       if (this.simulator) {
         this.onEmergencyResolved?.();
         return true;
       }
+
+      await supabase
+        .from('emergency_events')
+        .update({
+          status: 'cancelled',
+          resolved_at: new Date().toISOString(),
+        })
+        .eq('id', eventId);
+
+      const numId = Number(eventId);
+      const query = supabase.from('emergencies').update({
+        status: 'CANCELLED',
+        resolved: true,
+        resolved_at: new Date().toISOString(),
+      });
+
+      if (!isNaN(numId)) {
+        await query.eq('id', numId);
+      } else {
+        await query.eq('id', eventId);
+      }
+
+      this.onEmergencyResolved?.();
+      return true;
+    } catch (err) {
+      console.warn('Backend cancel error:', err);
+      return false;
+    }
+  }
+
+  /**
+   * STEP 10: Resolve emergency on backend (ACTIVE / ACKNOWLEDGED -> RESOLVED)
+   * Stops escalation countdown immediately.
+   */
+  public async resolveEmergency(eventId: string, deviceId?: string): Promise<boolean> {
+    try {
+      const { EscalationEngineService } = require('./EscalationEngineService');
+      EscalationEngineService.stopEscalation();
+
+      if (this.simulator) {
+        this.onEmergencyResolved?.();
+        return true;
+      }
+
+      // Update emergency_events
+      await supabase
+        .from('emergency_events')
+        .update({
+          status: 'resolved',
+          resolved_at: new Date().toISOString(),
+        })
+        .eq('id', eventId);
+
       const numId = Number(eventId);
       const query = supabase.from('emergencies').update({
         status: 'RESOLVED',

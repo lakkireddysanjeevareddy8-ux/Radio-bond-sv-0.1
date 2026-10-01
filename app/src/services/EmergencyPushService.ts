@@ -98,6 +98,12 @@ class EmergencyPushServiceClass {
       (rawPayload.data && (rawPayload.data.isTest || rawPayload.data.isTestAlert))
     );
 
+    const locationLat = rawPayload.locationLat ?? rawPayload.data?.locationLat;
+    const locationLng = rawPayload.locationLng ?? rawPayload.data?.locationLng;
+    const locationShared = Boolean(rawPayload.locationShared ?? rawPayload.data?.locationShared);
+    const ownerName = rawPayload.ownerName || rawPayload.data?.ownerName;
+    const status = rawPayload.status || rawPayload.data?.status || 'active';
+
     const emergencyEvent: EmergencyEvent = {
       id: eventId,
       eventId: eventId,
@@ -109,8 +115,12 @@ class EmergencyPushServiceClass {
       severity: severity,
       presenceDuration: presenceDuration,
       timestamp: timestamp,
-      status: 'ACTIVE',
+      status: status,
       isTestAlert: isTest,
+      locationLat: locationLat !== undefined ? Number(locationLat) : undefined,
+      locationLng: locationLng !== undefined ? Number(locationLng) : undefined,
+      locationShared: locationShared,
+      metadata: { ownerName },
     };
 
     // 1. Dispatch through Android Native / Web Notification channel with sound & vibration
@@ -126,14 +136,45 @@ class EmergencyPushServiceClass {
 
   /**
    * Register physical hardware device with Expo Push Service and store
-   * token securely in Supabase device_push_tokens table.
+   * token securely in Supabase notification_devices and device_push_tokens tables.
    */
-  public async registerForPushNotifications(deviceId: string): Promise<string | null> {
-    if (Platform.OS === 'web') {
-      return null;
-    }
-
+  public async registerForPushNotifications(deviceId: string = 'WSG-000001'): Promise<string | null> {
     try {
+      const { supabase } = require('./supabaseClient');
+      const user = require('../store/useAppStore').useAppStore.getState().user;
+      let userId = user?.id;
+      if (!userId) {
+        try {
+          const authRes = await supabase.auth.getUser();
+          userId = authRes?.data?.user?.id;
+        } catch {}
+      }
+
+      if (Platform.OS === 'web') {
+        // On Web: request Notification permission if supported
+        if (typeof window !== 'undefined' && 'Notification' in window) {
+          try {
+            const perm = await Notification.requestPermission();
+            if (perm === 'granted' && userId) {
+              const webPseudoToken = `web_${userId.slice(0, 8)}_${Math.random().toString(36).slice(2, 8)}`;
+              await supabase.from('notification_devices').upsert(
+                {
+                  user_id: userId,
+                  platform: 'web',
+                  push_token: webPseudoToken,
+                  device_name: 'Web Browser PWA',
+                  is_active: true,
+                  last_seen_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString(),
+                },
+                { onConflict: 'user_id,push_token' }
+              );
+            }
+          } catch {}
+        }
+        return null;
+      }
+
       const { PermissionService } = require('./PermissionService');
       const permStatus = await PermissionService.requestNotificationPermission();
       if (permStatus !== 'granted') {
@@ -155,18 +196,18 @@ class EmergencyPushServiceClass {
         return null;
       }
 
-      // Upsert into Supabase device_push_tokens table
-      try {
-        const { supabase } = require('./supabaseClient');
-        const user = require('../store/useAppStore').useAppStore.getState().user;
-        let userId = user?.id;
-        if (!userId) {
-          try {
-            const authRes = await supabase.auth.getUser();
-            userId = authRes?.data?.user?.id;
-          } catch {}
+      // Upsert into Supabase notification_devices table
+      if (userId) {
+        try {
+          const { EmergencyContactService } = require('./EmergencyContactService');
+          await EmergencyContactService.registerNotificationDevice(token, Platform.OS, `${Platform.OS === 'ios' ? 'iPhone' : 'Android'} Device`);
+        } catch (devErr) {
+          console.warn('[EmergencyPushService] Error saving to notification_devices:', devErr);
         }
+      }
 
+      // Backward compatible upsert into device_push_tokens table
+      try {
         const { error } = await supabase
           .from('device_push_tokens')
           .upsert(
@@ -185,7 +226,7 @@ class EmergencyPushServiceClass {
         if (error) {
           console.warn('[EmergencyPushService] Error saving push token to Supabase:', error);
         } else {
-          console.log(`[EmergencyPushService] Push token registered for ${deviceId}: ${token.slice(0, 20)}...`);
+          console.log(`[EmergencyPushService] Push token registered: ${token.slice(0, 20)}...`);
         }
       } catch (dbErr) {
         console.warn('[EmergencyPushService] Database error saving push token:', dbErr);

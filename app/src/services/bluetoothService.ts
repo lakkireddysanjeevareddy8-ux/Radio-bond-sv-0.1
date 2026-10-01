@@ -604,6 +604,26 @@ export class BluetoothService {
         const dataView: DataView = await c.readValue();
         return new Uint8Array(dataView.buffer);
       },
+      monitor: (listener: (data: Uint8Array) => void) => {
+        if (c.addEventListener) {
+          const handler = (evt: any) => {
+            const dv = evt.target?.value;
+            if (dv) {
+              listener(new Uint8Array(dv.buffer));
+            }
+          };
+          c.startNotifications().then(() => {
+            c.addEventListener('characteristicvaluechanged', handler);
+          }).catch(() => {});
+          return () => {
+            try {
+              c.removeEventListener('characteristicvaluechanged', handler);
+              c.stopNotifications().catch(() => {});
+            } catch {}
+          };
+        }
+        return () => {};
+      },
     });
 
     return {
@@ -701,6 +721,107 @@ export class BluetoothService {
       console.warn('[BLE] Could not read escalation config over BLE:', e);
     }
     return null;
+  }
+
+  /**
+   * Trigger Test Emergency sequence on the device over BLE (authenticated with pairing token).
+   */
+  public static async triggerTestEmergency(
+    session: ConnectedBleSession | null,
+    token: string = 'wsg_secure_token'
+  ): Promise<boolean> {
+    if (!session) return false;
+    const payload = JSON.stringify({
+      cmd: 'TEST_EMERGENCY',
+      token,
+    });
+    try {
+      const targetChar = session.provisionChar || session.configChar;
+      if (targetChar) {
+        if (targetChar.writeValueWithResponse) {
+          await targetChar.writeValueWithResponse(payload);
+        } else {
+          await targetChar.writeValue(payload);
+        }
+        return true;
+      }
+    } catch (e) {
+      console.error('[BLE] Failed to trigger test emergency:', e);
+    }
+    return false;
+  }
+
+  /**
+   * Cancel Test Emergency sequence on the device over BLE.
+   */
+  public static async cancelTestEmergency(
+    session: ConnectedBleSession | null,
+    token: string = 'wsg_secure_token'
+  ): Promise<boolean> {
+    if (!session) return false;
+    const payload = JSON.stringify({
+      cmd: 'CANCEL_TEST',
+      token,
+    });
+    try {
+      const targetChar = session.provisionChar || session.configChar;
+      if (targetChar) {
+        if (targetChar.writeValueWithResponse) {
+          await targetChar.writeValueWithResponse(payload);
+        } else {
+          await targetChar.writeValue(payload);
+        }
+        return true;
+      }
+    } catch (e) {
+      console.error('[BLE] Failed to cancel test emergency:', e);
+    }
+    return false;
+  }
+
+  /**
+   * Monitor real WSG-01 emergency events transmitted over BLE status/event notification characteristics.
+   */
+  public static monitorDeviceEmergency(
+    session: ConnectedBleSession | null,
+    onEmergency: (event: any) => void
+  ): (() => void) | null {
+    if (!session?.statusChar || !session.statusChar.monitor) return null;
+    return session.statusChar.monitor((bytes: Uint8Array) => {
+      try {
+        const text = new TextDecoder().decode(bytes);
+        const json = JSON.parse(text);
+        if (
+          json.type === 'emergency' ||
+          json.status === 'EMERGENCY' ||
+          json.status === 'ALARM' ||
+          json.state === 'EMERGENCY'
+        ) {
+          const devId = json.deviceId || json.device_id || session.device.id;
+          const eventId = json.eventId || json.event_id || `emg_${Date.now()}`;
+          const trigger = json.trigger || (json.state === 'EMERGENCY' ? 'VOICE' : 'OTHER');
+          const severity = json.severity ? String(json.severity).toUpperCase() : 'CRITICAL';
+          const source = json.source || (trigger === 'VOICE' ? 'voice_keyword' : 'manual_device_trigger');
+
+          const emergency = {
+            id: eventId,
+            eventId: eventId,
+            deviceId: devId,
+            deviceName: session.device.name || 'WSG-01 Device',
+            type: 'EMERGENCY' as const,
+            eventType: 'EMERGENCY' as const,
+            trigger: trigger,
+            source: source,
+            severity: severity,
+            status: 'active' as const,
+            timestamp: json.timestamp || new Date().toISOString(),
+            isTestAlert: Boolean(json.is_test || json.test_active),
+            metadata: { bleReceived: true, ...json },
+          };
+          onEmergency(emergency);
+        }
+      } catch {}
+    });
   }
 
   /**

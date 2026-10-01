@@ -46,26 +46,141 @@ export interface Telemetry {
   batteryPct?: number;
 }
 
+export type EmergencyEventStatus =
+  | 'detected'
+  | 'active'
+  | 'acknowledged'
+  | 'escalating'
+  | 'resolved'
+  | 'cancelled'
+  | 'failed'
+  | 'ACTIVE'
+  | 'ACKNOWLEDGED'
+  | 'RESOLVED';
+
+export type EmergencyEventSource =
+  | 'voice_keyword'
+  | 'manual_device_trigger'
+  | 'fall_or_immobility'
+  | 'future_sensor_trigger'
+  | 'test'
+  | 'sensor'
+  | 'app';
+
 export interface EmergencyEvent {
   id: string;
   eventId?: string; // Standardized unique emergency event ID (emg_xxxxxx)
+  ownerUserId?: string;
   deviceId: string;
   deviceName?: string;
   type?: 'EMERGENCY';
   eventType: 'EMERGENCY';
-  trigger: 'VOICE' | 'NO_RESPONSE' | 'BUTTON' | 'OTHER';
+  trigger: 'VOICE' | 'NO_RESPONSE' | 'BUTTON' | 'OTHER' | 'TEST' | string;
+  source?: EmergencyEventSource;
   severity?: 'CRITICAL' | 'WARNING' | 'INFO';
   presenceDuration?: number; // In seconds
   keyword?: string;
   confidence?: number;
   timestamp: string;
-  status: 'ACTIVE' | 'ACKNOWLEDGED' | 'RESOLVED';
+  detectedAt?: string;
+  status: EmergencyEventStatus;
   acknowledgedAt?: string;
   resolvedAt?: string;
   isTestAlert?: boolean;
+  isTest?: boolean;
+  locationLat?: number;
+  locationLng?: number;
+  locationAccuracy?: number;
+  locationShared?: boolean;
+  metadata?: Record<string, any>;
   feedbackStatus?: EmergencyFeedbackStatus;
   feedbackNotes?: string;
   feedbackSubmittedAt?: string;
+  escalationCountdown?: number;
+  notifiedContacts?: Array<{
+    contactId: string;
+    name: string;
+    status: 'pending' | 'sent' | 'delivered' | 'failed';
+    priority?: number;
+  }>;
+}
+
+// WSG-01 App-Only Emergency & Trusted Contact Types
+export type ContactInvitationStatus = 'pending' | 'accepted' | 'expired' | 'revoked';
+
+export interface EmergencyContact {
+  id: string;
+  ownerUserId: string;
+  name: string;
+  relationship: string;
+  email: string;
+  isEnabled: boolean;
+  priority: number;
+  createdAt: string;
+  updatedAt: string;
+  invitationStatus?: ContactInvitationStatus;
+  inviteToken?: string;
+  linkedUserId?: string | null;
+}
+
+export interface ContactInvitation {
+  id: string;
+  ownerUserId: string;
+  contactId: string;
+  inviteToken: string;
+  status: ContactInvitationStatus;
+  expiresAt: string;
+  acceptedAt?: string;
+  createdAt: string;
+}
+
+export interface TrustedContactUser {
+  id: string;
+  contactId: string;
+  contactUserId: string;
+  status: 'active' | 'inactive' | 'revoked';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NotificationDevice {
+  id: string;
+  userId: string;
+  platform: 'android' | 'ios' | 'web';
+  pushToken: string;
+  deviceName: string;
+  isActive: boolean;
+  lastSeenAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EmergencySettings {
+  id?: string;
+  userId: string;
+  automaticEscalationEnabled: boolean;
+  escalationDelaySeconds: 10 | 30 | 60 | 120;
+  shareLocationOnEmergency: boolean;
+  notifyOwner: boolean;
+  escalationStrategy: 'all' | 'priority';
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface EmergencyNotification {
+  id: string;
+  emergencyEventId: string;
+  recipientUserId?: string;
+  contactId?: string;
+  notificationType: 'push';
+  status: 'pending' | 'sent' | 'delivered' | 'opened' | 'failed';
+  providerMessageId?: string;
+  sentAt?: string;
+  deliveredAt?: string;
+  openedAt?: string;
+  failedAt?: string;
+  failureReason?: string;
+  createdAt: string;
 }
 
 export interface EmergencyPushPayload {
@@ -78,6 +193,13 @@ export interface EmergencyPushPayload {
   presenceDuration: number;
   trigger?: string;
   isTest?: boolean;
+}
+
+export interface QuietHoursConfig {
+  enabled: boolean;
+  startTime: string; // HH:MM in 24h format (e.g. '22:00')
+  endTime: string;   // HH:MM in 24h format (e.g. '07:00')
+  emergencyBypass: boolean; // Strictly true (life-safety sirens always bypass)
 }
 
 export interface DeviceConfig {
@@ -93,7 +215,10 @@ export interface DeviceConfig {
   emergencyKeywords: string[];
   voiceSensitivity: 'Low' | 'Medium' | 'High';
   emergencyEscalation: 'WARNING_ONLY' | 'VOICE_AND_ALERT' | 'IMMEDIATE_ALERT';
+  quietHours?: QuietHoursConfig;
 }
+
+export type UserDeviceRole = 'OWNER' | 'SHARED_VIEWER';
 
 export interface DeviceStatus {
   id: string;
@@ -105,6 +230,8 @@ export interface DeviceStatus {
   lastSeen: string;
   createdAt: string;
   updatedAt: string;
+  userRole?: UserDeviceRole;
+  isShared?: boolean;
 }
 
 export interface Contact {

@@ -1,3 +1,9 @@
 # Supabase CLI temp files
 supabase/.temp/
 .DS_Store
+
+# Environment files
+.env
+.env*.local
+.env.*
+!.env.example

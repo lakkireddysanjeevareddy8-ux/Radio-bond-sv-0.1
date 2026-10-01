@@ -132,7 +132,7 @@ export const DeviceHealthBar: React.FC<DeviceHealthBarProps> = ({
             <Mic size={12} color="#059669" />
             <Text style={styles.diagLabel}>Mic</Text>
             <Text style={[styles.diagValue, { color: '#059669' }]}>
-              {health.micLevel > 0 ? `${health.micLevel.toFixed(0)} dB` : 'OK'}
+              {(health.micLevel ?? 0) > 0 ? `${(health.micLevel ?? 0).toFixed(0)} dB` : 'OK'}
             </Text>
           </View>
 

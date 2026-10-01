@@ -1,6 +1,7 @@
 import { create } from 'zustand';
-import { Telemetry } from '../types';
+import { Telemetry, UserDeviceRole } from '../types';
 import { storage } from '../utils/storage';
+import { supabase } from '../services/supabaseClient';
 
 export interface SavedDevice {
   deviceId: string;
@@ -14,6 +15,8 @@ export interface SavedDevice {
   sensor: string; // 'LD2410C'
   connectionType: 'WIFI' | 'BLE';
   telemetry?: Telemetry;
+  userRole?: UserDeviceRole;
+  isShared?: boolean;
 }
 
 interface DeviceStoreState {
@@ -22,6 +25,7 @@ interface DeviceStoreState {
 
   // Actions
   initDeviceStore: () => Promise<void>;
+  loadSharedDevices: () => Promise<void>;
   addOrUpdateDevice: (device: SavedDevice) => void;
   removeDevice: (deviceId: string) => void;
   setActiveDeviceId: (deviceId: string) => void;
@@ -62,25 +66,101 @@ export const useDeviceStore = create<DeviceStoreState>((set, get) => ({
           activeDeviceId: get().activeDeviceId || loaded[0]?.deviceId || null,
         });
       }
+      // Query shared devices for authenticated caregiver
+      await get().loadSharedDevices();
     } catch (e) {
       console.warn('[useDeviceStore] init error:', e);
+    }
+  },
+
+  loadSharedDevices: async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user || !user.email) return;
+
+      const userEmail = user.email.toLowerCase().trim();
+
+      // Find accepted invitations for this user
+      const { data: contactRows, error: contactErr } = await supabase
+        .from('trusted_contacts')
+        .select('device_id, owner_user_id, contact_name, status')
+        .or(`contact_user_id.eq.${user.id},contact_email.eq.${userEmail}`)
+        .eq('status', 'accepted');
+
+      if (contactErr || !contactRows || contactRows.length === 0) {
+        return;
+      }
+
+      const deviceIds = contactRows.map((r: any) => r.device_id).filter(Boolean);
+      if (deviceIds.length === 0) return;
+
+      // Query devices table for these deviceIds
+      const { data: deviceRows, error: devErr } = await supabase
+        .from('devices')
+        .select('*')
+        .in('id', deviceIds);
+
+      if (devErr || !deviceRows) return;
+
+      const sharedDevices: SavedDevice[] = deviceRows.map((d: any) => ({
+        deviceId: d.id,
+        name: d.name || d.device_name || `WSG-${d.id.slice(0, 6)}`,
+        model: 'WSG-01 Caregiver Unit',
+        room: 'Shared Washroom',
+        isOnline: true,
+        lastSeen: d.last_seen ? new Date(d.last_seen).toLocaleTimeString() : new Date().toLocaleTimeString(),
+        firmwareVersion: d.firmware_version || 'v1.0.0-esp32',
+        sensor: 'LD2410C',
+        connectionType: 'WIFI',
+        userRole: 'SHARED_VIEWER',
+        isShared: true,
+      }));
+
+      set((state) => {
+        const deviceMap = new Map(state.devices.map((dev) => [dev.deviceId, dev]));
+        sharedDevices.forEach((shared) => {
+          const existing = deviceMap.get(shared.deviceId);
+          if (existing) {
+            if (existing.userRole !== 'OWNER') {
+              deviceMap.set(shared.deviceId, { ...existing, ...shared });
+            }
+          } else {
+            deviceMap.set(shared.deviceId, shared);
+          }
+        });
+
+        const merged = Array.from(deviceMap.values());
+        persistDevices(merged);
+        return {
+          devices: merged,
+          activeDeviceId: state.activeDeviceId || merged[0]?.deviceId || null,
+        };
+      });
+    } catch (e) {
+      console.warn('[useDeviceStore] loadSharedDevices error:', e);
     }
   },
 
   addOrUpdateDevice: (newDevice) => {
     set((state) => {
       const idx = state.devices.findIndex((d) => d.deviceId === newDevice.deviceId);
+      const normalizedDevice: SavedDevice = {
+        ...newDevice,
+        userRole: newDevice.userRole || 'OWNER',
+        isShared: newDevice.isShared ?? false,
+      };
+
       let updated: SavedDevice[];
       if (idx >= 0) {
         updated = [...state.devices];
-        updated[idx] = { ...updated[idx], ...newDevice };
+        updated[idx] = { ...updated[idx], ...normalizedDevice };
       } else {
-        updated = [...state.devices, newDevice];
+        updated = [...state.devices, normalizedDevice];
       }
       persistDevices(updated);
       return {
         devices: updated,
-        activeDeviceId: state.activeDeviceId || newDevice.deviceId,
+        activeDeviceId: state.activeDeviceId || normalizedDevice.deviceId,
       };
     });
   },

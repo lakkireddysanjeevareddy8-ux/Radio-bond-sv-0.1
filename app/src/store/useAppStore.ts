@@ -80,7 +80,13 @@ const defaultConfig: DeviceConfig = {
   speakerEnabled: true,
   emergencyKeywords: ['HELP', 'EMERGENCY', 'SAVE ME'],
   voiceSensitivity: 'Medium',
-  emergencyEscalation: 'VOICE_AND_ALERT'
+  emergencyEscalation: 'VOICE_AND_ALERT',
+  quietHours: {
+    enabled: false,
+    startTime: '22:00',
+    endTime: '07:00',
+    emergencyBypass: true,
+  },
 };
 
 const CONFIG_STORAGE_KEY = 'washroom_safeguard_config_v1';

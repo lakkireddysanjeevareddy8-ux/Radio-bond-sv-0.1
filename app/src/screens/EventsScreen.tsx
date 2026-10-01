@@ -13,6 +13,7 @@ interface SafetyEvent {
   category: EventCategory;
   severity: 'LOW' | 'MEDIUM' | 'HIGH';
   feedbackStatus?: 'CONFIRMED_REAL' | 'FALSE_ALARM' | 'NOT_SURE';
+  isTest?: boolean;
 }
 
 const MOCK_EVENTS: SafetyEvent[] = [
@@ -20,6 +21,7 @@ const MOCK_EVENTS: SafetyEvent[] = [
   { id: '2', time: '16:40', title: 'Wellbeing check triggered', detail: 'Stillness threshold reached (25s)', category: 'WELLBEING', severity: 'MEDIUM' },
   { id: '3', time: '16:38', title: 'Person became still', detail: 'No movement detected', category: 'MOVEMENT', severity: 'LOW' },
   { id: '4', time: '16:35', title: 'Movement detected', detail: 'Person is active', category: 'MOVEMENT', severity: 'LOW' },
+  { id: 'test_1', time: '15:10', title: 'Safety System Test', detail: 'Self-test check-in & alarm sequence', category: 'EMERGENCY', severity: 'MEDIUM', isTest: true },
   { id: '5', time: '14:20', title: 'Stillness emergency resolved', detail: 'Inactivity alarm triggered', category: 'EMERGENCY', severity: 'HIGH', feedbackStatus: 'FALSE_ALARM' },
   { id: '6', time: '12:15', title: 'Manual SOS button pressed', detail: 'Wall button triggered by occupant', category: 'EMERGENCY', severity: 'HIGH', feedbackStatus: 'CONFIRMED_REAL' },
   { id: '7', time: '11:10', title: 'Device came online', detail: 'Wi-Fi connected', category: 'DEVICE', severity: 'LOW' },
@@ -33,11 +35,20 @@ const CATEGORY_ICONS: Record<EventCategory, any> = {
 
 export const EventsScreen: React.FC = () => {
   const [activeFilter, setActiveFilter] = useState<EventCategory>('ALL');
+  const [hideTests, setHideTests] = useState<boolean>(true); // Default true: separate test runs from real incidents
   const filters: EventCategory[] = ['ALL', 'EMERGENCY', 'WELLBEING', 'PRESENCE', 'MOVEMENT', 'DEVICE'];
 
-  const filtered = activeFilter === 'ALL' ? MOCK_EVENTS : MOCK_EVENTS.filter(e => e.category === activeFilter);
+  const categoryFiltered = activeFilter === 'ALL' ? MOCK_EVENTS : MOCK_EVENTS.filter(e => e.category === activeFilter);
+  const filtered = hideTests ? categoryFiltered.filter(e => !e.isTest) : categoryFiltered;
 
-  const renderFeedbackBadge = (status?: 'CONFIRMED_REAL' | 'FALSE_ALARM' | 'NOT_SURE') => {
+  const renderFeedbackBadge = (status?: 'CONFIRMED_REAL' | 'FALSE_ALARM' | 'NOT_SURE', isTest?: boolean) => {
+    if (isTest) {
+      return (
+        <View style={[styles.feedbackBadge, { backgroundColor: '#F5F3FF', borderWidth: 1, borderColor: '#DDD6FE' }]}>
+          <Text style={[styles.feedbackBadgeText, { color: '#7C3AED' }]}>🧪 TEST RUN</Text>
+        </View>
+      );
+    }
     if (!status) return null;
     if (status === 'CONFIRMED_REAL') {
       return (
@@ -62,37 +73,48 @@ export const EventsScreen: React.FC = () => {
 
   return (
     <View style={styles.container}>
-      {/* Filter chips */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterBar} contentContainerStyle={styles.filterContent}>
-        {filters.map(f => (
+      {/* Filter chips & Hide Tests Toggle */}
+      <View style={styles.filterBarWrapper}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterBar} contentContainerStyle={styles.filterContent}>
+          {filters.map(f => (
+            <TouchableOpacity
+              key={f}
+              style={[styles.filterChip, activeFilter === f && styles.filterChipActive]}
+              onPress={() => setActiveFilter(f)}
+            >
+              <Text style={[styles.filterText, activeFilter === f && styles.filterTextActive]}>{f}</Text>
+            </TouchableOpacity>
+          ))}
           <TouchableOpacity
-            key={f}
-            style={[styles.filterChip, activeFilter === f && styles.filterChipActive]}
-            onPress={() => setActiveFilter(f)}
+            style={[styles.filterChip, hideTests ? styles.testToggleActive : styles.testToggleInactive]}
+            onPress={() => setHideTests(!hideTests)}
           >
-            <Text style={[styles.filterText, activeFilter === f && styles.filterTextActive]}>{f}</Text>
+            <Text style={[styles.filterText, hideTests ? styles.testToggleTextActive : styles.testToggleTextInactive]}>
+              {hideTests ? '🛡️ Tests Hidden' : '🧪 Showing Tests'}
+            </Text>
           </TouchableOpacity>
-        ))}
-      </ScrollView>
+        </ScrollView>
+      </View>
 
       <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
         {filtered.map(event => {
           const Icon = CATEGORY_ICONS[event.category];
+          const isTestEvent = Boolean(event.isTest);
           return (
-            <View key={event.id} style={styles.eventCard}>
-              <View style={[styles.iconBox, { backgroundColor: SEVERITY_COLORS[event.severity] + '20' }]}>
-                <Icon size={20} color={SEVERITY_COLORS[event.severity]} />
+            <View key={event.id} style={[styles.eventCard, isTestEvent && styles.testEventCard]}>
+              <View style={[styles.iconBox, { backgroundColor: isTestEvent ? '#EDE9FE' : SEVERITY_COLORS[event.severity] + '20' }]}>
+                <Icon size={20} color={isTestEvent ? '#7C3AED' : SEVERITY_COLORS[event.severity]} />
               </View>
               <View style={styles.eventInfo}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                   <Text style={styles.eventTitle}>{event.title}</Text>
-                  {renderFeedbackBadge(event.feedbackStatus)}
+                  {renderFeedbackBadge(event.feedbackStatus, event.isTest)}
                 </View>
                 <Text style={styles.eventDetail}>{event.detail}</Text>
               </View>
               <View style={styles.eventMeta}>
                 <Text style={styles.eventTime}>{event.time}</Text>
-                <View style={[styles.severityDot, { backgroundColor: SEVERITY_COLORS[event.severity] }]} />
+                <View style={[styles.severityDot, { backgroundColor: isTestEvent ? '#7C3AED' : SEVERITY_COLORS[event.severity] }]} />
               </View>
             </View>
           );
@@ -136,5 +158,28 @@ const styles = StyleSheet.create({
   feedbackBadgeText: {
     fontSize: 10,
     fontWeight: '700',
+  },
+  filterBarWrapper: {
+    backgroundColor: colors.surface,
+  },
+  testToggleActive: {
+    backgroundColor: '#F5F3FF',
+    borderColor: '#7C3AED',
+  },
+  testToggleInactive: {
+    backgroundColor: '#FAF5FF',
+    borderColor: '#C4B5FD',
+  },
+  testToggleTextActive: {
+    color: '#7C3AED',
+    fontWeight: '700',
+  },
+  testToggleTextInactive: {
+    color: '#6D28D9',
+    fontWeight: '700',
+  },
+  testEventCard: {
+    borderLeftWidth: 4,
+    borderLeftColor: '#7C3AED',
   },
 });
