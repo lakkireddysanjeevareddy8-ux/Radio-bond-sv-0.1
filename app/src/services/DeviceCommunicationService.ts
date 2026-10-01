@@ -1,7 +1,8 @@
 import { DeviceSimulator } from '../simulator/DeviceSimulator';
-import { Telemetry, EmergencyEvent, DeviceConfig, SafetyState } from '../types';
+import { Telemetry, EmergencyEvent, DeviceConfig, SafetyState, DeviceHealth } from '../types';
 import { supabase } from './supabaseClient';
 import { useAppStore } from '../store/useAppStore';
+import { EmergencyPushService } from './EmergencyPushService';
 
 export type ConnectionStatus = 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING';
 
@@ -12,6 +13,12 @@ export class DeviceCommunicationService {
   private heartbeatTimer: any = null;
   private lastTelemetryTime: number = 0;
   private static readonly STALE_HEARTBEAT_MS = 15000; // 15s timeout for 3s telemetry interval
+
+  // Hardware Diagnostics & Heartbeat Watchdog
+  private currentDeviceId: string = '';
+  private lastHealthHeartbeatTime: number = 0;
+  private expectedHeartbeatIntervalMs: number = 10 * 60 * 1000; // 10 min default
+  private offlineNotificationDispatched: boolean = false;
   
   private onTelemetryUpdate?: (telemetry: Telemetry) => void;
   private onEmergencyEvent?: (event: EmergencyEvent) => void;
@@ -77,10 +84,11 @@ export class DeviceCommunicationService {
   // Live Hardware / Supabase Mode
   public async connectToSupabaseDevice(deviceId: string) {
     this.disconnect();
+    this.currentDeviceId = deviceId;
     this.setStatus('CONNECTING');
     this.startHeartbeatWatchdog();
 
-    // Query most recent telemetry row (if any)
+    // 1. Fetch most recent telemetry row (if any)
     try {
       const { data: latestTelemetry } = await supabase
         .from('telemetry')
@@ -91,7 +99,6 @@ export class DeviceCommunicationService {
         .maybeSingle();
 
       if (latestTelemetry) {
-        // If the row was written recently (within 15s), accept it as live
         const rowTime = new Date(latestTelemetry.created_at || latestTelemetry.timestamp).getTime();
         if (Date.now() - rowTime < DeviceCommunicationService.STALE_HEARTBEAT_MS) {
           this.handleSupabaseTelemetry(latestTelemetry);
@@ -103,7 +110,22 @@ export class DeviceCommunicationService {
       console.warn('Initial telemetry fetch skipped:', err);
     }
 
-    // Subscribe to Realtime inserts for telemetry and emergencies
+    // 2. Fetch initial device health diagnostic row
+    try {
+      const { data: healthRow } = await supabase
+        .from('device_health')
+        .select('*')
+        .eq('device_id', deviceId)
+        .maybeSingle();
+
+      if (healthRow) {
+        this.handleSupabaseHealth(healthRow);
+      }
+    } catch (healthErr) {
+      console.warn('Initial device health fetch skipped:', healthErr);
+    }
+
+    // 3. Subscribe to Realtime inserts for telemetry, emergencies, and health
     this.channel = supabase
       .channel(`device-live-${deviceId}`)
       .on(
@@ -120,6 +142,13 @@ export class DeviceCommunicationService {
           this.handleSupabaseEmergency(payload.new);
         }
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'device_health', filter: `device_id=eq.${deviceId}` },
+        (payload) => {
+          this.handleSupabaseHealth(payload.new);
+        }
+      )
       .subscribe((status) => {
         if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
           this.setStatus('DISCONNECTED');
@@ -130,13 +159,28 @@ export class DeviceCommunicationService {
   private startHeartbeatWatchdog() {
     this.stopHeartbeatWatchdog();
     this.heartbeatTimer = setInterval(() => {
+      // 1. Telemetry staleness
       if (this.lastTelemetryTime > 0 && Date.now() - this.lastTelemetryTime > DeviceCommunicationService.STALE_HEARTBEAT_MS) {
         if (this.status === 'CONNECTED') {
-          console.warn('[Heartbeat] Device telemetry stale (>15s). Marking device offline.');
           this.setStatus('DISCONNECTED');
         }
       }
-    }, 3000);
+
+      // 2. Self-test Heartbeat staleness (> 2x expected heartbeat interval)
+      const timeoutMs = 2 * this.expectedHeartbeatIntervalMs;
+      if (this.lastHealthHeartbeatTime > 0 && Date.now() - this.lastHealthHeartbeatTime > timeoutMs) {
+        if (!this.offlineNotificationDispatched) {
+          this.offlineNotificationDispatched = true;
+          useAppStore.getState().setIsOnline(false);
+          const minutesOffline = Math.round((Date.now() - this.lastHealthHeartbeatTime) / 60000);
+          EmergencyPushService.dispatchLowPriorityOfflineNotification(
+            this.currentDeviceId || 'WSG-000001',
+            useAppStore.getState().deviceConfig?.deviceName || 'Washroom Safety Guardian',
+            minutesOffline
+          );
+        }
+      }
+    }, 4000);
   }
 
   private stopHeartbeatWatchdog() {
@@ -144,6 +188,32 @@ export class DeviceCommunicationService {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+  }
+
+  private handleSupabaseHealth(row: any) {
+    if (!row) return;
+    this.lastHealthHeartbeatTime = Date.now();
+    this.offlineNotificationDispatched = false;
+    if (row.heartbeat_interval_min) {
+      this.expectedHeartbeatIntervalMs = Number(row.heartbeat_interval_min) * 60 * 1000;
+    }
+    const health: DeviceHealth = {
+      deviceId: row.device_id || this.currentDeviceId,
+      radarStatus: row.radar_status || 'OK',
+      micLevel: Number(row.mic_level ?? 0),
+      speakerStatus: row.speaker_status || 'OK',
+      wifiStatus: row.wifi_status || 'CONNECTED',
+      bleStatus: row.ble_status || 'ADVERTISING',
+      powerSource: row.power_source || 'MAINS',
+      batteryPct: Number(row.battery_pct ?? 100),
+      isCharging: Boolean(row.is_charging),
+      rssi: Number(row.rssi ?? -58),
+      heartbeatIntervalMin: Number(row.heartbeat_interval_min ?? 10),
+      lastSeenAt: row.last_seen_at || row.updated_at || new Date().toISOString(),
+      updatedAt: row.updated_at,
+    };
+    useAppStore.getState().setDeviceHealth(health);
+    useAppStore.getState().setIsOnline(true);
   }
 
   private handleSupabaseTelemetry(row: any) {
@@ -262,6 +332,8 @@ export class DeviceCommunicationService {
   public disconnect() {
     this.stopHeartbeatWatchdog();
     this.lastTelemetryTime = 0;
+    this.lastHealthHeartbeatTime = 0;
+    this.offlineNotificationDispatched = false;
     if (this.simulator) {
       this.simulator.stop();
       this.simulator = null;

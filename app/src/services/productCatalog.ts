@@ -26,6 +26,8 @@ export interface ProductDefinition {
   bleServiceUuid: string;
   bleProvisionCharUuid: string;
   bleStatusCharUuid: string;
+  bleEventLogCharUuid?: string;
+  bleConfigCharUuid?: string;
   firmwareFamily: string;
   defaultPort: number;
 }
@@ -79,6 +81,8 @@ export const PRODUCT_CATALOG: ProductDefinition[] = [
     bleServiceUuid: '4fafc201-1fb5-459e-8fcc-c5c9c331914b',
     bleProvisionCharUuid: 'beb5483e-36e1-4688-b7f5-ea07361b26a8',
     bleStatusCharUuid: 'beb5483e-36e1-4688-b7f5-ea07361b26a9',
+    bleEventLogCharUuid: 'beb5483e-36e1-4688-b7f5-ea07361b26aa',
+    bleConfigCharUuid: 'beb5483e-36e1-4688-b7f5-ea07361b26ab',
     firmwareFamily: 'ESP32-LD2410C',
     defaultPort: 80,
   },

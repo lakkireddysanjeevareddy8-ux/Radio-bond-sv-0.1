@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { DeviceConfig, Telemetry, EmergencyEvent, SafetyState } from '../types';
+import { DeviceConfig, Telemetry, EmergencyEvent, SafetyState, EscalationLogEntry, DeviceHealth } from '../types';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '../services/supabaseClient';
 import { storage } from '../utils/storage';
@@ -28,6 +28,10 @@ interface AppState {
   // Telemetry
   telemetry: Telemetry | null;
   setTelemetry: (telemetry: Telemetry | null) => void;
+
+  // Health Heartbeat & Diagnostics
+  deviceHealth: DeviceHealth | null;
+  setDeviceHealth: (health: DeviceHealth | null) => void;
   
   // Connection
   isOnline: boolean;
@@ -44,6 +48,8 @@ interface AppState {
   // Events
   activeEmergency: EmergencyEvent | null;
   setActiveEmergency: (event: EmergencyEvent | null) => void;
+  escalationLogs: EscalationLogEntry[];
+  setEscalationLogs: (logs: EscalationLogEntry[]) => void;
   
   // Voice feedback
   voicePrompt: string | null;
@@ -67,6 +73,9 @@ const defaultConfig: DeviceConfig = {
   deviceName: 'Washroom Safety Guardian',
   stillnessThreshold: 25,
   responseTimeout: 15,
+  t1ThresholdSeconds: 300, // 5 min default
+  repeatIntervalSeconds: 15,
+  alarmVolume: 80,
   voiceDetectionEnabled: true,
   speakerEnabled: true,
   emergencyKeywords: ['HELP', 'EMERGENCY', 'SAVE ME'],
@@ -214,6 +223,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   } : null,
   setTelemetry: (telemetry) => set({ telemetry }),
 
+  // Health Heartbeat & Diagnostics
+  deviceHealth: null,
+  setDeviceHealth: (deviceHealth) => set({ deviceHealth }),
+
   // Connection status: strictly independent
   isOnline: initialHardwareMode === 'DEMO_SIMULATOR',
   setIsOnline: (isOnline) => set({ isOnline }),
@@ -237,6 +250,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Emergency events
   activeEmergency: null,
   setActiveEmergency: (activeEmergency) => set({ activeEmergency }),
+  escalationLogs: [],
+  setEscalationLogs: (escalationLogs) => set({ escalationLogs }),
 
   // Voice feedback
   voicePrompt: null,

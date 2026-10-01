@@ -15,6 +15,8 @@ import { EmergencyEvent } from '../types';
 class EmergencySoundServiceClass {
   public static readonly CHANNEL_ID = 'emergency_alerts';
   public static readonly CHANNEL_NAME = 'Emergency Alerts';
+  public static readonly MAINTENANCE_CHANNEL_ID = 'device_maintenance';
+  public static readonly MAINTENANCE_CHANNEL_NAME = 'Device Maintenance & Health';
 
   private audioCtx: AudioContext | null = null;
   private isSirenActive: boolean = false;
@@ -49,6 +51,20 @@ class EmergencySoundServiceClass {
           enableLights: true,
           enableVibrate: true,
           showBadge: true,
+        });
+
+        // Maintenance & offline channel: strictly DEFAULT priority, NO siren, NO DND bypass
+        await Notifications.setNotificationChannelAsync(EmergencySoundServiceClass.MAINTENANCE_CHANNEL_ID, {
+          name: EmergencySoundServiceClass.MAINTENANCE_CHANNEL_NAME,
+          importance: Notifications.AndroidImportance.DEFAULT,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#F59E0B',
+          sound: null,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PRIVATE,
+          bypassDnd: false,
+          enableLights: true,
+          enableVibrate: true,
+          showBadge: false,
         });
       } catch (e) {
         console.warn('[EmergencySoundService] Native Android channel init note:', e);
@@ -557,6 +573,50 @@ class EmergencySoundServiceClass {
       return `${mins} min ${remainingSecs} sec`;
     }
     return `${remainingSecs} sec`;
+  }
+
+  /**
+   * Dispatch a low-priority maintenance/offline notification.
+   * STRICT NON-EMERGENCY: Never plays siren, never sets full-screen alarm,
+   * never uses emergency_alerts channel, and never bypasses DND.
+   */
+  public async dispatchMaintenanceNotification(title: string, body: string, data?: any): Promise<void> {
+    if (Platform.OS === 'android' || Platform.OS === 'ios') {
+      try {
+        const Notifications = require('expo-notifications');
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title,
+            body,
+            data: data || {},
+            sound: false,
+            vibrate: [0, 250, 250, 250],
+            priority: Notifications.AndroidNotificationPriority.DEFAULT,
+            categoryIdentifier: EmergencySoundServiceClass.MAINTENANCE_CHANNEL_ID,
+            channelId: EmergencySoundServiceClass.MAINTENANCE_CHANNEL_ID,
+          },
+          trigger: null,
+        }).catch((err: any) => {
+          console.warn('[EmergencySoundService] Native maintenance notification note:', err);
+        });
+      } catch (e) {
+        console.warn('[EmergencySoundService] Maintenance notification dispatch error:', e);
+      }
+      return;
+    }
+
+    // Web Notification API fallback (standard priority)
+    try {
+      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+        new Notification(title, {
+          body,
+          icon: '/favicon.ico',
+          badge: '/favicon.ico',
+          tag: 'device-maintenance-offline',
+          silent: false,
+        });
+      }
+    } catch {}
   }
 }
 

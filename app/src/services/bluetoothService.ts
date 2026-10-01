@@ -1,6 +1,7 @@
 import { Platform, Linking } from 'react-native';
 import { ProductDefinition, PRODUCT_CATALOG } from './productCatalog';
 import { NativeBluetoothService } from './nativeBluetoothService';
+import { EscalationLogEntry, EscalationConfig } from '../types';
 
 export interface DiscoveredBleDevice {
   id: string;
@@ -26,6 +27,8 @@ export interface ConnectedBleSession {
   service: any;
   provisionChar: BleCharacteristicWrapper | any;
   statusChar?: BleCharacteristicWrapper | any;
+  eventLogChar?: BleCharacteristicWrapper | any;
+  configChar?: BleCharacteristicWrapper | any;
   connectedAt: Date;
   isNative?: boolean;
 }
@@ -511,6 +514,8 @@ export class BluetoothService {
         service: nativeSession.service,
         provisionChar: nativeSession.provisionChar,
         statusChar: nativeSession.statusChar,
+        eventLogChar: nativeSession.eventLogChar,
+        configChar: nativeSession.configChar,
         connectedAt: nativeSession.connectedAt,
         isNative: true,
       };
@@ -522,6 +527,8 @@ export class BluetoothService {
     let service: any = null;
     let provisionChar: any = null;
     let statusChar: any = null;
+    let eventLogChar: any = null;
+    let configChar: any = null;
 
     if (raw && raw.gatt) {
       try {
@@ -554,6 +561,16 @@ export class BluetoothService {
             statusChar = await service.getCharacteristic(
               discovered.product.bleStatusCharUuid.toLowerCase()
             );
+          } catch {}
+
+          try {
+            const eventLogUuid = (discovered.product.bleEventLogCharUuid || 'beb5483e-36e1-4688-b7f5-ea07361b26aa').toLowerCase();
+            eventLogChar = await service.getCharacteristic(eventLogUuid);
+          } catch {}
+
+          try {
+            const configUuid = (discovered.product.bleConfigCharUuid || 'beb5483e-36e1-4688-b7f5-ea07361b26ab').toLowerCase();
+            configChar = await service.getCharacteristic(configUuid);
           } catch {}
         } catch (servErr: any) {
           console.warn('[WebBLE] Service discovery error:', servErr);
@@ -595,9 +612,95 @@ export class BluetoothService {
       service,
       provisionChar: provisionChar ? wrapWebChar(provisionChar) : provisionChar,
       statusChar: statusChar ? wrapWebChar(statusChar) : undefined,
+      eventLogChar: eventLogChar ? wrapWebChar(eventLogChar) : undefined,
+      configChar: configChar ? wrapWebChar(configChar) : undefined,
       connectedAt: new Date(),
       isNative: false,
     };
+  }
+
+  /**
+   * Reads circular buffer of escalation events over BLE event log characteristic.
+   */
+  public static async readEscalationLogs(session: ConnectedBleSession | null): Promise<EscalationLogEntry[]> {
+    if (!session?.eventLogChar) return [];
+    try {
+      const bytes: Uint8Array = await session.eventLogChar.readValue();
+      const text = new TextDecoder().decode(bytes);
+      const data = JSON.parse(text);
+      if (Array.isArray(data)) {
+        return data.map((item: any, idx: number) => ({
+          id: item.id || `log-${idx}-${item.timestamp || Date.now()}`,
+          timestamp: item.timestamp ? new Date(item.timestamp).toISOString() : new Date().toISOString(),
+          fromState: item.from || item.fromState || 'IDLE',
+          toState: item.to || item.toState || 'IDLE',
+          trigger: item.trigger || 'UNKNOWN',
+          stillnessSeconds: Number(item.stillness_seconds || item.stillnessSeconds || 0),
+        }));
+      }
+    } catch (e) {
+      console.warn('[BLE] Could not read escalation logs over BLE:', e);
+    }
+    return [];
+  }
+
+  /**
+   * Configures T1 threshold, repeat interval, and alarm volume over BLE.
+   */
+  public static async writeEscalationConfig(
+    session: ConnectedBleSession | null,
+    config: EscalationConfig
+  ): Promise<boolean> {
+    if (!session) return false;
+    const payload = JSON.stringify({
+      cmd: 'SET_ESCALATION_CONFIG',
+      t1: config.t1Seconds,
+      repeat: config.repeatIntervalSec,
+      volume: config.alarmVolume,
+    });
+
+    try {
+      if (session.configChar) {
+        if (session.configChar.writeValueWithResponse) {
+          await session.configChar.writeValueWithResponse(payload);
+        } else {
+          await session.configChar.writeValue(payload);
+        }
+        return true;
+      } else if (session.provisionChar) {
+        if (session.provisionChar.writeValueWithResponse) {
+          await session.provisionChar.writeValueWithResponse(payload);
+        } else {
+          await session.provisionChar.writeValue(payload);
+        }
+        return true;
+      }
+    } catch (err) {
+      console.error('[BLE] Failed to write escalation config:', err);
+    }
+    return false;
+  }
+
+  /**
+   * Reads current escalation config from ESP32 over BLE.
+   */
+  public static async readEscalationConfig(
+    session: ConnectedBleSession | null
+  ): Promise<EscalationConfig | null> {
+    if (!session?.configChar) return null;
+    try {
+      const bytes: Uint8Array = await session.configChar.readValue();
+      const text = new TextDecoder().decode(bytes);
+      const data = JSON.parse(text);
+      return {
+        t1Seconds: Number(data.t1 || 300),
+        repeatIntervalSec: Number(data.repeat || 15),
+        alarmVolume: Number(data.volume || 80),
+      };
+    } catch (e) {
+      console.warn('[BLE] Could not read escalation config over BLE:', e);
+    }
+    return null;
   }
 
   /**

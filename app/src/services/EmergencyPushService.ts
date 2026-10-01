@@ -255,6 +255,24 @@ class EmergencyPushServiceClass {
   public clearDeduplicationCache() {
     this.processedEventIds.clear();
   }
+
+  /**
+   * Dispatch a low-priority notification when a device heartbeat is missed (>2x expected interval).
+   * STRICT REQUIREMENT: Never conflate with an emergency.
+   */
+  public async dispatchLowPriorityOfflineNotification(
+    deviceId: string,
+    deviceName: string = 'Washroom Guardian',
+    minutesOffline: number = 20
+  ): Promise<void> {
+    const title = `⚠️ ${deviceName} is Offline`;
+    const body = `No heartbeat received in ${minutesOffline} min. Local safety siren remains active on device.`;
+    await EmergencySoundService.dispatchMaintenanceNotification(title, body, {
+      type: 'DEVICE_OFFLINE_MAINTENANCE',
+      deviceId,
+      minutesOffline,
+    });
+  }
 }
 
 export const EmergencyPushService = new EmergencyPushServiceClass();

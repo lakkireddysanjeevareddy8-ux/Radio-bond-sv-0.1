@@ -1,21 +1,35 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { Battery, BatteryCharging, BatteryLow, Wifi, AlertTriangle, Clock } from 'lucide-react-native';
+import { Battery, BatteryLow, Wifi, AlertTriangle, Clock, Radio, Mic, Volume2, CheckCircle2 } from 'lucide-react-native';
 import { colors, spacing, borderRadius } from '../utils/theme';
+import { useAppStore } from '../store/useAppStore';
+import { DeviceHealth } from '../types';
 
 interface DeviceHealthBarProps {
   batteryPct?: number;
   rssi?: number;
   lastSeen?: string;
   isOnline?: boolean;
+  health?: DeviceHealth | null;
 }
 
 export const DeviceHealthBar: React.FC<DeviceHealthBarProps> = ({
-  batteryPct = 95,
-  rssi = -58,
-  lastSeen,
-  isOnline = true,
+  batteryPct: propBatteryPct,
+  rssi: propRssi,
+  lastSeen: propLastSeen,
+  isOnline: propIsOnline,
+  health: propHealth,
 }) => {
+  const storeHealth = useAppStore((state) => state.deviceHealth);
+  const storeOnline = useAppStore((state) => state.isOnline);
+
+  const health = propHealth !== undefined ? propHealth : storeHealth;
+  const isOnline = propIsOnline !== undefined ? propIsOnline : storeOnline;
+
+  const batteryPct = health?.batteryPct ?? propBatteryPct ?? 95;
+  const rssi = health?.rssi ?? propRssi ?? -58;
+  const lastSeen = health?.lastSeenAt ?? propLastSeen;
+
   // Compute staleness
   const lastSeenDate = lastSeen ? new Date(lastSeen) : new Date();
   const minutesAgo = Math.round((Date.now() - lastSeenDate.getTime()) / (1000 * 60));
@@ -34,6 +48,12 @@ export const DeviceHealthBar: React.FC<DeviceHealthBarProps> = ({
     if (pct > 50) return '#059669'; // Green
     if (pct > 20) return '#D97706'; // Amber
     return '#DC2626'; // Red
+  };
+
+  const getStatusColor = (status?: string) => {
+    if (status === 'OK') return '#059669';
+    if (status === 'DEGRADED') return '#D97706';
+    return '#DC2626';
   };
 
   return (
@@ -96,6 +116,43 @@ export const DeviceHealthBar: React.FC<DeviceHealthBarProps> = ({
           </Text>
         </View>
       </View>
+
+      {/* Hardware Diagnostics / Self-Test Indicators */}
+      {health && (
+        <View style={styles.diagnosticsRow}>
+          <View style={styles.diagBadge}>
+            <Radio size={12} color={getStatusColor(health.radarStatus)} />
+            <Text style={styles.diagLabel}>Radar</Text>
+            <Text style={[styles.diagValue, { color: getStatusColor(health.radarStatus) }]}>
+              {health.radarStatus}
+            </Text>
+          </View>
+
+          <View style={styles.diagBadge}>
+            <Mic size={12} color="#059669" />
+            <Text style={styles.diagLabel}>Mic</Text>
+            <Text style={[styles.diagValue, { color: '#059669' }]}>
+              {health.micLevel > 0 ? `${health.micLevel.toFixed(0)} dB` : 'OK'}
+            </Text>
+          </View>
+
+          <View style={styles.diagBadge}>
+            <Volume2 size={12} color={getStatusColor(health.speakerStatus)} />
+            <Text style={styles.diagLabel}>Speaker</Text>
+            <Text style={[styles.diagValue, { color: getStatusColor(health.speakerStatus) }]}>
+              {health.speakerStatus}
+            </Text>
+          </View>
+
+          <View style={styles.diagBadge}>
+            <CheckCircle2 size={12} color="#2563EB" />
+            <Text style={styles.diagLabel}>Heartbeat</Text>
+            <Text style={[styles.diagValue, { color: '#2563EB' }]}>
+              {health.heartbeatIntervalMin}m
+            </Text>
+          </View>
+        </View>
+      )}
     </View>
   );
 };
@@ -157,5 +214,31 @@ const styles = StyleSheet.create({
     width: 1,
     height: 16,
     backgroundColor: '#E2E8F0',
+  },
+  diagnosticsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F8FAFC',
+    borderRadius: borderRadius.sm,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  diagBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  diagLabel: {
+    fontSize: 10,
+    color: '#64748B',
+    fontWeight: '500',
+  },
+  diagValue: {
+    fontSize: 11,
+    fontWeight: '700',
   },
 });

@@ -5,9 +5,27 @@ export type SafetyState =
   | 'STILL_MONITORING'
   | 'CHECKING_WELLBEING'
   | 'WAITING_FOR_RESPONSE'
+  | 'INACTIVE_DETECTED'
+  | 'NO_RESPONSE'
+  | 'ALARM'
   | 'EMERGENCY'
   | 'RESOLVED'
   | 'DEVICE_OFFLINE';
+
+export interface EscalationLogEntry {
+  id?: string;
+  timestamp: string;
+  fromState: SafetyState | string;
+  toState: SafetyState | string;
+  trigger: string;
+  stillnessSeconds: number;
+}
+
+export interface EscalationConfig {
+  t1Seconds: number; // default 300 (5 min)
+  repeatIntervalSec: number; // default 15
+  alarmVolume: number; // 0-100, default 80
+}
 
 export interface Telemetry {
   deviceId: string;
@@ -67,6 +85,9 @@ export interface DeviceConfig {
   deviceName: string;
   stillnessThreshold: number; // seconds
   responseTimeout: number; // seconds
+  t1ThresholdSeconds?: number; // T1 Inactivity threshold in seconds (default 300 = 5 min)
+  repeatIntervalSeconds?: number; // Repeat check-in interval in seconds (default 15)
+  alarmVolume?: number; // 0 - 100 (default 80)
   voiceDetectionEnabled: boolean;
   speakerEnabled: boolean;
   emergencyKeywords: string[];
@@ -140,8 +161,14 @@ export interface DeviceHealth {
   rssi: number;
   powerSource: PowerSourceType;
   isCharging: boolean;
+  radarStatus?: 'OK' | 'DEGRADED' | 'FAULT';
+  micLevel?: number;
+  speakerStatus?: 'OK' | 'FAULT';
+  wifiStatus?: 'CONNECTED' | 'CONNECTING' | 'OFFLINE';
+  bleStatus?: 'CONNECTED' | 'ADVERTISING' | 'IDLE';
+  heartbeatIntervalMin?: number;
   lastSeenAt: string;
-  updatedAt: string;
+  updatedAt?: string;
 }
 
 // Feature 4: False Alarm Feedback

@@ -163,3 +163,42 @@ CREATE POLICY "Allow anon read device_push_tokens" ON device_push_tokens FOR SEL
 CREATE POLICY "Allow anon insert device_push_tokens" ON device_push_tokens FOR INSERT TO anon, authenticated WITH CHECK (true);
 CREATE POLICY "Allow anon update device_push_tokens" ON device_push_tokens FOR UPDATE TO anon, authenticated USING (true);
 CREATE POLICY "Allow anon delete device_push_tokens" ON device_push_tokens FOR DELETE TO anon, authenticated USING (true);
+
+-- ============================================================================
+-- 9. DEVICE HEALTH & SELF-TEST HEARTBEAT TABLE
+-- Stores periodic hardware diagnostics (radar, mic, speaker, battery, connectivity)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS device_health (
+    device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+    radar_status TEXT DEFAULT 'OK' CHECK (radar_status IN ('OK', 'DEGRADED', 'FAULT')),
+    mic_level NUMERIC DEFAULT 0,
+    speaker_status TEXT DEFAULT 'OK' CHECK (speaker_status IN ('OK', 'FAULT')),
+    wifi_status TEXT DEFAULT 'CONNECTED' CHECK (wifi_status IN ('CONNECTED', 'CONNECTING', 'OFFLINE')),
+    ble_status TEXT DEFAULT 'ADVERTISING' CHECK (ble_status IN ('CONNECTED', 'ADVERTISING', 'IDLE')),
+    power_source TEXT DEFAULT 'MAINS' CHECK (power_source IN ('BATTERY', 'MAINS')),
+    battery_pct INTEGER DEFAULT 100 CHECK (battery_pct >= 0 AND battery_pct <= 100),
+    is_charging BOOLEAN DEFAULT false,
+    rssi INTEGER DEFAULT -58,
+    heartbeat_interval_min INTEGER DEFAULT 10,
+    last_seen_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_health_last_seen ON device_health(device_id, last_seen_at DESC);
+
+ALTER TABLE device_health ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow anon read device_health" ON device_health FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "Allow anon insert device_health" ON device_health FOR INSERT TO anon, authenticated WITH CHECK (true);
+CREATE POLICY "Allow anon update device_health" ON device_health FOR UPDATE TO anon, authenticated USING (true);
+CREATE POLICY "Allow anon delete device_health" ON device_health FOR DELETE TO anon, authenticated USING (true);
+
+DO $$
+BEGIN
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE device_health;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+END $$;
+
+ALTER TABLE device_health REPLICA IDENTITY FULL;
+

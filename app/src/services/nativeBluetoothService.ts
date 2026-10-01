@@ -71,6 +71,8 @@ export interface ConnectedNativeSession {
   service: any;
   provisionChar: BleCharacteristicWrapper;
   statusChar?: BleCharacteristicWrapper;
+  eventLogChar?: BleCharacteristicWrapper;
+  configChar?: BleCharacteristicWrapper;
   connectedAt: Date;
   isNative: boolean;
 }
@@ -371,6 +373,8 @@ class NativeBluetoothServiceClass {
       const targetServiceUuid = product.bleServiceUuid.toLowerCase();
       const targetProvUuid = product.bleProvisionCharUuid.toLowerCase();
       const targetStatusUuid = product.bleStatusCharUuid.toLowerCase();
+      const targetEventLogUuid = (product.bleEventLogCharUuid || 'beb5483e-36e1-4688-b7f5-ea07361b26aa').toLowerCase();
+      const targetConfigUuid = (product.bleConfigCharUuid || 'beb5483e-36e1-4688-b7f5-ea07361b26ab').toLowerCase();
 
       const services = await deviceWithServices.services();
       let matchedService: any = null;
@@ -393,6 +397,8 @@ class NativeBluetoothServiceClass {
       const characteristics = await matchedService.characteristics();
       let rawProvChar: Characteristic | null = null;
       let rawStatusChar: Characteristic | null = null;
+      let rawEventLogChar: Characteristic | null = null;
+      let rawConfigChar: Characteristic | null = null;
 
       for (const c of characteristics) {
         const cUuid = c.uuid.toLowerCase();
@@ -400,6 +406,10 @@ class NativeBluetoothServiceClass {
           rawProvChar = c;
         } else if (cUuid === targetStatusUuid) {
           rawStatusChar = c;
+        } else if (cUuid === targetEventLogUuid) {
+          rawEventLogChar = c;
+        } else if (cUuid === targetConfigUuid) {
+          rawConfigChar = c;
         }
       }
 
@@ -444,6 +454,8 @@ class NativeBluetoothServiceClass {
         service: matchedService,
         provisionChar: wrapChar(rawProvChar),
         statusChar: rawStatusChar ? wrapChar(rawStatusChar) : undefined,
+        eventLogChar: rawEventLogChar ? wrapChar(rawEventLogChar) : undefined,
+        configChar: rawConfigChar ? wrapChar(rawConfigChar) : undefined,
         connectedAt: new Date(),
         isNative: true,
       };

@@ -4,7 +4,15 @@ import { colors, typography, spacing, borderRadius } from '../utils/theme';
 import { Shield, ShieldAlert, ShieldX } from 'lucide-react-native';
 
 interface Props {
-  status: 'SAFE' | 'MONITORING' | 'CHECKING' | 'EMERGENCY' | 'OFFLINE';
+  status:
+    | 'SAFE'
+    | 'MONITORING'
+    | 'CHECKING'
+    | 'INACTIVE_DETECTED'
+    | 'NO_RESPONSE'
+    | 'ALARM'
+    | 'EMERGENCY'
+    | 'OFFLINE';
 }
 
 export const SafetyStatusCard: React.FC<Props> = ({ status }) => {
@@ -20,15 +28,23 @@ export const SafetyStatusCard: React.FC<Props> = ({ status }) => {
       subtext = 'Person present';
       break;
     case 'CHECKING':
+    case 'INACTIVE_DETECTED':
       backgroundColor = colors.warning;
-      text = 'CHECKING WELLBEING';
-      subtext = 'Unusual stillness detected';
+      text = 'INACTIVITY DETECTED';
+      subtext = 'Voice check-in initiated — listening (15s)';
       Icon = ShieldAlert;
       break;
+    case 'NO_RESPONSE':
+      backgroundColor = '#EA580C'; // Vivid amber/orange
+      text = 'NO RESPONSE ESCALATION';
+      subtext = 'Repeating louder check-in + buzzer alert';
+      Icon = ShieldAlert;
+      break;
+    case 'ALARM':
     case 'EMERGENCY':
       backgroundColor = colors.emergency;
-      text = 'EMERGENCY';
-      subtext = 'Immediate assistance required';
+      text = 'EMERGENCY ALARM ACTIVE';
+      subtext = 'Staged escalation threshold exceeded — help alerted';
       Icon = ShieldAlert;
       break;
     case 'OFFLINE':

@@ -37,10 +37,14 @@ import {
   Phone,
   ChevronRight,
   Info,
+  Activity,
 } from 'lucide-react-native';
 
 const thresholdOptions = [15, 30, 60, 90, 120];
 const timeoutOptions = [5, 10, 15, 30];
+const t1Options = [60, 180, 300, 420, 600]; // 1m, 3m, 5m (default), 7m, 10m
+const repeatOptions = [10, 15, 30, 45];
+const volumeOptions = [40, 60, 80, 100];
 
 export const SettingsScreen: React.FC = () => {
   const {
@@ -54,6 +58,7 @@ export const SettingsScreen: React.FC = () => {
     user,
     signOut,
     setActiveEmergency,
+    escalationLogs,
   } = useAppStore();
 
   const { getPrimaryContact } = useContactStore();
@@ -68,6 +73,7 @@ export const SettingsScreen: React.FC = () => {
 
   // Emergency Alert Settings State
   const [showTestConfirmModal, setShowTestConfirmModal] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [emergencyAlertsEnabled, setEmergencyAlertsEnabled] = useState(true);
   const [emergencySoundEnabled, setEmergencySoundEnabled] = useState(true);
   const [emergencyVibrationEnabled, setEmergencyVibrationEnabled] = useState(true);
@@ -119,6 +125,9 @@ export const SettingsScreen: React.FC = () => {
       draftConfig.deviceName !== deviceConfig.deviceName ||
       draftConfig.stillnessThreshold !== deviceConfig.stillnessThreshold ||
       draftConfig.responseTimeout !== deviceConfig.responseTimeout ||
+      draftConfig.t1ThresholdSeconds !== deviceConfig.t1ThresholdSeconds ||
+      draftConfig.repeatIntervalSeconds !== deviceConfig.repeatIntervalSeconds ||
+      draftConfig.alarmVolume !== deviceConfig.alarmVolume ||
       draftConfig.voiceDetectionEnabled !== deviceConfig.voiceDetectionEnabled ||
       draftConfig.speakerEnabled !== deviceConfig.speakerEnabled ||
       draftConfig.emergencyEscalation !== deviceConfig.emergencyEscalation ||
@@ -499,6 +508,124 @@ export const SettingsScreen: React.FC = () => {
           })}
         </View>
 
+        {/* Staged Escalation State Machine Configuration */}
+        <View style={styles.sectionHeaderRow}>
+          <SectionHeader title="Staged Inactivity Escalation (WSG-01)" />
+          {!isEditing && <Text style={styles.viewModeNotice}>Locked</Text>}
+        </View>
+        <View style={styles.card}>
+          <Text style={styles.escalationFieldTitle}>
+            T1 Inactivity Threshold (triggers Voice Check-in)
+          </Text>
+          <Text style={styles.escalationFieldSubtitle}>
+            Radar monitors stillness. Default: 5 min (300s).
+          </Text>
+          <View style={styles.optionGroup}>
+            {t1Options.map((val) => {
+              const isSelected = (activeConfig?.t1ThresholdSeconds ?? 300) === val;
+              return (
+                <TouchableOpacity
+                  key={val}
+                  disabled={!isEditing}
+                  style={[
+                    styles.optionPill,
+                    isSelected && styles.optionPillActive,
+                    !isEditing && !isSelected && styles.optionPillDisabled,
+                  ]}
+                  onPress={() => updateDraft({ t1ThresholdSeconds: val })}
+                >
+                  <Text
+                    style={[
+                      styles.optionText,
+                      isSelected && styles.optionTextActive,
+                      !isEditing && !isSelected && styles.optionTextDisabled,
+                    ]}
+                  >
+                    {val >= 60 ? `${val / 60}m` : `${val}s`}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <Text style={[styles.escalationFieldTitle, { marginTop: 14 }]}>
+            Repeat Check-in Interval (louder repeat + local buzzer)
+          </Text>
+          <Text style={styles.escalationFieldSubtitle}>
+            Window before escalation to full emergency ALARM. Default: 15s.
+          </Text>
+          <View style={styles.optionGroup}>
+            {repeatOptions.map((val) => {
+              const isSelected = (activeConfig?.repeatIntervalSeconds ?? 15) === val;
+              return (
+                <TouchableOpacity
+                  key={val}
+                  disabled={!isEditing}
+                  style={[
+                    styles.optionPill,
+                    isSelected && styles.optionPillActive,
+                    !isEditing && !isSelected && styles.optionPillDisabled,
+                  ]}
+                  onPress={() => updateDraft({ repeatIntervalSeconds: val })}
+                >
+                  <Text
+                    style={[
+                      styles.optionText,
+                      isSelected && styles.optionTextActive,
+                      !isEditing && !isSelected && styles.optionTextDisabled,
+                    ]}
+                  >
+                    {val}s
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <Text style={[styles.escalationFieldTitle, { marginTop: 14 }]}>
+            Escalation Alarm Volume
+          </Text>
+          <Text style={styles.escalationFieldSubtitle}>
+            Hardware buzzer decibel output level. Default: 80%.
+          </Text>
+          <View style={styles.optionGroup}>
+            {volumeOptions.map((val) => {
+              const isSelected = (activeConfig?.alarmVolume ?? 80) === val;
+              return (
+                <TouchableOpacity
+                  key={val}
+                  disabled={!isEditing}
+                  style={[
+                    styles.optionPill,
+                    isSelected && styles.optionPillActive,
+                    !isEditing && !isSelected && styles.optionPillDisabled,
+                  ]}
+                  onPress={() => updateDraft({ alarmVolume: val })}
+                >
+                  <Text
+                    style={[
+                      styles.optionText,
+                      isSelected && styles.optionTextActive,
+                      !isEditing && !isSelected && styles.optionTextDisabled,
+                    ]}
+                  >
+                    {val}%
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <TouchableOpacity
+            style={styles.viewHistoryBtn}
+            onPress={() => setShowHistoryModal(true)}
+            activeOpacity={0.8}
+          >
+            <Activity size={16} color={colors.primary} />
+            <Text style={styles.viewHistoryBtnText}>View Circular Event Log (Last 20 Transitions)</Text>
+          </TouchableOpacity>
+        </View>
+
         {/* Voice Detection */}
         <View style={styles.sectionHeaderRow}>
           <SectionHeader title="Voice Detection" />
@@ -730,6 +857,67 @@ export const SettingsScreen: React.FC = () => {
             onComplete={() => setShowPermissionsModal(false)}
             onSkip={() => setShowPermissionsModal(false)}
           />
+        </Modal>
+      )}
+
+      {/* Circular Buffer Transition History Modal */}
+      {showHistoryModal && (
+        <Modal
+          visible={showHistoryModal}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setShowHistoryModal(false)}
+        >
+          <View style={styles.testModalBackdrop}>
+            <View style={[styles.testModalCard, { maxHeight: '80%' }]}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Activity size={20} color={colors.primary} />
+                  <Text style={styles.testModalTitle}>Escalation Event Log</Text>
+                </View>
+                <TouchableOpacity onPress={() => setShowHistoryModal(false)}>
+                  <X size={20} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+
+              <Text style={{ fontSize: 13, color: colors.textSecondary, marginBottom: 12 }}>
+                Last 20 staged escalation state transitions recorded in ESP32 firmware circular buffer:
+              </Text>
+
+              <ScrollView style={{ maxHeight: 350 }}>
+                {escalationLogs && escalationLogs.length > 0 ? (
+                  escalationLogs.map((entry, idx) => (
+                    <View key={entry.id || idx} style={styles.historyLogItem}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                        <Text style={styles.historyLogTransition}>
+                          {entry.fromState} ➔ {entry.toState}
+                        </Text>
+                        <Text style={styles.historyLogTime}>
+                          {new Date(entry.timestamp).toLocaleTimeString()}
+                        </Text>
+                      </View>
+                      <Text style={styles.historyLogTrigger}>
+                        Trigger: {entry.trigger} • Stillness: {entry.stillnessSeconds}s
+                      </Text>
+                    </View>
+                  ))
+                ) : (
+                  <View style={{ padding: 24, alignItems: 'center' }}>
+                    <Text style={{ color: colors.textSecondary, fontSize: 14 }}>
+                      No transition events recorded yet. Transitions will appear as the device monitors the washroom.
+                    </Text>
+                  </View>
+                )}
+              </ScrollView>
+
+              <TouchableOpacity
+                style={[styles.testModalCancelBtn, { marginTop: 16, alignSelf: 'stretch', alignItems: 'center' }]}
+                onPress={() => setShowHistoryModal(false)}
+              >
+                <Text style={styles.testModalCancelText}>Close History</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         </Modal>
       )}
     </View>
@@ -1470,5 +1658,56 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '700',
+  },
+  escalationFieldTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  escalationFieldSubtitle: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    marginTop: 2,
+    marginBottom: 8,
+  },
+  viewHistoryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: borderRadius.md,
+    marginTop: 16,
+  },
+  viewHistoryBtnText: {
+    color: colors.primary,
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  historyLogItem: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: borderRadius.md,
+    padding: 10,
+    marginBottom: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primary,
+  },
+  historyLogTransition: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  historyLogTime: {
+    fontSize: 11,
+    color: colors.textSecondary,
+  },
+  historyLogTrigger: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    marginTop: 2,
   },
 });

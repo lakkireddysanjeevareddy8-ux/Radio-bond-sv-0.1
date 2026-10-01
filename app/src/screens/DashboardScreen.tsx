@@ -95,17 +95,32 @@ export const DashboardScreen: React.FC = () => {
     }
   };
 
-  let safetyStatus: 'SAFE' | 'MONITORING' | 'CHECKING' | 'EMERGENCY' | 'OFFLINE' = 'SAFE';
+  let safetyStatus:
+    | 'SAFE'
+    | 'MONITORING'
+    | 'CHECKING'
+    | 'INACTIVE_DETECTED'
+    | 'NO_RESPONSE'
+    | 'ALARM'
+    | 'EMERGENCY'
+    | 'OFFLINE' = 'SAFE';
 
   if (!isOnline || telemetry?.state === 'DEVICE_OFFLINE') {
     safetyStatus = 'OFFLINE';
   } else if (
+    telemetry?.state === 'ALARM' ||
     telemetry?.state === 'EMERGENCY' ||
     (activeEmergency && activeEmergency.status === 'ACTIVE' && telemetry?.state !== 'IDLE')
   ) {
-    safetyStatus = 'EMERGENCY';
-  } else if (telemetry?.state === 'CHECKING_WELLBEING' || telemetry?.state === 'WAITING_FOR_RESPONSE') {
-    safetyStatus = 'CHECKING';
+    safetyStatus = 'ALARM';
+  } else if (telemetry?.state === 'NO_RESPONSE') {
+    safetyStatus = 'NO_RESPONSE';
+  } else if (
+    telemetry?.state === 'INACTIVE_DETECTED' ||
+    telemetry?.state === 'CHECKING_WELLBEING' ||
+    telemetry?.state === 'WAITING_FOR_RESPONSE'
+  ) {
+    safetyStatus = 'INACTIVE_DETECTED';
   } else if (
     telemetry?.state === 'PERSON_PRESENT' ||
     telemetry?.state === 'MOVING' ||
