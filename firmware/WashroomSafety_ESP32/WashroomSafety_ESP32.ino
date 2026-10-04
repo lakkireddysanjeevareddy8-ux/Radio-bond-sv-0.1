@@ -125,6 +125,7 @@ uint8_t bufferCount = 0;
 enum WiFiConnState {
   WIFI_IDLE,
   WIFI_CONNECTING,
+  WIFI_AWAITING_DHCP,
   WIFI_CONNECTED,
   WIFI_FAILED
 };
@@ -348,8 +349,6 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
     String rxValue = pCharacteristic->getValue().c_str();
     if (rxValue.length() == 0) return;
 
-    Serial.printf("[BLE] Received provisioning payload (%d bytes)\n", rxValue.length());
-
 #if ARDUINOJSON_VERSION_MAJOR >= 7
     JsonDocument doc;
 #else
@@ -363,6 +362,14 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
     }
 
     const char* cmd = doc["cmd"] | "";
+
+    Serial.println("\n========================================");
+    Serial.println("[BLE COMMAND RECEIVED]");
+    Serial.printf("Characteristic: %s\n", CHAR_PROVISION_UUID);
+    Serial.printf("Command: %s\n", cmd);
+    Serial.printf("Payload: %s\n", rxValue.c_str());
+    Serial.println("========================================");
+
     if (strcmp(cmd, "PROV_WIFI") == 0) {
       const char* ssid = doc["ssid"] | "";
       const char* pass = doc["pass"] | "";
@@ -405,10 +412,48 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
         }
         return;
       }
+      Serial.println("[TEST EMERGENCY] COMMAND ACCEPTED");
       startTestEmergency();
+      Serial.println("[TEST EMERGENCY] EVENT GENERATED");
+
+      // Notify via Event Characteristic (beb5483e-36e1-4688-b7f5-ea07361b26aa)
+      if (pEventLogChar) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+        JsonDocument evDoc;
+#else
+        StaticJsonDocument<256> evDoc;
+#endif
+        evDoc["type"] = "event";
+        evDoc["event"] = "TEST_EMERGENCY";
+        evDoc["timestamp"] = millis();
+
+        String evOut;
+        serializeJson(evDoc, evOut);
+        pEventLogChar->setValue(evOut.c_str());
+        pEventLogChar->notify();
+        Serial.printf("[BLE] Sent TEST_EMERGENCY event log: %s\n", evOut.c_str());
+      }
+
+      // Notify via Status Characteristic (beb5483e-36e1-4688-b7f5-ea07361b26a9)
       if (pStatusChar) {
-        pStatusChar->setValue("{\"status\":\"OK\",\"test_active\":true,\"stage_seconds\":10}");
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+        JsonDocument resp;
+#else
+        StaticJsonDocument<256> resp;
+#endif
+        resp["type"]     = "status";
+        resp["status"]   = "TEST_EMERGENCY";
+        resp["state"]    = "EMERGENCY";
+        resp["trigger"]  = "test";
+        resp["source"]   = "app";
+        resp["is_test"]  = true;
+        resp["model"]    = MODEL_NUMBER;
+
+        String jsonOut;
+        serializeJson(resp, jsonOut);
+        pStatusChar->setValue(jsonOut.c_str());
         pStatusChar->notify();
+        Serial.printf("[BLE] Sent TEST_EMERGENCY status: %s\n", jsonOut.c_str());
       }
     } else if (strcmp(cmd, "CANCEL_TEST") == 0) {
       const char* token = doc["token"] | "";
@@ -420,7 +465,24 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
         }
         return;
       }
+      Serial.println("[TEST EMERGENCY] CANCEL COMMAND ACCEPTED");
       cancelTestEmergency();
+      if (pEventLogChar) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+        JsonDocument evDoc;
+#else
+        StaticJsonDocument<256> evDoc;
+#endif
+        evDoc["type"] = "event";
+        evDoc["event"] = "TEST_CANCELLED";
+        evDoc["test_cancelled"] = true;
+        evDoc["timestamp"] = millis();
+
+        String evOut;
+        serializeJson(evDoc, evOut);
+        pEventLogChar->setValue(evOut.c_str());
+        pEventLogChar->notify();
+      }
       if (pStatusChar) {
         pStatusChar->setValue("{\"status\":\"OK\",\"test_cancelled\":true}");
         pStatusChar->notify();
@@ -441,7 +503,7 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
 // ============================================================================
 // NON-BLOCKING WI-FI STATE MACHINE
 // ============================================================================
-void reportCurrentStatus() {
+void sendWiFiConnectedStatus(const String& ssid, const String& ipStr) {
   if (!pStatusChar) return;
 
 #if ARDUINOJSON_VERSION_MAJOR >= 7
@@ -450,23 +512,57 @@ void reportCurrentStatus() {
   StaticJsonDocument<256> resp;
 #endif
 
-  if (WiFi.status() == WL_CONNECTED) {
-    IPAddress ip = WiFi.localIP();
-    if (ip != IPAddress(0, 0, 0, 0)) {
-      resp["status"] = "CONNECTED";
-      resp["ip"]     = ip.toString();
-      resp["ssid"]   = WiFi.SSID();
-      resp["rssi"]   = WiFi.RSSI();
-    } else {
-      resp["status"] = "CONNECTING";
-    }
-  } else if (wifiConnState == WIFI_CONNECTING) {
-    resp["status"] = "CONNECTING";
-  } else {
-    resp["status"] = "DISCONNECTED";
+  resp["type"]    = "status";
+  resp["status"]  = "CONNECTED";
+  resp["state"]   = "WIFI_CONNECTED";
+  resp["trigger"] = "wifi";
+  resp["source"]  = "device";
+  resp["is_test"] = false;
+  resp["ssid"]    = ssid;
+  resp["ip"]      = ipStr;
+  resp["model"]   = MODEL_NUMBER;
+
+  String jsonOut;
+  serializeJson(resp, jsonOut);
+  pStatusChar->setValue(jsonOut.c_str());
+  pStatusChar->notify();
+  Serial.printf("[BLE] Sent status confirmation to app: %s\n", jsonOut.c_str());
+}
+
+void reportCurrentStatus() {
+  if (!pStatusChar) return;
+
+  if (wifiConnState == WIFI_CONNECTED && WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+    String s = WiFi.SSID();
+    String finalSsid = (s.length() > 0) ? s : activeSsid;
+    String ipStr = WiFi.localIP().toString();
+    sendWiFiConnectedStatus(finalSsid, ipStr);
+    return;
   }
 
-  resp["model"] = MODEL_NUMBER;
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+  JsonDocument resp;
+#else
+  StaticJsonDocument<256> resp;
+#endif
+
+  resp["type"]     = "status";
+  resp["trigger"]  = "wifi";
+  resp["source"]   = "device";
+  resp["is_test"]  = false;
+  resp["model"]    = MODEL_NUMBER;
+
+  if (wifiConnState == WIFI_CONNECTING || wifiConnState == WIFI_AWAITING_DHCP) {
+    resp["status"] = "CONNECTING";
+    resp["state"]  = "WIFI_CONNECTING";
+  } else if (wifiConnState == WIFI_FAILED) {
+    resp["status"] = "WIFI_TIMEOUT";
+    resp["state"]  = "WIFI_FAILED";
+  } else {
+    resp["status"] = "DISCONNECTED";
+    resp["state"]  = "WIFI_DISCONNECTED";
+  }
+
   String jsonOut;
   serializeJson(resp, jsonOut);
   pStatusChar->setValue(jsonOut.c_str());
@@ -479,7 +575,22 @@ void initiateWiFiConnection(const String& ssid, const String& pass) {
 
   // Notify BLE client that attempt has begun
   if (pStatusChar) {
-    pStatusChar->setValue("{\"status\":\"CONNECTING\"}");
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+    JsonDocument resp;
+#else
+    StaticJsonDocument<256> resp;
+#endif
+    resp["type"]    = "status";
+    resp["status"]  = "CONNECTING";
+    resp["state"]   = "WIFI_CONNECTING";
+    resp["trigger"] = "wifi";
+    resp["source"]  = "device";
+    resp["is_test"] = false;
+    resp["model"]   = MODEL_NUMBER;
+
+    String jsonOut;
+    serializeJson(resp, jsonOut);
+    pStatusChar->setValue(jsonOut.c_str());
     pStatusChar->notify();
   }
 
@@ -497,9 +608,9 @@ void initiateWiFiConnection(const String& ssid, const String& pass) {
 void processWiFiStateMachine() {
   unsigned long now = millis();
 
-  // 1. Actively monitor connection health: Detect router powered off or link lost (Acceptance Test 3)
+  // 1. Actively monitor connection health: Detect router powered off, link lost, or IP dropped
   if (wifiConnState == WIFI_CONNECTED) {
-    if (WiFi.status() != WL_CONNECTED) {
+    if (WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0, 0, 0, 0)) {
       Serial.println("\n[WiFi] Connection lost! Router powered off or out of range.");
       wifiConnState = WIFI_FAILED;
       digitalWrite(PIN_STATUS_LED, LOW);
@@ -509,7 +620,7 @@ void processWiFiStateMachine() {
     return;
   }
 
-  // 2. Background Auto-Reconnect when router is restored (Acceptance Test 4)
+  // 2. Background Auto-Reconnect when router is restored
   if (wifiConnState == WIFI_FAILED && activeSsid.length() > 0) {
     if (now - lastReconnectAttemptTime >= RECONNECT_INTERVAL_MS) {
       lastReconnectAttemptTime = now;
@@ -519,14 +630,16 @@ void processWiFiStateMachine() {
     }
   }
 
-  if (wifiConnState != WIFI_CONNECTING) return;
+  if (wifiConnState != WIFI_CONNECTING && wifiConnState != WIFI_AWAITING_DHCP) return;
 
-  // Blink Status LED while actively attempting to connect
+  // Blink Status LED while actively attempting to connect / obtain IP
   digitalWrite(PIN_STATUS_LED, (millis() / 200) % 2 == 0 ? HIGH : LOW);
 
   wl_status_t status = WiFi.status();
 
-  // 1. Success case: Connected and DHCP assigned real IP
+  // 1. WiFi associated: check if DHCP has assigned valid non-zero IP
+  // Treat Wi-Fi as fully connected only when BOTH are true:
+  // WiFi.status() == WL_CONNECTED AND WiFi.localIP() != IPAddress(0, 0, 0, 0)
   if (status == WL_CONNECTED) {
     IPAddress ip = WiFi.localIP();
     if (ip != IPAddress(0, 0, 0, 0)) {
@@ -534,40 +647,34 @@ void processWiFiStateMachine() {
       digitalWrite(PIN_STATUS_LED, HIGH);
       beepBuzzer(2, 80, 60); // Audio confirmation
 
+      String finalSsid = WiFi.SSID();
+      if (finalSsid.length() == 0) finalSsid = activeSsid;
       String ipStr = ip.toString();
-      Serial.printf("\n[WiFi] Connected successfully to router!\n");
-      Serial.printf("[WiFi] Assigned IP Address: %s\n", ipStr.c_str());
-      Serial.printf("[WiFi] Signal RSSI: %d dBm\n", WiFi.RSSI());
+      int currentRssi = WiFi.RSSI();
+
+      Serial.println("\nWIFI CONNECTED\n");
+      Serial.printf("SSID: %s\n", finalSsid.c_str());
+      Serial.printf("IP Address: %s\n", ipStr.c_str());
+      Serial.printf("RSSI: %d\n", currentRssi);
 
       // Persist verified credentials to NVS
       preferences.begin("wsg01", false);
-      preferences.putString("ssid", WiFi.SSID());
+      preferences.putString("ssid", finalSsid);
       preferences.putString("pass", activePass);
       if (customDeviceName.length() > 0) preferences.putString("name", customDeviceName);
       if (customRoom.length() > 0) preferences.putString("room", customRoom);
       preferences.end();
       Serial.println("[NVS] Credentials securely stored.");
 
-      // Send real hardware confirmation over BLE status characteristic
-      if (pStatusChar) {
-#if ARDUINOJSON_VERSION_MAJOR >= 7
-        JsonDocument resp;
-#else
-        StaticJsonDocument<256> resp;
-#endif
-        resp["status"] = "CONNECTED";
-        resp["ip"]     = ipStr;
-        resp["ssid"]   = WiFi.SSID();
-        resp["model"]  = MODEL_NUMBER;
-        resp["rssi"]   = WiFi.RSSI();
-
-        String jsonOut;
-        serializeJson(resp, jsonOut);
-        pStatusChar->setValue(jsonOut.c_str());
-        pStatusChar->notify();
-        Serial.printf("[BLE] Sent status confirmation to app: %s\n", jsonOut.c_str());
-      }
+      // Send single final real hardware confirmation over BLE status characteristic
+      sendWiFiConnectedStatus(finalSsid, ipStr);
       return;
+    } else {
+      // Associated to AP, waiting for DHCP IP assignment
+      if (wifiConnState != WIFI_AWAITING_DHCP) {
+        wifiConnState = WIFI_AWAITING_DHCP;
+        Serial.println("[WiFi] Associated with AP. Awaiting DHCP IP address assignment...");
+      }
     }
   }
 
@@ -579,8 +686,24 @@ void processWiFiStateMachine() {
     Serial.println("\n[WiFi] Connection failed: Incorrect Wi-Fi password (WL_CONNECT_FAILED)");
 
     if (pStatusChar) {
-      pStatusChar->setValue("{\"status\":\"AUTH_FAILED\",\"message\":\"Incorrect Wi-Fi password\"}");
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+      JsonDocument resp;
+#else
+      StaticJsonDocument<256> resp;
+#endif
+      resp["type"]     = "status";
+      resp["status"]   = "AUTH_FAILED";
+      resp["state"]    = "WIFI_FAILED";
+      resp["trigger"]  = "wifi";
+      resp["source"]   = "device";
+      resp["is_test"]  = false;
+      resp["model"]    = MODEL_NUMBER;
+
+      String jsonOut;
+      serializeJson(resp, jsonOut);
+      pStatusChar->setValue(jsonOut.c_str());
       pStatusChar->notify();
+      Serial.printf("[BLE] Sent auth failed status to app: %s\n", jsonOut.c_str());
     }
     return;
   }
@@ -592,8 +715,24 @@ void processWiFiStateMachine() {
     Serial.println("\n[WiFi] Connection failed: Network SSID not found in range (WL_NO_SSID_AVAIL)");
 
     if (pStatusChar) {
-      pStatusChar->setValue("{\"status\":\"SSID_NOT_FOUND\",\"message\":\"Network not found in range\"}");
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+      JsonDocument resp;
+#else
+      StaticJsonDocument<256> resp;
+#endif
+      resp["type"]     = "status";
+      resp["status"]   = "NO_SSID";
+      resp["state"]    = "WIFI_FAILED";
+      resp["trigger"]  = "wifi";
+      resp["source"]   = "device";
+      resp["is_test"]  = false;
+      resp["model"]    = MODEL_NUMBER;
+
+      String jsonOut;
+      serializeJson(resp, jsonOut);
+      pStatusChar->setValue(jsonOut.c_str());
       pStatusChar->notify();
+      Serial.printf("[BLE] Sent NO_SSID status to app: %s\n", jsonOut.c_str());
     }
     return;
   }
@@ -607,8 +746,24 @@ void processWiFiStateMachine() {
     WiFi.disconnect(true);
 
     if (pStatusChar) {
-      pStatusChar->setValue("{\"status\":\"TIMEOUT\",\"message\":\"Wi-Fi connection timed out\"}");
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+      JsonDocument resp;
+#else
+      StaticJsonDocument<256> resp;
+#endif
+      resp["type"]     = "status";
+      resp["status"]   = "WIFI_TIMEOUT";
+      resp["state"]    = "WIFI_FAILED";
+      resp["trigger"]  = "wifi";
+      resp["source"]   = "device";
+      resp["is_test"]  = false;
+      resp["model"]    = MODEL_NUMBER;
+
+      String jsonOut;
+      serializeJson(resp, jsonOut);
+      pStatusChar->setValue(jsonOut.c_str());
       pStatusChar->notify();
+      Serial.printf("[BLE] Sent WIFI_TIMEOUT status to app: %s\n", jsonOut.c_str());
     }
     return;
   }

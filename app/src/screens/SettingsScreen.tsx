@@ -18,6 +18,7 @@ import { useDeviceStore } from '../store/useDeviceStore';
 import { useContactStore } from '../store/useContactStore';
 import { EmergencyPushService } from '../services/EmergencyPushService';
 import { EmergencySoundService } from '../services/EmergencySoundService';
+import { BluetoothService } from '../services/bluetoothService';
 import { DeviceConfig } from '../types';
 import { SafetySetupScreen } from './SafetySetupScreen';
 import { ManageTrustedContactsScreen } from './ManageTrustedContactsScreen';
@@ -126,66 +127,33 @@ export const SettingsScreen: React.FC = () => {
   const [isTestRunning, setIsTestRunning] = useState(false);
 
   const handleTriggerTestAlert = async () => {
+    console.log('[TEST DEBUG 1] Button pressed');
     setShowTestConfirmModal(false);
     setIsTestRunning(true);
-    const eventId = `test_emg_${Date.now()}`;
-    const devId = activeConfig?.deviceId || 'WSG-000001';
-    const devName = activeConfig?.deviceName || 'Washroom Safety Guardian';
 
-    // 1. Dispatch authenticated command to ESP32 device if reachable
     try {
-      fetch('http://192.168.4.1/api/device/test-emergency', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Device-Token': 'wsg_secure_token',
-        },
-        body: JSON.stringify({ token: 'wsg_secure_token' }),
-      }).catch(() => {});
-    } catch {}
-
-    // 2. Dispatch standardized test emergency in app (compressed 10s stages)
-    const testPayload = {
-      type: 'EMERGENCY' as const,
-      eventId,
-      deviceId: devId,
-      deviceName: devName,
-      severity: 'CRITICAL' as const,
-      presenceDuration: 20,
-      timestamp: new Date().toISOString(),
-      isTest: true,
-      trigger: 'TEST',
-    };
-    EmergencyPushService.handleIncomingPush(testPayload);
-    setActiveEmergency({
-      id: eventId,
-      eventId,
-      deviceId: devId,
-      deviceName: devName,
-      type: 'EMERGENCY',
-      eventType: 'EMERGENCY',
-      trigger: 'TEST',
-      severity: 'CRITICAL',
-      presenceDuration: 20,
-      timestamp: testPayload.timestamp,
-      status: 'ACTIVE',
-      isTestAlert: true,
-      isTest: true,
-    });
+      console.log('[Settings] Triggering real TEST_EMERGENCY over BLE GATT...');
+      await BluetoothService.triggerTestEmergency();
+      console.log('[Settings] TEST_EMERGENCY command successfully sent to ESP32. Awaiting real device event notification...');
+      // Note: The emergency alert UI will be activated when the ESP32 generates and notifies TEST_EMERGENCY over BLE.
+    } catch (err: any) {
+      console.error('[Settings] Failed to trigger TEST_EMERGENCY over BLE:', err);
+      setIsTestRunning(false);
+      Alert.alert(
+        'Device Not Connected',
+        'WSG-01 is not connected. Please reconnect the device.',
+        [{ text: 'OK' }]
+      );
+    }
   };
 
   const handleCancelTestAlert = async () => {
     setIsTestRunning(false);
     try {
-      fetch('http://192.168.4.1/api/device/cancel-test', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Device-Token': 'wsg_secure_token',
-        },
-        body: JSON.stringify({ token: 'wsg_secure_token' }),
-      }).catch(() => {});
-    } catch {}
+      await BluetoothService.cancelTestEmergency();
+    } catch (e) {
+      console.warn('[Settings] Cancel test note:', e);
+    }
     setActiveEmergency(null);
   };
 

@@ -348,6 +348,207 @@ class NativeBluetoothServiceClass {
    * Connect to GATT server on a discovered native device,
    * discover all services and characteristics, and map WSG-01 characteristics.
    */
+  /**
+   * Builds and maps connected GATT session characteristics with diagnostics.
+   */
+  public async buildSessionFromConnectedDevice(
+    connectedDevice: Device,
+    product: ProductDefinition = PRODUCT_CATALOG[0],
+    discoveredDevice?: DiscoveredNativeDevice
+  ): Promise<ConnectedNativeSession> {
+    // 1. Discover all services and characteristics
+    const deviceWithServices = await connectedDevice.discoverAllServicesAndCharacteristics();
+
+    // 2. Locate WSG-01 primary service
+    const targetServiceUuid = product.bleServiceUuid.toLowerCase();
+    const targetProvUuid = product.bleProvisionCharUuid.toLowerCase();
+    const targetStatusUuid = product.bleStatusCharUuid.toLowerCase();
+    const targetEventLogUuid = (product.bleEventLogCharUuid || 'beb5483e-36e1-4688-b7f5-ea07361b26aa').toLowerCase();
+    const targetConfigUuid = (product.bleConfigCharUuid || 'beb5483e-36e1-4688-b7f5-ea07361b26ab').toLowerCase();
+
+    const services = await deviceWithServices.services();
+    let matchedService: any = null;
+
+    for (const s of services) {
+      if (s.uuid.toLowerCase() === targetServiceUuid) {
+        matchedService = s;
+        break;
+      }
+    }
+
+    // Strictly verify WSG-01 primary service UUID - NEVER fall back to generic services
+    if (!matchedService) {
+      throw new Error(
+        `WSG-01 Service Not Found: Device does not expose the required safety service (${targetServiceUuid}).`
+      );
+    }
+
+    // 3. Discover characteristics for WSG-01 service
+    const characteristics = await matchedService.characteristics();
+    let rawProvChar: Characteristic | null = null;
+    let rawStatusChar: Characteristic | null = null;
+    let rawEventLogChar: Characteristic | null = null;
+    let rawConfigChar: Characteristic | null = null;
+
+    const norm = (u: string) => u.toLowerCase().replace(/[^a-f0-9]/g, '');
+    for (const c of characteristics) {
+      const cUuidNorm = norm(c.uuid);
+      if (cUuidNorm === norm(targetProvUuid)) {
+        rawProvChar = c;
+      } else if (cUuidNorm === norm(targetStatusUuid)) {
+        rawStatusChar = c;
+      } else if (cUuidNorm === norm(targetEventLogUuid)) {
+        rawEventLogChar = c;
+      } else if (cUuidNorm === norm(targetConfigUuid)) {
+        rawConfigChar = c;
+      }
+    }
+
+    // Strictly verify WSG-01 provisioning characteristic - NEVER fall back to unrelated characteristics
+    if (!rawProvChar) {
+      throw new Error(
+        `WSG-01 Characteristic Not Found: Required provisioning characteristic (${targetProvUuid}) was not found.`
+      );
+    }
+    console.log(
+      '[NativeBLE] WSG-01 Provisioning Characteristic matched:',
+      rawProvChar.uuid,
+      `(writableWithResponse: ${rawProvChar.isWritableWithResponse}, writableWithoutResponse: ${rawProvChar.isWritableWithoutResponse})`
+    );
+
+    if (rawStatusChar) {
+      console.log('[NativeBLE] WSG-01 Status Characteristic matched:', rawStatusChar.uuid);
+    }
+    if (rawEventLogChar) {
+      console.log('[NativeBLE] WSG-01 Event Characteristic matched:', rawEventLogChar.uuid);
+    }
+    if (rawConfigChar) {
+      console.log('[NativeBLE] WSG-01 Config Characteristic matched:', rawConfigChar.uuid);
+    }
+
+    // 4. Wrap characteristics into uniform API with explicit diagnostic logging
+    const wrapChar = (char: Characteristic): BleCharacteristicWrapper => ({
+      uuid: char.uuid,
+      writeValue: async (data: Uint8Array | string) => {
+        const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+        const b64 = bytesToBase64(bytes);
+        const dataStr = typeof data === 'string' ? data : new TextDecoder().decode(bytes);
+
+        console.log('[TEST DEBUG 10] native write started');
+        console.log('[BLE WRITE DEBUG] deviceId =', char.deviceID);
+        console.log('[BLE WRITE DEBUG] serviceUUID =', char.serviceUUID);
+        console.log('[BLE WRITE DEBUG] characteristicUUID =', char.uuid);
+        console.log('[BLE WRITE DEBUG] method actually called = writeWithoutResponse');
+        console.log('[NativeBLE] WRITE WITHOUT RESPONSE', 'UUID:', char.uuid, 'DATA:', dataStr);
+        console.log('[NativeBLE WRITE DIAGNOSTIC]', {
+          deviceID: char.deviceID,
+          serviceUUID: char.serviceUUID,
+          characteristicUUID: char.uuid,
+          writeMode: 'writeWithoutResponse',
+          payloadByteLength: bytes.length,
+        });
+
+        try {
+          await char.writeWithoutResponse(b64);
+          console.log('[TEST DEBUG 11] native write SUCCESS');
+          console.log('[NativeBLE] WRITE SUCCESS', char.uuid);
+        } catch (error: any) {
+          console.error('[TEST DEBUG 11] native write FAILED:', error?.message || error);
+          console.error('[NativeBLE] WRITE FAILED', char.uuid, error);
+          throw error;
+        }
+      },
+      writeValueWithResponse: async (data: Uint8Array | string) => {
+        const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+        const b64 = bytesToBase64(bytes);
+        const dataStr = typeof data === 'string' ? data : new TextDecoder().decode(bytes);
+
+        console.log('[TEST DEBUG 10] native write started');
+        console.log('[BLE WRITE DEBUG] deviceId =', char.deviceID);
+        console.log('[BLE WRITE DEBUG] serviceUUID =', char.serviceUUID);
+        console.log('[BLE WRITE DEBUG] characteristicUUID =', char.uuid);
+        console.log('[BLE WRITE DEBUG] method actually called = writeWithResponse');
+        console.log('[NativeBLE] WRITE WITH RESPONSE', 'UUID:', char.uuid, 'DATA:', dataStr);
+        console.log('[NativeBLE WRITE DIAGNOSTIC]', {
+          deviceID: char.deviceID,
+          serviceUUID: char.serviceUUID,
+          characteristicUUID: char.uuid,
+          writeMode: 'writeWithResponse',
+          payloadByteLength: bytes.length,
+        });
+
+        try {
+          await char.writeWithResponse(b64);
+          console.log('[TEST DEBUG 11] native write SUCCESS');
+          console.log('[NativeBLE] WRITE SUCCESS', char.uuid);
+        } catch (error: any) {
+          console.error('[TEST DEBUG 11] native write FAILED:', error?.message || error);
+          console.error('[NativeBLE] WRITE FAILED', char.uuid, error);
+          throw error;
+        }
+      },
+      readValue: async () => {
+        const readChar = await char.read();
+        const val = readChar.value || '';
+        return base64ToBytes(val);
+      },
+      monitor: (listener: (data: Uint8Array) => void) => {
+        console.log('[NativeBLE] Subscribed to characteristic monitor:', char.uuid);
+        const sub = char.monitor((err, c) => {
+          if (err) {
+            console.warn('[NativeBLE] Monitor callback error for ' + char.uuid + ':', err);
+            return;
+          }
+          if (c && c.value != null && c.value !== '') {
+            const rawBytes = base64ToBytes(c.value);
+            let decodedText = '';
+            try {
+              decodedText = new TextDecoder('utf-8').decode(rawBytes);
+            } catch {
+              decodedText = String.fromCharCode.apply(null, Array.from(rawBytes));
+            }
+            console.log('[BLE RAW NOTIFICATION RECEIVED]');
+            console.log('characteristicUUID:', char.uuid);
+            console.log('byteLength:', rawBytes.length);
+            console.log('rawBytes:', Array.from(rawBytes));
+            console.log('decodedText:', decodedText);
+
+            listener(rawBytes);
+          }
+        });
+        return () => {
+          console.log('[NativeBLE] Unsubscribed from characteristic monitor:', char.uuid);
+          try {
+            sub.remove();
+          } catch (remErr) {
+            console.warn('[NativeBLE] Error removing monitor subscription:', remErr);
+          }
+        };
+      },
+    });
+
+    const devItem: DiscoveredNativeDevice = discoveredDevice || {
+      id: connectedDevice.id,
+      name: connectedDevice.name || connectedDevice.localName || product.name,
+      rssi: connectedDevice.rssi ?? -50,
+      serviceUuids: [product.bleServiceUuid],
+      rawDevice: connectedDevice,
+      product: product,
+    };
+
+    return {
+      device: devItem,
+      server: deviceWithServices,
+      service: matchedService,
+      provisionChar: wrapChar(rawProvChar),
+      statusChar: rawStatusChar ? wrapChar(rawStatusChar) : undefined,
+      eventLogChar: rawEventLogChar ? wrapChar(rawEventLogChar) : undefined,
+      configChar: rawConfigChar ? wrapChar(rawConfigChar) : undefined,
+      connectedAt: new Date(),
+      isNative: true,
+    };
+  }
+
   public async connectGatt(
     discovered: DiscoveredNativeDevice,
     product: ProductDefinition
@@ -366,103 +567,113 @@ class NativeBluetoothServiceClass {
         timeout: 10000,
       });
 
-      // 2. Discover all services and characteristics
-      const deviceWithServices = await connectedDevice.discoverAllServicesAndCharacteristics();
-
-      // 3. Locate WSG-01 primary service
-      const targetServiceUuid = product.bleServiceUuid.toLowerCase();
-      const targetProvUuid = product.bleProvisionCharUuid.toLowerCase();
-      const targetStatusUuid = product.bleStatusCharUuid.toLowerCase();
-      const targetEventLogUuid = (product.bleEventLogCharUuid || 'beb5483e-36e1-4688-b7f5-ea07361b26aa').toLowerCase();
-      const targetConfigUuid = (product.bleConfigCharUuid || 'beb5483e-36e1-4688-b7f5-ea07361b26ab').toLowerCase();
-
-      const services = await deviceWithServices.services();
-      let matchedService: any = null;
-
-      for (const s of services) {
-        if (s.uuid.toLowerCase() === targetServiceUuid) {
-          matchedService = s;
-          break;
-        }
-      }
-
-      // Strictly verify WSG-01 primary service UUID - NEVER fall back to generic services
-      if (!matchedService) {
-        throw new Error(
-          `WSG-01 Service Not Found: Device does not expose the required safety service (${targetServiceUuid}).`
-        );
-      }
-
-      // 4. Discover characteristics for WSG-01 service
-      const characteristics = await matchedService.characteristics();
-      let rawProvChar: Characteristic | null = null;
-      let rawStatusChar: Characteristic | null = null;
-      let rawEventLogChar: Characteristic | null = null;
-      let rawConfigChar: Characteristic | null = null;
-
-      for (const c of characteristics) {
-        const cUuid = c.uuid.toLowerCase();
-        if (cUuid === targetProvUuid) {
-          rawProvChar = c;
-        } else if (cUuid === targetStatusUuid) {
-          rawStatusChar = c;
-        } else if (cUuid === targetEventLogUuid) {
-          rawEventLogChar = c;
-        } else if (cUuid === targetConfigUuid) {
-          rawConfigChar = c;
-        }
-      }
-
-      // Strictly verify WSG-01 provisioning characteristic - NEVER fall back to unrelated characteristics
-      if (!rawProvChar) {
-        throw new Error(
-          `WSG-01 Characteristic Not Found: Required provisioning characteristic (${targetProvUuid}) was not found.`
-        );
-      }
-
-      // 5. Wrap characteristics into uniform API
-      const wrapChar = (char: Characteristic): BleCharacteristicWrapper => ({
-        uuid: char.uuid,
-        writeValue: async (data: Uint8Array | string) => {
-          const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-          const b64 = bytesToBase64(bytes);
-          await char.writeWithoutResponse(b64);
-        },
-        writeValueWithResponse: async (data: Uint8Array | string) => {
-          const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-          const b64 = bytesToBase64(bytes);
-          await char.writeWithResponse(b64);
-        },
-        readValue: async () => {
-          const readChar = await char.read();
-          const val = readChar.value || '';
-          return base64ToBytes(val);
-        },
-        monitor: (listener: (data: Uint8Array) => void) => {
-          const sub = char.monitor((err, c) => {
-            if (!err && c?.value) {
-              listener(base64ToBytes(c.value));
-            }
-          });
-          return () => sub.remove();
-        },
-      });
-
-      return {
-        device: discovered,
-        server: deviceWithServices,
-        service: matchedService,
-        provisionChar: wrapChar(rawProvChar),
-        statusChar: rawStatusChar ? wrapChar(rawStatusChar) : undefined,
-        eventLogChar: rawEventLogChar ? wrapChar(rawEventLogChar) : undefined,
-        configChar: rawConfigChar ? wrapChar(rawConfigChar) : undefined,
-        connectedAt: new Date(),
-        isNative: true,
-      };
+      return await this.buildSessionFromConnectedDevice(connectedDevice, product, discovered);
     } catch (err: any) {
       console.warn('[NativeBLE] GATT connection error:', err);
       throw new Error(err.message || 'CONNECTION_FAILED');
     }
+  }
+
+  /**
+   * Reconnect to a known WSG-01 device by ID or discover nearby via fast targeted scan.
+   */
+  public async reconnectOrScan(
+    preferredDeviceId?: string,
+    product: ProductDefinition = PRODUCT_CATALOG[0],
+    timeoutMs: number = 7000
+  ): Promise<ConnectedNativeSession> {
+    const mgr = this.getManager();
+
+    // 1. Check if preferred device is already connected or attempt direct connect
+    if (preferredDeviceId && preferredDeviceId.length > 5) {
+      try {
+        const isConn = await mgr.isDeviceConnected(preferredDeviceId);
+        if (isConn) {
+          console.log('[NativeBLE] Device already connected, discovering services:', preferredDeviceId);
+          const devList = await mgr.devices([preferredDeviceId]);
+          if (devList && devList[0]) {
+            return await this.buildSessionFromConnectedDevice(devList[0], product);
+          }
+        }
+      } catch (connCheckErr) {
+        console.warn('[NativeBLE] isDeviceConnected check note:', connCheckErr);
+      }
+
+      try {
+        console.log('[NativeBLE] Attempting direct connect to device ID:', preferredDeviceId);
+        const directDev = await mgr.connectToDevice(preferredDeviceId, {
+          autoConnect: false,
+          timeout: 4000,
+        });
+        console.log('[NativeBLE] Direct connect succeeded:', preferredDeviceId);
+        return await this.buildSessionFromConnectedDevice(directDev, product);
+      } catch (directErr) {
+        console.log('[NativeBLE] Direct connect by ID timed out/failed, falling back to fast scan...', directErr);
+      }
+    }
+
+    // 2. Perform fast targeted scan for WSG-01
+    return new Promise<ConnectedNativeSession>(async (resolve, reject) => {
+      let isResolved = false;
+      const targetServiceUuid = product.bleServiceUuid.toLowerCase();
+      const prefix = 'wsg-01';
+
+      const scanTimer = setTimeout(() => {
+        if (!isResolved) {
+          isResolved = true;
+          this.stopScan();
+          reject(new Error('BLE_NOT_CONNECTED: WSG-01 device not found nearby. Please ensure the device is powered on.'));
+        }
+      }, timeoutMs);
+
+      const onDeviceFound = async (device: Device) => {
+        if (isResolved) return;
+        isResolved = true;
+        clearTimeout(scanTimer);
+        this.stopScan();
+
+        try {
+          console.log('[NativeBLE] Targeted scan found WSG-01:', device.name, device.id);
+          const connected = await device.connect({ autoConnect: false, timeout: 6000 });
+          const session = await this.buildSessionFromConnectedDevice(connected, product);
+          resolve(session);
+        } catch (connErr: any) {
+          reject(new Error(`BLE_NOT_CONNECTED: Found ${device.name || 'WSG-01'} but connection failed: ${connErr.message || connErr}`));
+        }
+      };
+
+      const hasPerm = await this.requestPermissions();
+      if (!hasPerm) {
+        clearTimeout(scanTimer);
+        reject(new Error('PERMISSION_DENIED: Bluetooth permissions not granted.'));
+        return;
+      }
+
+      this.stopScan();
+      this.isScanning = true;
+
+      mgr.startDeviceScan(
+        [product.bleServiceUuid],
+        { allowDuplicates: false },
+        (error, dev) => {
+          if (error) {
+            if (!isResolved) {
+              isResolved = true;
+              clearTimeout(scanTimer);
+              this.stopScan();
+              reject(new Error(`BLE_SCAN_ERROR: ${error.message}`));
+            }
+            return;
+          }
+          if (dev) {
+            const devName = (dev.name || dev.localName || '').toLowerCase();
+            if (devName.startsWith(prefix) || devName.includes('wsg') || dev.serviceUUIDs?.includes(targetServiceUuid)) {
+              onDeviceFound(dev);
+            }
+          }
+        }
+      );
+    });
   }
 
   /**

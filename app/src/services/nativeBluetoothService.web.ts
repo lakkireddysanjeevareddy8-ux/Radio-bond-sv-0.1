@@ -41,6 +41,14 @@ export class NativeBluetoothServiceClass {
     throw new Error('Native BLE is only available on Android and iOS devices.');
   }
 
+  public async reconnectOrScan(
+    _preferredDeviceId?: string,
+    _product?: ProductDefinition,
+    _timeoutMs?: number
+  ): Promise<any> {
+    throw new Error('Native BLE is only available on Android and iOS devices.');
+  }
+
   public disconnect(_session: any): void {}
 }
 

@@ -1,4 +1,4 @@
-import { ConnectedBleSession } from './bluetoothService';
+import { ConnectedBleSession, BluetoothService } from './bluetoothService';
 import { useAppStore } from '../store/useAppStore';
 
 export interface ProvisioningCredentials {
@@ -63,9 +63,25 @@ export class DeviceProvisioningService {
         const rawStr = decoder.decode(val).trim();
         if (rawStr.startsWith('{')) {
           const parsed = JSON.parse(rawStr);
-          if (parsed.status === 'CONNECTED') return 'CONNECTED';
-          if (parsed.status === 'CONNECTING') return 'CONNECTING';
-          if (parsed.status === 'AUTH_FAILED' || parsed.status === 'TIMEOUT') return 'FAILED';
+          if (
+            parsed.status === 'CONNECTED' ||
+            parsed.state === 'WIFI_CONNECTED' ||
+            parsed.status === 'WIFI_CONNECTED'
+          ) {
+            return 'CONNECTED';
+          }
+          if (parsed.status === 'CONNECTING' || parsed.state === 'WIFI_CONNECTING') {
+            return 'CONNECTING';
+          }
+          if (
+            parsed.status === 'AUTH_FAILED' ||
+            parsed.status === 'TIMEOUT' ||
+            parsed.status === 'WIFI_TIMEOUT' ||
+            parsed.status === 'NO_SSID' ||
+            parsed.state === 'WIFI_FAILED'
+          ) {
+            return 'FAILED';
+          }
           return 'DISCONNECTED';
         }
       }
@@ -144,6 +160,7 @@ export class DeviceProvisioningService {
 
     // Optional notification listener if supported
     let unsubscribeMonitor: (() => void) | undefined;
+    let monitorError: string | null = null;
     if (typeof session.statusChar?.monitor === 'function') {
       try {
         unsubscribeMonitor = session.statusChar.monitor((data: Uint8Array) => {
@@ -152,10 +169,22 @@ export class DeviceProvisioningService {
             const respStr = decoder.decode(data).trim();
             if (respStr.startsWith('{')) {
               const resp = JSON.parse(respStr);
-              if (resp.status === 'CONNECTED' && resp.ip && resp.ip !== '0.0.0.0') {
+              const isConnected =
+                resp.status === 'CONNECTED' ||
+                resp.state === 'WIFI_CONNECTED' ||
+                resp.status === 'WIFI_CONNECTED';
+
+              if (isConnected && resp.ip && resp.ip !== '0.0.0.0') {
                 assignedIp = resp.ip;
                 if (typeof resp.rssi === 'number') assignedRssi = resp.rssi;
                 if (resp.ssid) assignedSsid = resp.ssid;
+                console.log('[Provisioning] Hardware reported Wi-Fi connected via notification:', assignedIp);
+              } else if (resp.status === 'AUTH_FAILED') {
+                monitorError = 'Wi-Fi connection failed: Incorrect Wi-Fi password or authentication rejected.';
+              } else if (resp.status === 'SSID_NOT_FOUND' || resp.status === 'NO_SSID') {
+                monitorError = `Wi-Fi connection failed: Network "${creds.ssid}" not found in range.`;
+              } else if (resp.status === 'TIMEOUT' || resp.status === 'WIFI_TIMEOUT') {
+                monitorError = `Wi-Fi connection timed out: ESP32 could not connect to "${creds.ssid}".`;
               }
             }
           } catch {}
@@ -166,6 +195,7 @@ export class DeviceProvisioningService {
     try {
       for (let i = 0; i < maxPollAttempts; i++) {
         if (assignedIp) break;
+        if (monitorError) throw new Error(monitorError);
 
         await new Promise((r) => setTimeout(r, 1200));
         onProgress?.('OBTAINING_IP', `Awaiting DHCP IP address assignment (${i + 1}/${maxPollAttempts})...`);
@@ -179,16 +209,22 @@ export class DeviceProvisioningService {
               if (rawStr.startsWith('{')) {
                 const resp = JSON.parse(rawStr);
 
-                if (resp.status === 'CONNECTED' && resp.ip && resp.ip !== '0.0.0.0') {
+                const isConnected =
+                  resp.status === 'CONNECTED' ||
+                  resp.state === 'WIFI_CONNECTED' ||
+                  resp.status === 'WIFI_CONNECTED';
+
+                if (isConnected && resp.ip && resp.ip !== '0.0.0.0') {
                   assignedIp = resp.ip;
                   if (typeof resp.rssi === 'number') assignedRssi = resp.rssi;
                   if (resp.ssid) assignedSsid = resp.ssid;
+                  console.log('[Provisioning] Hardware reported Wi-Fi connected via readValue:', assignedIp);
                   break;
                 } else if (resp.status === 'AUTH_FAILED') {
                   throw new Error('Wi-Fi connection failed: Incorrect Wi-Fi password or authentication rejected.');
-                } else if (resp.status === 'SSID_NOT_FOUND') {
+                } else if (resp.status === 'SSID_NOT_FOUND' || resp.status === 'NO_SSID') {
                   throw new Error(`Wi-Fi connection failed: Network "${creds.ssid}" not found in range.`);
-                } else if (resp.status === 'TIMEOUT') {
+                } else if (resp.status === 'TIMEOUT' || resp.status === 'WIFI_TIMEOUT') {
                   throw new Error(`Wi-Fi connection timed out: ESP32 could not connect to "${creds.ssid}".`);
                 }
               }
@@ -214,6 +250,11 @@ export class DeviceProvisioningService {
     }
 
     onProgress?.('SUCCESS', `Connected to Wi-Fi successfully! IP: ${assignedIp}`);
+
+    // Verify Event Characteristic notification listener remains active after Wi-Fi provisioning
+    if (session) {
+      BluetoothService.startDeviceEventMonitoring(session);
+    }
 
     return {
       success: true,

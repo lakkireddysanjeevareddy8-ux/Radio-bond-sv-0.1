@@ -9,6 +9,7 @@ import { useDeviceStore } from './src/store/useDeviceStore';
 import { useContactStore } from './src/store/useContactStore';
 import { EmergencySoundService } from './src/services/EmergencySoundService';
 import { EmergencyPushService } from './src/services/EmergencyPushService';
+import { BluetoothService } from './src/services/bluetoothService';
 
 // Configure foreground notification behavior on native platforms
 if (Platform.OS !== 'web') {
@@ -53,6 +54,12 @@ export default function App() {
     EmergencyPushService.setOnEmergencyReceived((event) => {
       setActiveEmergency(event);
     });
+
+    // Ensure active BLE Event Characteristic monitoring is running
+    const activeBle = BluetoothService.getActiveSession();
+    if (activeBle) {
+      BluetoothService.startDeviceEventMonitoring(activeBle);
+    }
 
     // Native notification listeners for foreground delivery, background taps, and cold starts
     let notifSub: any;
