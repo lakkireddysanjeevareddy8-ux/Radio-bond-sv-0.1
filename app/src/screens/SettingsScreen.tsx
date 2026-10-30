@@ -12,7 +12,17 @@ import {
   Modal,
   ActivityIndicator,
 } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
 import { colors, typography, spacing, borderRadius } from '../utils/theme';
+import {
+  Card,
+  Button,
+  Pill,
+  IconBadge,
+  SectionTitle,
+  ListRow,
+  Collapsible,
+} from '../components/ui';
 import { useAppStore } from '../store/useAppStore';
 import { useDeviceStore } from '../store/useDeviceStore';
 import { useContactStore } from '../store/useContactStore';
@@ -48,6 +58,10 @@ import {
   ShieldCheck,
   Users,
   MapPin,
+  Sliders,
+  LogOut,
+  FlaskConical,
+  Wrench,
 } from 'lucide-react-native';
 import { QuietHoursService, BypassPermissionStatus } from '../services/QuietHoursService';
 
@@ -60,6 +74,7 @@ const quietStartOptions = ['21:00', '22:00', '23:00', '00:00'];
 const quietEndOptions = ['05:00', '06:00', '07:00', '08:00'];
 
 export const SettingsScreen: React.FC = () => {
+  const navigation = useNavigation<any>();
   const {
     deviceConfig,
     setDeviceConfig,
@@ -297,7 +312,7 @@ export const SettingsScreen: React.FC = () => {
                 <Lock size={18} color={colors.textSecondary} />
               )}
               <Text style={[styles.controlBarTitle, isSharedViewer ? { color: '#1D4ED8' } : isEditing ? { color: '#92400E' } : undefined]}>
-                {isSharedViewer ? 'Caregiver View Only' : isEditing ? 'Editing Settings' : 'Settings View Only'}
+                {isSharedViewer ? 'Caregiver View Only' : isEditing ? 'Editing Settings' : 'Device Settings'}
               </Text>
             </View>
             <Text style={styles.controlBarSubtitle}>
@@ -305,9 +320,9 @@ export const SettingsScreen: React.FC = () => {
                 ? 'Monitored under caregiver authorization'
                 : isEditing
                 ? hasChanges
-                  ? '⚠️ You have unsaved changes'
-                  : 'Modify any settings below, then tap Save'
-                : 'Click Edit Settings to make changes'}
+                  ? 'Unsaved changes • Tap Save Changes to persist'
+                  : 'Modify any settings below, then tap Save Changes'
+                : 'Tap Edit to change settings'}
             </Text>
           </View>
 
@@ -353,19 +368,25 @@ export const SettingsScreen: React.FC = () => {
           </View>
         </View>
 
-        {/* Account Section */}
+        {/* 1. Account Section */}
         <SectionHeader title="Account" />
         <View style={styles.card}>
           <View style={styles.settingRow}>
             <Text style={styles.settingLabel}>Logged In As</Text>
             <Text style={styles.settingValue}>{user?.email || 'Authenticated User'}</Text>
           </View>
-          <TouchableOpacity style={styles.signOutBtn} onPress={handleSignOut}>
-            <Text style={styles.signOutBtnText}>🚪 Sign Out</Text>
+          <TouchableOpacity
+            style={styles.signOutBtn}
+            onPress={handleSignOut}
+            accessibilityRole="button"
+            accessibilityLabel="Sign out"
+          >
+            <LogOut size={16} color="#DC2626" style={{ marginRight: 6 }} />
+            <Text style={styles.signOutBtnText}>Sign Out</Text>
           </TouchableOpacity>
         </View>
 
-        {/* Family & Caregiver Sharing */}
+        {/* 2. Caregiver Sharing */}
         <SectionHeader title="Family & Caregiver Sharing" />
         <View style={styles.card}>
           <View style={styles.sharingHeaderRow}>
@@ -386,6 +407,8 @@ export const SettingsScreen: React.FC = () => {
             style={styles.manageSharingBtn}
             onPress={() => setShowCaregiversModal(true)}
             activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel={isSharedViewer ? 'View Connected Caregivers' : 'Manage and Invite Caregivers'}
           >
             <Users size={16} color="#FFFFFF" />
             <Text style={styles.manageSharingBtnText}>
@@ -394,13 +417,15 @@ export const SettingsScreen: React.FC = () => {
           </TouchableOpacity>
         </View>
 
-        {/* Safety Permissions & Onboarding */}
+        {/* 3. Safety Permissions & Onboarding */}
         <SectionHeader title="Safety Permissions & Onboarding" />
         <View style={styles.card}>
           <TouchableOpacity
             style={styles.permissionsRowBtn}
             onPress={() => setShowPermissionsModal(true)}
             activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="WSG-01 Safety Setup and Permissions"
           >
             <View style={styles.permissionsBtnLeft}>
               <View style={styles.permissionsIconWrapper}>
@@ -417,44 +442,36 @@ export const SettingsScreen: React.FC = () => {
           </TouchableOpacity>
         </View>
 
-        {/* Hardware & Data Source Mode */}
-        <SectionHeader title="Hardware & Runtime Mode" />
+        {/* 4. Emergency Contacts Row */}
+        <SectionHeader title="Emergency Contacts" />
         <View style={styles.card}>
-          <ToggleRow
-            label="Demo Simulator Mode"
-            value={hardwareMode === 'DEMO_SIMULATOR'}
-            onToggle={(val) => setHardwareMode(val ? 'DEMO_SIMULATOR' : 'REAL_HARDWARE')}
-            disabled={false}
+          <ListRow
+            title="Emergency contacts"
+            subtitle={
+              primaryContact
+                ? `${primaryContact.name} (${primaryContact.relationship || 'Primary'}) • ${primaryContact.phone}`
+                : 'Manage phone numbers and notification order'
+            }
+            leftIcon={<Phone size={18} color={colors.primaryDark} />}
+            leftBadgeTone="primary"
+            showChevron={true}
+            onPress={() => navigation.navigate('Contacts')}
+            accessibilityLabel="Navigate to Emergency Contacts"
+            style={{ paddingHorizontal: 0 }}
           />
-          <View style={styles.modeInfoBox}>
-            <Text style={styles.modeInfoTitle}>
-              {hardwareMode === 'DEMO_SIMULATOR'
-                ? '🎮 Demo Simulator Active'
-                : '📡 Real Hardware Mode (Production)'}
-            </Text>
-            <Text style={styles.modeInfoSubtitle}>
-              {hardwareMode === 'DEMO_SIMULATOR'
-                ? 'Running in software simulator mode. Great for UI design and scenario testing.'
-                : 'Production real-hardware architecture active. Requires verified physical BLE GATT & ESP32 connection.'}
-            </Text>
-          </View>
-          <View style={[styles.settingRow, { borderBottomWidth: 0, marginTop: 8 }]}>
-            <Text style={styles.settingLabel}>Device UUID</Text>
-            <Text style={[styles.settingValue, { fontSize: 13, fontFamily: 'monospace' }]}>
-              {activeConfig?.deviceId || 'Not set'}
-            </Text>
-          </View>
-          <View style={[styles.settingRow, { borderBottomWidth: 0 }]}>
-            <Text style={styles.settingLabel}>Live Connection</Text>
-            <Text style={[styles.settingValue, { color: isOnline ? '#10B981' : '#EF4444', fontWeight: '700' }]}>
-              {isOnline ? '● CONNECTED' : '○ DISCONNECTED'}
-            </Text>
-          </View>
         </View>
 
-        {/* Emergency Alert System Section */}
-        <SectionHeader title="Emergency Alert System" />
-        <View style={styles.card}>
+        {/* Four Collapsible Groups for Technical & Advanced Settings */}
+
+        {/* GROUP 1: Alerts & Sirens */}
+        <Collapsible
+          title="Alerts & sirens"
+          subtitle="Emergency alerts, escalation, and quiet hours"
+          icon={<IconBadge icon={<Bell size={18} color={colors.primaryDark} />} tone="primary" size={36} />}
+          defaultOpen={false}
+          style={{ marginTop: spacing.md }}
+        >
+          {/* Emergency Alert System */}
           <View style={styles.emergencyChannelHeader}>
             <View style={styles.emergencyChannelIconWrap}>
               <ShieldAlert size={20} color="#DC2626" />
@@ -462,7 +479,7 @@ export const SettingsScreen: React.FC = () => {
             <View style={{ flex: 1 }}>
               <Text style={styles.emergencyChannelTitle}>Channel: Emergency Alerts</Text>
               <Text style={styles.emergencyChannelSubtitle}>
-                Highest Android importance (MAX) • Alarm sound & continuous vibration
+                Highest importance alert sound & continuous vibration
               </Text>
             </View>
           </View>
@@ -502,7 +519,7 @@ export const SettingsScreen: React.FC = () => {
           <View style={styles.testAlertBox}>
             <Text style={styles.testAlertTitle}>Verify Alert Pipeline</Text>
             <Text style={styles.testAlertSubtitle}>
-              Simulate an urgent LD2410C emergency event to test push delivery, alarm siren, vibration, and full-screen display.
+              Simulate an urgent LD2410C emergency event to test push delivery, alarm siren, vibration, and display.
             </Text>
             <TouchableOpacity
               style={styles.testAlertBtn}
@@ -515,12 +532,9 @@ export const SettingsScreen: React.FC = () => {
               <Text style={styles.testAlertBtnText}>Test Emergency Alert</Text>
             </TouchableOpacity>
           </View>
-        </View>
 
-        {/* Emergency Escalation & Trusted Settings Section */}
-        <SectionHeader title="Emergency Escalation & Safety Settings" />
-        <View style={styles.card}>
-          <View style={styles.emergencyChannelHeader}>
+          {/* Automated Escalation Engine */}
+          <View style={[styles.emergencyChannelHeader, { marginTop: spacing.lg }]}>
             <View style={[styles.emergencyChannelIconWrap, { backgroundColor: '#FEE2E2' }]}>
               <ShieldAlert size={20} color="#DC2626" />
             </View>
@@ -645,15 +659,9 @@ export const SettingsScreen: React.FC = () => {
             <Text style={styles.auditLogBtnText}>View Emergency History & Push Logs</Text>
             <ChevronRight size={16} color="#2563EB" />
           </TouchableOpacity>
-        </View>
 
-        {/* Quiet Hours & Emergency Bypass Section */}
-        <View style={styles.sectionHeaderRow}>
-          <SectionHeader title="Quiet Hours & Emergency Bypass" />
-          {!isEditing && <Text style={styles.viewModeNotice}>Locked</Text>}
-        </View>
-        <View style={styles.card}>
-          <View style={styles.quietHoursHeader}>
+          {/* Quiet Hours & Sleep Schedule */}
+          <View style={[styles.quietHoursHeader, { marginTop: spacing.lg }]}>
             <View style={[styles.permissionsIconWrapper, { backgroundColor: '#EDE9FE' }]}>
               <Moon size={20} color="#7C3AED" />
             </View>
@@ -683,7 +691,6 @@ export const SettingsScreen: React.FC = () => {
 
           {Boolean(activeConfig?.quietHours?.enabled) && (
             <View style={styles.quietHoursTimeSection}>
-              {/* Start Time Selection */}
               <Text style={styles.quietHoursFieldTitle}>Quiet Hours Start (Evening)</Text>
               <View style={styles.optionGroup}>
                 {quietStartOptions.map((time) => {
@@ -722,7 +729,6 @@ export const SettingsScreen: React.FC = () => {
                 })}
               </View>
 
-              {/* End Time Selection */}
               <Text style={[styles.quietHoursFieldTitle, { marginTop: 12 }]}>Quiet Hours End (Morning)</Text>
               <View style={styles.optionGroup}>
                 {quietEndOptions.map((time) => {
@@ -774,7 +780,6 @@ export const SettingsScreen: React.FC = () => {
             </View>
           </View>
 
-          {/* Warning Banner if DND override is not provisioned */}
           {bypassStatus && !bypassStatus.canBypassDnd && (
             <View style={styles.bypassWarningBanner}>
               <AlertCircle size={18} color="#B45309" />
@@ -792,11 +797,17 @@ export const SettingsScreen: React.FC = () => {
               </View>
             </View>
           )}
-        </View>
+        </Collapsible>
 
-        {/* Device Name */}
-        <SectionHeader title="Device Configuration" />
-        <View style={styles.card}>
+        {/* GROUP 2: Device Sensitivity */}
+        <Collapsible
+          title="Device sensitivity"
+          subtitle="Stillness threshold, response timeout, and staged escalation"
+          icon={<IconBadge icon={<Sliders size={18} color={colors.primaryDark} />} tone="primary" size={36} />}
+          defaultOpen={false}
+          style={{ marginTop: spacing.sm }}
+        >
+          {/* Device Name */}
           <View style={styles.deviceFieldRow}>
             <Text style={styles.settingLabel}>Device Name</Text>
             {isEditing ? (
@@ -811,100 +822,94 @@ export const SettingsScreen: React.FC = () => {
               <Text style={styles.settingValue}>{activeConfig?.deviceName || ''}</Text>
             )}
           </View>
-        </View>
 
-        {/* Stillness Threshold */}
-        <View style={styles.sectionHeaderRow}>
-          <SectionHeader title="Stillness Threshold" />
-          {!isEditing && <Text style={styles.viewModeNotice}>Locked</Text>}
-        </View>
-        <View style={styles.optionGroup}>
-          {thresholdOptions.map((val) => {
-            const isSelected = activeConfig?.stillnessThreshold === val;
-            return (
-              <TouchableOpacity
-                key={val}
-                disabled={!isEditing}
-                style={[
-                  styles.optionPill,
-                  isSelected && styles.optionPillActive,
-                  !isEditing && !isSelected && styles.optionPillDisabled,
-                ]}
-                onPress={() => updateDraft({ stillnessThreshold: val })}
-              >
-                <Text
-                  style={[
-                    styles.optionText,
-                    isSelected && styles.optionTextActive,
-                    !isEditing && !isSelected && styles.optionTextDisabled,
-                  ]}
-                >
-                  {val}s
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-
-        {/* False-Alarm Adaptive Tuning Recommendation */}
-        <View style={styles.tuningRecommendationCard}>
-          <View style={styles.tuningHeader}>
-            <AlertCircle size={16} color="#D97706" />
-            <Text style={styles.tuningTitle}>Adaptive Tuning Advice</Text>
-          </View>
-          <Text style={styles.tuningBody}>
-            Frequent false alarms during still bathing or quiet moments? Increasing Stillness Threshold to 45s or 60s prevents premature alerts while maintaining fall-detection safety.
+          {/* Stillness Threshold */}
+          <Text style={[styles.escalationFieldTitle, { marginTop: spacing.md }]}>Stillness Threshold</Text>
+          <Text style={styles.escalationFieldSubtitle}>
+            How long someone must remain still before a check-in is initiated.
           </Text>
-          {isEditing && (activeConfig?.stillnessThreshold ?? 30) < 60 && (
-            <TouchableOpacity
-              style={styles.tuningBtn}
-              onPress={() => updateDraft({ stillnessThreshold: 60 })}
-            >
-              <Text style={styles.tuningBtnText}>Apply Recommended 60s Threshold</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {/* Response Timeout */}
-        <View style={styles.sectionHeaderRow}>
-          <SectionHeader title="Response Timeout" />
-          {!isEditing && <Text style={styles.viewModeNotice}>Locked</Text>}
-        </View>
-        <View style={styles.optionGroup}>
-          {timeoutOptions.map((val) => {
-            const isSelected = activeConfig?.responseTimeout === val;
-            return (
-              <TouchableOpacity
-                key={val}
-                disabled={!isEditing}
-                style={[
-                  styles.optionPill,
-                  isSelected && styles.optionPillActive,
-                  !isEditing && !isSelected && styles.optionPillDisabled,
-                ]}
-                onPress={() => updateDraft({ responseTimeout: val })}
-              >
-                <Text
+          <View style={styles.optionGroup}>
+            {thresholdOptions.map((val) => {
+              const isSelected = activeConfig?.stillnessThreshold === val;
+              return (
+                <TouchableOpacity
+                  key={val}
+                  disabled={!isEditing}
                   style={[
-                    styles.optionText,
-                    isSelected && styles.optionTextActive,
-                    !isEditing && !isSelected && styles.optionTextDisabled,
+                    styles.optionPill,
+                    isSelected && styles.optionPillActive,
+                    !isEditing && !isSelected && styles.optionPillDisabled,
                   ]}
+                  onPress={() => updateDraft({ stillnessThreshold: val })}
                 >
-                  {val}s
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
+                  <Text
+                    style={[
+                      styles.optionText,
+                      isSelected && styles.optionTextActive,
+                      !isEditing && !isSelected && styles.optionTextDisabled,
+                    ]}
+                  >
+                    {val}s
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
 
-        {/* Staged Escalation State Machine Configuration */}
-        <View style={styles.sectionHeaderRow}>
-          <SectionHeader title="Staged Inactivity Escalation (WSG-01)" />
-          {!isEditing && <Text style={styles.viewModeNotice}>Locked</Text>}
-        </View>
-        <View style={styles.card}>
-          <Text style={styles.escalationFieldTitle}>
+          {/* False-Alarm Adaptive Tuning Advice */}
+          <View style={styles.tuningRecommendationCard}>
+            <View style={styles.tuningHeader}>
+              <AlertCircle size={16} color="#D97706" />
+              <Text style={styles.tuningTitle}>Adaptive Tuning Advice</Text>
+            </View>
+            <Text style={styles.tuningBody}>
+              Frequent false alarms during still bathing or quiet moments? Increasing Stillness Threshold to 45s or 60s prevents premature alerts while maintaining fall-detection safety.
+            </Text>
+            {isEditing && (activeConfig?.stillnessThreshold ?? 30) < 60 && (
+              <TouchableOpacity
+                style={styles.tuningBtn}
+                onPress={() => updateDraft({ stillnessThreshold: 60 })}
+              >
+                <Text style={styles.tuningBtnText}>Apply Recommended 60s Threshold</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {/* Response Timeout */}
+          <Text style={[styles.escalationFieldTitle, { marginTop: spacing.md }]}>Response Timeout</Text>
+          <Text style={styles.escalationFieldSubtitle}>
+            Seconds device waits for verbal reply before escalating.
+          </Text>
+          <View style={styles.optionGroup}>
+            {timeoutOptions.map((val) => {
+              const isSelected = activeConfig?.responseTimeout === val;
+              return (
+                <TouchableOpacity
+                  key={val}
+                  disabled={!isEditing}
+                  style={[
+                    styles.optionPill,
+                    isSelected && styles.optionPillActive,
+                    !isEditing && !isSelected && styles.optionPillDisabled,
+                  ]}
+                  onPress={() => updateDraft({ responseTimeout: val })}
+                >
+                  <Text
+                    style={[
+                      styles.optionText,
+                      isSelected && styles.optionTextActive,
+                      !isEditing && !isSelected && styles.optionTextDisabled,
+                    ]}
+                  >
+                    {val}s
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {/* Staged Inactivity Escalation */}
+          <Text style={[styles.escalationFieldTitle, { marginTop: spacing.md }]}>
             T1 Inactivity Threshold (triggers Voice Check-in)
           </Text>
           <Text style={styles.escalationFieldSubtitle}>
@@ -942,7 +947,7 @@ export const SettingsScreen: React.FC = () => {
             Repeat Check-in Interval (louder repeat + local buzzer)
           </Text>
           <Text style={styles.escalationFieldSubtitle}>
-            Window before escalation to full emergency ALARM. Default: 15s.
+            Window before escalation to full emergency alarm. Default: 15s.
           </Text>
           <View style={styles.optionGroup}>
             {repeatOptions.map((val) => {
@@ -1012,16 +1017,41 @@ export const SettingsScreen: React.FC = () => {
             activeOpacity={0.8}
           >
             <Activity size={16} color={colors.primary} />
-            <Text style={styles.viewHistoryBtnText}>View Circular Event Log (Last 20 Transitions)</Text>
+            <Text style={styles.viewHistoryBtnText}>View Transition Log (Last 20 Events)</Text>
           </TouchableOpacity>
-        </View>
 
-        {/* Voice Detection */}
-        <View style={styles.sectionHeaderRow}>
-          <SectionHeader title="Voice Detection" />
-          {!isEditing && <Text style={styles.viewModeNotice}>Locked</Text>}
-        </View>
-        <View style={styles.card}>
+          {/* Emergency Escalation Policy */}
+          <Text style={[styles.escalationFieldTitle, { marginTop: spacing.md }]}>Emergency Escalation Policy</Text>
+          {(['WARNING_ONLY', 'VOICE_AND_ALERT', 'IMMEDIATE_ALERT'] as const).map((policy) => {
+            const isSelected = activeConfig?.emergencyEscalation === policy;
+            return (
+              <TouchableOpacity
+                key={policy}
+                disabled={!isEditing}
+                style={[
+                  styles.policyRow,
+                  isSelected && styles.policyRowActive,
+                  !isEditing && !isSelected && styles.policyRowDisabled,
+                ]}
+                onPress={() => updateDraft({ emergencyEscalation: policy })}
+              >
+                <View style={[styles.radio, isSelected && styles.radioActive]} />
+                <Text style={[styles.policyLabel, isSelected && styles.policyLabelActive]}>
+                  {policy.replace(/_/g, ' ')}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </Collapsible>
+
+        {/* GROUP 3: Voice Detection */}
+        <Collapsible
+          title="Voice detection"
+          subtitle="Keywords, microphone, and speaker"
+          icon={<IconBadge icon={<Volume2 size={18} color={colors.primaryDark} />} tone="primary" size={36} />}
+          defaultOpen={false}
+          style={{ marginTop: spacing.sm }}
+        >
           <ToggleRow
             label="Enable Voice Detection"
             value={activeConfig?.voiceDetectionEnabled ?? true}
@@ -1034,14 +1064,11 @@ export const SettingsScreen: React.FC = () => {
             onToggle={(v) => updateDraft({ speakerEnabled: v })}
             disabled={!isEditing}
           />
-        </View>
 
-        {/* Emergency Keywords */}
-        <View style={styles.sectionHeaderRow}>
-          <SectionHeader title="Emergency Keywords" />
-          {!isEditing && <Text style={styles.viewModeNotice}>Locked</Text>}
-        </View>
-        <View style={styles.card}>
+          <Text style={[styles.escalationFieldTitle, { marginTop: spacing.md }]}>Emergency Keywords</Text>
+          <Text style={styles.escalationFieldSubtitle}>
+            Words that immediately trigger urgent assistance when spoken:
+          </Text>
           <View style={styles.keywordsContainer}>
             {(activeConfig?.emergencyKeywords ?? []).map((kw) => (
               <View key={kw} style={styles.keywordBadge}>
@@ -1095,41 +1122,62 @@ export const SettingsScreen: React.FC = () => {
               </TouchableOpacity>
             </View>
           )}
-        </View>
+        </Collapsible>
 
-        {/* Escalation Policy */}
-        <View style={styles.sectionHeaderRow}>
-          <SectionHeader title="Emergency Escalation" />
-          {!isEditing && <Text style={styles.viewModeNotice}>Locked</Text>}
-        </View>
-        <View style={styles.card}>
-          {(['WARNING_ONLY', 'VOICE_AND_ALERT', 'IMMEDIATE_ALERT'] as const).map((policy) => {
-            const isSelected = activeConfig?.emergencyEscalation === policy;
-            return (
-              <TouchableOpacity
-                key={policy}
-                disabled={!isEditing}
-                style={[
-                  styles.policyRow,
-                  isSelected && styles.policyRowActive,
-                  !isEditing && !isSelected && styles.policyRowDisabled,
-                ]}
-                onPress={() => updateDraft({ emergencyEscalation: policy })}
-              >
-                <View style={[styles.radio, isSelected && styles.radioActive]} />
-                <Text style={[styles.policyLabel, isSelected && styles.policyLabelActive]}>
-                  {policy.replace(/_/g, ' ')}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
+        {/* GROUP 4: Developer & About */}
+        <Collapsible
+          title="Developer & about"
+          subtitle="Hardware/runtime mode, testing, and app version"
+          icon={<IconBadge icon={<Wrench size={18} color={colors.primaryDark} />} tone="primary" size={36} />}
+          defaultOpen={false}
+          style={{ marginTop: spacing.sm }}
+        >
+          {/* Demo & Testing Navigation Row */}
+          <ListRow
+            title="Demo & testing"
+            subtitle="Simulate room states, fall events, and network offline"
+            leftIcon={<FlaskConical size={18} color={colors.primaryDark} />}
+            leftBadgeTone="primary"
+            showChevron={true}
+            onPress={() => navigation.navigate('Demo')}
+            accessibilityLabel="Open demo and testing screen"
+            style={{ marginBottom: spacing.md, paddingHorizontal: 0 }}
+          />
 
-        {/* About Application & Version Info */}
-        <View style={styles.sectionHeaderRow}>
-          <SectionHeader title="About Application" />
-        </View>
-        <View style={styles.card}>
+          <ToggleRow
+            label="Demo Simulator Mode"
+            value={hardwareMode === 'DEMO_SIMULATOR'}
+            onToggle={(val) => setHardwareMode(val ? 'DEMO_SIMULATOR' : 'REAL_HARDWARE')}
+            disabled={false}
+          />
+          <View style={styles.modeInfoBox}>
+            <Text style={styles.modeInfoTitle}>
+              {hardwareMode === 'DEMO_SIMULATOR'
+                ? 'Demo Simulator Active'
+                : 'Real Hardware Mode (Production)'}
+            </Text>
+            <Text style={styles.modeInfoSubtitle}>
+              {hardwareMode === 'DEMO_SIMULATOR'
+                ? 'Running in software simulator mode. Great for UI design and scenario testing.'
+                : 'Production real-hardware architecture active. Requires verified physical BLE GATT & ESP32 connection.'}
+            </Text>
+          </View>
+          <View style={[styles.settingRow, { borderBottomWidth: 0, marginTop: 8 }]}>
+            <Text style={styles.settingLabel}>Device UUID</Text>
+            <Text style={[styles.settingValue, { fontSize: 13, fontFamily: 'monospace' }]}>
+              {activeConfig?.deviceId || 'Not set'}
+            </Text>
+          </View>
+          <View style={[styles.settingRow, { borderBottomWidth: 0 }]}>
+            <Text style={styles.settingLabel}>Live Connection</Text>
+            <Text style={[styles.settingValue, { color: isOnline ? '#10B981' : '#EF4444', fontWeight: '700' }]}>
+              {isOnline ? 'CONNECTED' : 'DISCONNECTED'}
+            </Text>
+          </View>
+
+          <View style={styles.divider} />
+
+          {/* About Application */}
           <View style={styles.aboutRow}>
             <View style={styles.aboutLeft}>
               <View style={[styles.permissionsIconWrapper, { backgroundColor: '#EFF6FF' }]}>
@@ -1168,7 +1216,7 @@ export const SettingsScreen: React.FC = () => {
               <Text style={styles.statusBadgeText}>Installed & Ready</Text>
             </View>
           </View>
-        </View>
+        </Collapsible>
       </ScrollView>
 
       {/* Floating Bottom Action Bar when in Edit Mode */}
