@@ -20,8 +20,14 @@ import {
   Smartphone,
   ArrowRight,
   ShieldCheck,
+  AlertCircle,
+  Mail,
+  Lock,
+  Zap,
+  Check,
   X,
 } from 'lucide-react-native';
+import { colors } from '../utils/theme';
 import { EmergencySoundService } from '../services/EmergencySoundService';
 
 const GoogleIcon = ({ size = 22 }: { size?: number }) => (
@@ -183,13 +189,13 @@ export const LoginScreen = () => {
           <View style={styles.brandHeader}>
             <View style={styles.emblemContainer}>
               <View style={styles.emblemInner}>
-                <Text style={styles.emblemIcon}>🛡️</Text>
+                <ShieldCheck size={28} color="#38BDF8" />
               </View>
             </View>
-            <Text style={styles.brandCategory}>ENTERPRISE SAFETY PLATFORM</Text>
+            <Text style={styles.brandCategory}>FAMILY SAFETY MONITOR</Text>
             <Text style={styles.brandTitle}>Radio-Bond SafeGuard</Text>
             <Text style={styles.brandSubtitle}>
-              Autonomous, non-invasive washroom wellbeing & fall prevention monitoring
+              Quietly monitors your loved one's safety — no cameras, no invasion of privacy
             </Text>
           </View>
 
@@ -255,13 +261,19 @@ export const LoginScreen = () => {
           {/* Alerts */}
           {errorMessage && (
             <View style={styles.alertError}>
-              <Text style={styles.alertErrorText}>⚠️ {errorMessage}</Text>
+              <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
+                <AlertCircle size={15} color="#B91C1C" />
+                <Text style={styles.alertErrorText}>{errorMessage}</Text>
+              </View>
             </View>
           )}
 
           {successMessage && (
             <View style={styles.alertSuccess}>
-              <Text style={styles.alertSuccessText}>✓ {successMessage}</Text>
+              <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
+                <CheckCircle size={15} color="#166534" />
+                <Text style={styles.alertSuccessText}>{successMessage}</Text>
+              </View>
             </View>
           )}
 
@@ -291,9 +303,9 @@ export const LoginScreen = () => {
 
           {/* Email Field */}
           <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Organizational Email</Text>
+            <Text style={styles.fieldLabel}>Email address</Text>
             <View style={styles.inputContainer}>
-              <Text style={styles.fieldIcon}>✉️</Text>
+              <Mail size={16} color={colors.textMuted} style={{marginRight:10}} />
               <TextInput
                 style={styles.textInput}
                 placeholder="administrator@organization.com"
@@ -316,7 +328,7 @@ export const LoginScreen = () => {
               )}
             </View>
             <View style={styles.inputContainer}>
-              <Text style={styles.fieldIcon}>🔒</Text>
+              <Lock size={16} color={colors.textMuted} style={{marginRight:10}} />
               <TextInput
                 style={styles.textInput}
                 placeholder={isSignUp ? 'Create password (min 6 characters)' : 'Enter account password'}
@@ -339,7 +351,7 @@ export const LoginScreen = () => {
               <ActivityIndicator color="#FFFFFF" size="small" />
             ) : (
               <Text style={styles.primaryActionText}>
-                {isSignUp ? 'Create SafeGuard Account →' : 'Authorize & Enter Console →'}
+                {isSignUp ? 'Create account' : 'Sign in'}
               </Text>
             )}
           </TouchableOpacity>
@@ -350,7 +362,10 @@ export const LoginScreen = () => {
             onPress={doLocalLogin}
             activeOpacity={0.85}
           >
-            <Text style={styles.localDevButtonText}>⚡ Local Preview Mode (Instant Access)</Text>
+            <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
+              <Zap size={14} color={colors.primary} />
+              <Text style={styles.localDevButtonText}>Continue without account (preview)</Text>
+            </View>
           </TouchableOpacity>
 
           {/* Institutional Compliance Badges */}
@@ -376,7 +391,7 @@ export const LoginScreen = () => {
             <View style={styles.termsModalHeader}>
               <View style={styles.termsBadge}>
                 <BellRing size={15} color="#DC2626" />
-                <Text style={styles.termsBadgeText}>SYSTEM SAFETY SETUP</Text>
+                <Text style={styles.termsBadgeText}>SAFETY SETUP</Text>
               </View>
               <TouchableOpacity
                 onPress={() => setShowTermsModal(false)}
@@ -492,11 +507,16 @@ export const LoginScreen = () => {
               }}
               activeOpacity={0.85}
             >
-              <Text style={styles.confirmTermsBtnText}>
-                {notificationGranted && audioGranted && vibrationGranted
-                  ? '✓ All Terms Allowed — Enter Console'
-                  : 'Proceed to Console →'}
-              </Text>
+              <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
+                {notificationGranted && audioGranted && vibrationGranted && (
+                  <Check size={14} color="#FFFFFF" />
+                )}
+                <Text style={styles.confirmTermsBtnText}>
+                  {notificationGranted && audioGranted && vibrationGranted
+                    ? 'All Terms Allowed — Enter Console'
+                    : 'Proceed to Console →'}
+                </Text>
+              </View>
             </TouchableOpacity>
           </View>
         </View>
@@ -526,7 +546,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 36,
     paddingVertical: 40,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: colors.border,
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 20 },
     shadowOpacity: 0.25,
@@ -545,7 +565,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
-    shadowColor: '#0284C7',
+    shadowColor: colors.primary,
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.35,
     shadowRadius: 12,
@@ -566,7 +586,7 @@ const styles = StyleSheet.create({
   brandCategory: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#0284C7',
+    color: colors.primary,
     letterSpacing: 2.2,
     marginBottom: 6,
     textTransform: 'uppercase',
@@ -574,7 +594,7 @@ const styles = StyleSheet.create({
   brandTitle: {
     fontSize: 24,
     fontWeight: '800',
-    color: '#0F172A',
+    color: colors.textPrimary,
     letterSpacing: -0.6,
     marginBottom: 8,
     textAlign: 'center',
@@ -582,9 +602,8 @@ const styles = StyleSheet.create({
   brandSubtitle: {
     fontSize: 13,
     lineHeight: 19,
-    color: '#64748B',
+    color: colors.textSecondary,
     textAlign: 'center',
-    maxWidth: 380,
     fontWeight: '400',
   },
   tabBar: {

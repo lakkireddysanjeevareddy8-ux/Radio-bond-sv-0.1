@@ -253,7 +253,7 @@ export const EmergencyScreen: React.FC = () => {
           {/* Top Test Banner if in test mode */}
           {isTest && (
             <View style={[styles.testBanner, { backgroundColor: '#7C3AED' }]}>
-              <Text style={styles.testBannerText}>🧪 TEST EMERGENCY ALERT — NO ACTION REQUIRED</Text>
+              <Text style={styles.testBannerText}>⚠ TEST EMERGENCY ALERT — NO ACTION REQUIRED</Text>
             </View>
           )}
 
@@ -261,7 +261,7 @@ export const EmergencyScreen: React.FC = () => {
           {isTrustedContactViewer && (
             <View style={[styles.testBanner, { backgroundColor: '#0284C7' }]}>
               <Text style={styles.testBannerText}>
-                🛡️ TRUSTED CAREGIVER ALERT — {activeEmergency.metadata?.ownerName || 'Owner'} Needs Attention
+                TRUSTED CAREGIVER ALERT — {activeEmergency.metadata?.ownerName || 'Owner'} Needs Attention
               </Text>
             </View>
           )}

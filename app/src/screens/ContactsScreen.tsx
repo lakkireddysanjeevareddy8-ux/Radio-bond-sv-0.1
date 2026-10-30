@@ -247,11 +247,16 @@ export const ContactsScreen: React.FC = () => {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <View style={styles.pageHeader}>
+        <Text style={styles.pageTitle}>Emergency Contacts</Text>
+        <Text style={styles.pageSubtitle}>People who will be alerted if you don't respond to a safety check</Text>
+      </View>
+
       {/* Pending Invitations Received by User Banner */}
       {pendingInvitations.length > 0 && (
         <View style={styles.pendingInvBox}>
           <View style={styles.pendingInvHeader}>
-            <Bell size={18} color="#D97706" />
+            <Bell size={18} color={colors.warning} />
             <Text style={styles.pendingInvTitle}>Pending Invitations for You</Text>
           </View>
           {pendingInvitations.map((inv) => (
@@ -291,18 +296,18 @@ export const ContactsScreen: React.FC = () => {
           style={[styles.tabButton, activeTab === 'TRUSTED' && styles.tabButtonActive]}
           onPress={() => setActiveTab('TRUSTED')}
         >
-          <Shield size={16} color={activeTab === 'TRUSTED' ? '#FFFFFF' : '#64748B'} />
+          <Shield size={16} color={activeTab === 'TRUSTED' ? '#FFFFFF' : colors.textSecondary} />
           <Text style={[styles.tabButtonText, activeTab === 'TRUSTED' && styles.tabButtonTextActive]}>
-            Trusted Contacts (App Push)
+            App Alerts
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.tabButton, activeTab === 'DIRECT_DIAL' && styles.tabButtonActive]}
           onPress={() => setActiveTab('DIRECT_DIAL')}
         >
-          <Phone size={16} color={activeTab === 'DIRECT_DIAL' ? '#FFFFFF' : '#64748B'} />
+          <Phone size={16} color={activeTab === 'DIRECT_DIAL' ? '#FFFFFF' : colors.textSecondary} />
           <Text style={[styles.tabButtonText, activeTab === 'DIRECT_DIAL' && styles.tabButtonTextActive]}>
-            Direct Dial ({contacts.length})
+            Phone Dial ({contacts.length})
           </Text>
         </TouchableOpacity>
       </View>
@@ -311,16 +316,15 @@ export const ContactsScreen: React.FC = () => {
       {activeTab === 'TRUSTED' && (
         <View>
           <View style={styles.infoBanner}>
-            <ShieldAlert size={18} color="#2563EB" style={{ marginTop: 2 }} />
+            <ShieldAlert size={18} color={colors.primary} style={{ marginTop: 2 }} />
             <Text style={styles.infoBannerText}>
-              All emergency communication occurs through the WSG-01 app push system. Contacts must have the
-              app installed with their account to receive escalated emergency sirens.
+              Trusted contacts get an emergency alert on their phone when you don't respond to a safety check. They need the WSG-01 app installed to receive alerts.
             </Text>
           </View>
 
           {isTrustedLoading && trustedContacts.length === 0 ? (
             <View style={styles.loadingBox}>
-              <ActivityIndicator size="small" color="#2563EB" />
+              <ActivityIndicator size="small" color={colors.primary} />
               <Text style={styles.loadingText}>Loading trusted contacts...</Text>
             </View>
           ) : trustedContacts.length === 0 ? (
@@ -363,7 +367,7 @@ export const ContactsScreen: React.FC = () => {
                           toggleTrustedEnabled(c.id, val);
                         }}
                         trackColor={{ false: '#D1D5DB', true: '#93C5FD' }}
-                        thumbColor={c.isEnabled ? '#2563EB' : '#F4F3F4'}
+                        thumbColor={c.isEnabled ? colors.primary : '#F4F3F4'}
                       />
                       <Text style={styles.switchCaption}>{c.isEnabled ? 'Enabled' : 'Disabled'}</Text>
                     </View>
@@ -374,12 +378,12 @@ export const ContactsScreen: React.FC = () => {
                     <View style={styles.statusRow}>
                       {c.invitationStatus === 'accepted' ? (
                         <View style={styles.statusAcceptedBadge}>
-                          <CheckCircle2 size={13} color="#059669" />
+                          <CheckCircle2 size={13} color={colors.safe} />
                           <Text style={styles.statusAcceptedText}>Active (App Connected)</Text>
                         </View>
                       ) : (
                         <View style={styles.statusPendingBadge}>
-                          <Clock size={13} color="#D97706" />
+                          <Clock size={13} color={colors.warning} />
                           <Text style={styles.statusPendingText}>Invitation Pending</Text>
                         </View>
                       )}
@@ -392,7 +396,7 @@ export const ContactsScreen: React.FC = () => {
                           onPress={() => handleResendInvite(c)}
                           accessibilityLabel="Resend invitation"
                         >
-                          <RefreshCw size={15} color="#2563EB" />
+                          <RefreshCw size={15} color={colors.primary} />
                           <Text style={styles.actionIconText}>Resend</Text>
                         </TouchableOpacity>
                       )}
@@ -401,7 +405,7 @@ export const ContactsScreen: React.FC = () => {
                         onPress={() => handleOpenEditTrusted(c)}
                         accessibilityLabel="Edit contact"
                       >
-                        <Pencil size={15} color="#475569" />
+                        <Pencil size={15} color={colors.textSecondary} />
                         <Text style={styles.actionIconText}>Edit</Text>
                       </TouchableOpacity>
                       <TouchableOpacity
@@ -409,8 +413,8 @@ export const ContactsScreen: React.FC = () => {
                         onPress={() => setTrustedToDelete(c)}
                         accessibilityLabel="Remove contact"
                       >
-                        <Trash2 size={15} color="#EF4444" />
-                        <Text style={[styles.actionIconText, { color: '#EF4444' }]}>Remove</Text>
+                        <Trash2 size={15} color={colors.emergency} />
+                        <Text style={[styles.actionIconText, { color: colors.emergency }]}>Remove</Text>
                       </TouchableOpacity>
                     </View>
                   </View>
@@ -455,7 +459,7 @@ export const ContactsScreen: React.FC = () => {
                       <Text style={styles.name}>{contact.name}</Text>
                       {contact.isPrimary && (
                         <View style={styles.primaryBadge}>
-                          <Star size={11} color="#92400E" fill="#92400E" />
+                          <Star size={11} color={colors.textPrimary} fill={colors.textPrimary} />
                           <Text style={styles.primaryText}>PRIMARY</Text>
                         </View>
                       )}
@@ -512,13 +516,13 @@ export const ContactsScreen: React.FC = () => {
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <View style={styles.modalHeaderTitleRow}>
-                <Shield size={22} color="#2563EB" />
+                <Shield size={22} color={colors.primary} />
                 <Text style={styles.modalTitle}>
                   {editingContactId ? 'Edit Trusted Contact' : 'Add Trusted Contact'}
                 </Text>
               </View>
               <TouchableOpacity style={styles.closeBtn} onPress={() => setIsTrustedModalOpen(false)}>
-                <X size={20} color="#64748B" />
+                <X size={20} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
 
@@ -529,7 +533,7 @@ export const ContactsScreen: React.FC = () => {
 
             {trustedFormError && (
               <View style={styles.errorBanner}>
-                <AlertCircle size={16} color="#B91C1C" />
+                <AlertCircle size={16} color={colors.emergency} />
                 <Text style={styles.errorBannerText}>{trustedFormError}</Text>
               </View>
             )}
@@ -539,7 +543,7 @@ export const ContactsScreen: React.FC = () => {
               <TextInput
                 style={styles.input}
                 placeholder="e.g. Eleanor Vance"
-                placeholderTextColor="#9CA3AF"
+                placeholderTextColor={colors.textMuted}
                 value={trustedName}
                 onChangeText={(t) => {
                   setTrustedName(t);
@@ -553,7 +557,7 @@ export const ContactsScreen: React.FC = () => {
               <TextInput
                 style={styles.input}
                 placeholder="contact@example.com"
-                placeholderTextColor="#9CA3AF"
+                placeholderTextColor={colors.textMuted}
                 value={trustedEmail}
                 onChangeText={(t) => {
                   setTrustedEmail(t);
@@ -585,7 +589,7 @@ export const ContactsScreen: React.FC = () => {
               <TextInput
                 style={[styles.input, { marginTop: 6 }]}
                 placeholder="Or custom (e.g. Caregiver, Specialist)"
-                placeholderTextColor="#9CA3AF"
+                placeholderTextColor={colors.textMuted}
                 value={trustedRelationship}
                 onChangeText={setTrustedRelationship}
               />
@@ -647,7 +651,7 @@ export const ContactsScreen: React.FC = () => {
           <View style={[styles.modalCard, { maxWidth: 380 }]}>
             <View style={styles.deleteHeader}>
               <View style={styles.deleteIconCircle}>
-                <Trash2 size={24} color="#EF4444" />
+                <Trash2 size={24} color={colors.emergency} />
               </View>
               <Text style={styles.deleteTitle}>Revoke Trusted Contact</Text>
               <Text style={styles.deleteDescription}>
@@ -692,7 +696,7 @@ export const ContactsScreen: React.FC = () => {
 
             {formError && (
               <View style={styles.errorBanner}>
-                <AlertCircle size={16} color="#B91C1C" />
+                <AlertCircle size={16} color={colors.emergency} />
                 <Text style={styles.errorBannerText}>{formError}</Text>
               </View>
             )}
@@ -702,7 +706,7 @@ export const ContactsScreen: React.FC = () => {
               <TextInput
                 style={styles.input}
                 placeholder="e.g. Jane Doe"
-                placeholderTextColor="#9CA3AF"
+                placeholderTextColor={colors.textMuted}
                 value={newName}
                 onChangeText={(t) => {
                   setNewName(t);
@@ -716,7 +720,7 @@ export const ContactsScreen: React.FC = () => {
               <TextInput
                 style={styles.input}
                 placeholder="e.g. +1 555-0199"
-                placeholderTextColor="#9CA3AF"
+                placeholderTextColor={colors.textMuted}
                 value={newPhone}
                 onChangeText={(t) => {
                   setNewPhone(t);
@@ -744,12 +748,15 @@ export const ContactsScreen: React.FC = () => {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md, paddingBottom: spacing.xxl },
+  pageHeader: { paddingBottom: spacing.md },
+  pageTitle: { ...typography.h2, color: colors.textPrimary, marginBottom: 4 },
+  pageSubtitle: { ...typography.body2, color: colors.textSecondary },
   subtitle: { ...typography.body2, color: colors.textSecondary, marginBottom: spacing.md },
 
   // Tab Switcher
   tabSwitcher: {
     flexDirection: 'row',
-    backgroundColor: '#E2E8F0',
+    backgroundColor: colors.border,
     borderRadius: borderRadius.md,
     padding: 3,
     marginBottom: spacing.md,
@@ -764,12 +771,12 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.md - 2,
   },
   tabButtonActive: {
-    backgroundColor: '#2563EB',
+    backgroundColor: colors.primary,
   },
   tabButtonText: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#64748B',
+    color: colors.textSecondary,
   },
   tabButtonTextActive: {
     color: '#FFFFFF',
@@ -793,7 +800,7 @@ const styles = StyleSheet.create({
   pendingInvTitle: {
     fontSize: 14,
     fontWeight: '800',
-    color: '#92400E',
+    color: colors.textPrimary,
   },
   pendingInvRow: {
     flexDirection: 'row',
@@ -807,11 +814,11 @@ const styles = StyleSheet.create({
   pendingInvName: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#78350F',
+    color: colors.textPrimary,
   },
   pendingInvSub: {
     fontSize: 12,
-    color: '#92400E',
+    color: colors.textPrimary,
   },
   pendingInvActions: {
     flexDirection: 'row',
@@ -821,7 +828,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#059669',
+    backgroundColor: colors.safe,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 8,
@@ -836,10 +843,10 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#D97706',
+    borderColor: colors.warning,
   },
   invDeclineBtnText: {
-    color: '#92400E',
+    color: colors.textPrimary,
     fontWeight: '600',
     fontSize: 12,
   },
@@ -854,11 +861,11 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     marginBottom: spacing.md,
     borderWidth: 1,
-    borderColor: '#BFDBFE',
+    borderColor: colors.border,
   },
   infoBannerText: {
     fontSize: 13,
-    color: '#1E40AF',
+    color: colors.primary,
     lineHeight: 18,
     flex: 1,
     fontWeight: '500',

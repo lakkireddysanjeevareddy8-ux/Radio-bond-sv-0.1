@@ -1932,7 +1932,7 @@ const styles = StyleSheet.create({
     width: 56,
     height: 56,
     borderRadius: borderRadius.md,
-    backgroundColor: '#E0F2FE',
+    backgroundColor: colors.infoSoft,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: spacing.md,
@@ -1945,8 +1945,8 @@ const styles = StyleSheet.create({
   modeBadge: {
     ...typography.caption,
     fontSize: 10,
-    backgroundColor: '#F1F5F9',
-    color: '#475569',
+    backgroundColor: colors.background,
+    color: colors.textSecondary,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
@@ -1982,7 +1982,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   switchModePill: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.surface,
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: borderRadius.full,
@@ -2021,7 +2021,7 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: colors.primary,
     borderStyle: 'dashed',
-    backgroundColor: '#F0F9FF',
+    backgroundColor: colors.primarySoft,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -2137,7 +2137,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: '#F1F5F9',
+    backgroundColor: colors.background,
     padding: spacing.sm,
     borderRadius: borderRadius.sm,
     marginTop: spacing.sm,
@@ -2145,15 +2145,15 @@ const styles = StyleSheet.create({
   infoHintText: {
     ...typography.caption,
     fontSize: 11,
-    color: '#475569',
+    color: colors.textSecondary,
     flex: 1,
   },
 
   // Alert Banner Styles (for Turn On Bluetooth / Wi-Fi)
   quickSettingsBox: {
-    backgroundColor: '#F8FAFC',
+    backgroundColor: colors.background,
     borderWidth: 1.5,
-    borderColor: '#E2E8F0',
+    borderColor: colors.border,
     borderRadius: borderRadius.md,
     padding: spacing.md,
     marginBottom: spacing.md,
@@ -2170,7 +2170,7 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
   },
   shortcutPill: {
-    backgroundColor: '#0F172A',
+    backgroundColor: colors.textPrimary,
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
@@ -2303,7 +2303,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: borderRadius.sm,
-    backgroundColor: '#F1F5F9',
+    backgroundColor: colors.background,
   },
   cancelScanText: {
     ...typography.caption,
@@ -2366,7 +2366,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#ECFDF5',
+    backgroundColor: colors.safeSoft,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: borderRadius.full,
@@ -2374,7 +2374,7 @@ const styles = StyleSheet.create({
   signalText: {
     fontSize: 10,
     fontWeight: '700',
-    color: '#059669',
+    color: colors.safe,
   },
   discoveredMeta: {
     flexDirection: 'row',
@@ -2401,7 +2401,7 @@ const styles = StyleSheet.create({
   // Not Found Step Styles
   notFoundBox: {
     alignItems: 'center',
-    backgroundColor: '#FEF2F2',
+    backgroundColor: colors.emergencySoft,
     borderWidth: 1,
     borderColor: '#FCA5A5',
     borderRadius: borderRadius.md,
@@ -2411,7 +2411,7 @@ const styles = StyleSheet.create({
   notFoundTitle: {
     ...typography.h3,
     fontSize: 18,
-    color: '#DC2626',
+    color: colors.emergency,
     fontWeight: '700',
     marginTop: spacing.xs,
     marginBottom: 4,
