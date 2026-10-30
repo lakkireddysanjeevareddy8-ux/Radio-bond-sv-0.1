@@ -427,43 +427,13 @@ class NativeBluetoothServiceClass {
     }
 
     // 4. Wrap characteristics into uniform API with explicit diagnostic logging
-    const wrapChar = (char: Characteristic): BleCharacteristicWrapper => ({
-      uuid: char.uuid,
-      writeValue: async (data: Uint8Array | string) => {
+    const wrapChar = (char: Characteristic): BleCharacteristicWrapper => {
+      const performWriteWithResponse = async (data: Uint8Array | string) => {
         const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
         const b64 = bytesToBase64(bytes);
         const dataStr = typeof data === 'string' ? data : new TextDecoder().decode(bytes);
 
-        console.log('[TEST DEBUG 10] native write started');
-        console.log('[BLE WRITE DEBUG] deviceId =', char.deviceID);
-        console.log('[BLE WRITE DEBUG] serviceUUID =', char.serviceUUID);
-        console.log('[BLE WRITE DEBUG] characteristicUUID =', char.uuid);
-        console.log('[BLE WRITE DEBUG] method actually called = writeWithoutResponse');
-        console.log('[NativeBLE] WRITE WITHOUT RESPONSE', 'UUID:', char.uuid, 'DATA:', dataStr);
-        console.log('[NativeBLE WRITE DIAGNOSTIC]', {
-          deviceID: char.deviceID,
-          serviceUUID: char.serviceUUID,
-          characteristicUUID: char.uuid,
-          writeMode: 'writeWithoutResponse',
-          payloadByteLength: bytes.length,
-        });
-
-        try {
-          await char.writeWithoutResponse(b64);
-          console.log('[TEST DEBUG 11] native write SUCCESS');
-          console.log('[NativeBLE] WRITE SUCCESS', char.uuid);
-        } catch (error: any) {
-          console.error('[TEST DEBUG 11] native write FAILED:', error?.message || error);
-          console.error('[NativeBLE] WRITE FAILED', char.uuid, error);
-          throw error;
-        }
-      },
-      writeValueWithResponse: async (data: Uint8Array | string) => {
-        const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-        const b64 = bytesToBase64(bytes);
-        const dataStr = typeof data === 'string' ? data : new TextDecoder().decode(bytes);
-
-        console.log('[TEST DEBUG 10] native write started');
+        console.log('[TEST DEBUG 10] native write started (writeWithResponse)');
         console.log('[BLE WRITE DEBUG] deviceId =', char.deviceID);
         console.log('[BLE WRITE DEBUG] serviceUUID =', char.serviceUUID);
         console.log('[BLE WRITE DEBUG] characteristicUUID =', char.uuid);
@@ -473,26 +443,80 @@ class NativeBluetoothServiceClass {
           deviceID: char.deviceID,
           serviceUUID: char.serviceUUID,
           characteristicUUID: char.uuid,
+          isWritableWithResponse: char.isWritableWithResponse,
+          isWritableWithoutResponse: char.isWritableWithoutResponse,
           writeMode: 'writeWithResponse',
           payloadByteLength: bytes.length,
         });
 
         try {
           await char.writeWithResponse(b64);
-          console.log('[TEST DEBUG 11] native write SUCCESS');
+          console.log('[TEST DEBUG 11] native write SUCCESS (writeWithResponse)');
           console.log('[NativeBLE] WRITE SUCCESS', char.uuid);
         } catch (error: any) {
-          console.error('[TEST DEBUG 11] native write FAILED:', error?.message || error);
+          console.error('[TEST DEBUG 11] native write FAILED (writeWithResponse):', error?.message || error);
           console.error('[NativeBLE] WRITE FAILED', char.uuid, error);
           throw error;
         }
-      },
-      readValue: async () => {
-        const readChar = await char.read();
-        const val = readChar.value || '';
-        return base64ToBytes(val);
-      },
-      monitor: (listener: (data: Uint8Array) => void) => {
+      };
+
+      const performWriteWithoutResponse = async (data: Uint8Array | string) => {
+        const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+        const b64 = bytesToBase64(bytes);
+        const dataStr = typeof data === 'string' ? data : new TextDecoder().decode(bytes);
+
+        console.log('[TEST DEBUG 10] native write started (writeWithoutResponse)');
+        console.log('[BLE WRITE DEBUG] deviceId =', char.deviceID);
+        console.log('[BLE WRITE DEBUG] serviceUUID =', char.serviceUUID);
+        console.log('[BLE WRITE DEBUG] characteristicUUID =', char.uuid);
+        console.log('[BLE WRITE DEBUG] method actually called = writeWithoutResponse');
+        console.log('[NativeBLE] WRITE WITHOUT RESPONSE', 'UUID:', char.uuid, 'DATA:', dataStr);
+        console.log('[NativeBLE WRITE DIAGNOSTIC]', {
+          deviceID: char.deviceID,
+          serviceUUID: char.serviceUUID,
+          characteristicUUID: char.uuid,
+          isWritableWithResponse: char.isWritableWithResponse,
+          isWritableWithoutResponse: char.isWritableWithoutResponse,
+          writeMode: 'writeWithoutResponse',
+          payloadByteLength: bytes.length,
+        });
+
+        try {
+          await char.writeWithoutResponse(b64);
+          console.log('[TEST DEBUG 11] native write SUCCESS (writeWithoutResponse)');
+          console.log('[NativeBLE] WRITE SUCCESS', char.uuid);
+        } catch (error: any) {
+          console.error('[TEST DEBUG 11] native write FAILED (writeWithoutResponse):', error?.message || error);
+          console.error('[NativeBLE] WRITE FAILED', char.uuid, error);
+          throw error;
+        }
+      };
+
+      return {
+        uuid: char.uuid,
+        writeValue: async (data: Uint8Array | string) => {
+          // If the characteristic supports writeWithResponse (or doesn't support writeWithoutResponse),
+          // writeWithResponse MUST be used to ensure the GATT server executes the onWrite callback.
+          if (char.isWritableWithResponse || !char.isWritableWithoutResponse) {
+            return performWriteWithResponse(data);
+          }
+          return performWriteWithoutResponse(data);
+        },
+        writeValueWithResponse: performWriteWithResponse,
+        readValue: async () => {
+          console.log('[NativeBLE] READ VALUE ATTEMPT:', char.uuid);
+          try {
+            const readChar = await char.read();
+            const val = readChar.value || '';
+            const bytes = base64ToBytes(val);
+            console.log('[NativeBLE] READ VALUE SUCCESS:', char.uuid, `(${bytes.length} bytes)`);
+            return bytes;
+          } catch (readErr: any) {
+            console.error('[NativeBLE] READ VALUE FAILED:', char.uuid, readErr?.message || readErr);
+            throw readErr;
+          }
+        },
+        monitor: (listener: (data: Uint8Array) => void) => {
         console.log('[NativeBLE] Subscribed to characteristic monitor:', char.uuid);
         const sub = char.monitor((err, c) => {
           if (err) {
@@ -525,7 +549,8 @@ class NativeBluetoothServiceClass {
           }
         };
       },
-    });
+    };
+  };
 
     const devItem: DiscoveredNativeDevice = discoveredDevice || {
       id: connectedDevice.id,

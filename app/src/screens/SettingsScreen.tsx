@@ -127,7 +127,8 @@ export const SettingsScreen: React.FC = () => {
   const [isTestRunning, setIsTestRunning] = useState(false);
 
   const handleTriggerTestAlert = async () => {
-    console.log('[TEST DEBUG 1] Button pressed');
+    console.log('[TEST DEBUG 1] Test Emergency Button pressed by user');
+    console.log('[Settings] Initiating Test Emergency workflow: dismiss modal, set isTestRunning=true');
     setShowTestConfirmModal(false);
     setIsTestRunning(true);
 
@@ -137,7 +138,7 @@ export const SettingsScreen: React.FC = () => {
       console.log('[Settings] TEST_EMERGENCY command successfully sent to ESP32. Awaiting real device event notification...');
       // Note: The emergency alert UI will be activated when the ESP32 generates and notifies TEST_EMERGENCY over BLE.
     } catch (err: any) {
-      console.error('[Settings] Failed to trigger TEST_EMERGENCY over BLE:', err);
+      console.error('[Settings] Failed to trigger TEST_EMERGENCY over BLE:', err?.message || err);
       setIsTestRunning(false);
       Alert.alert(
         'Device Not Connected',

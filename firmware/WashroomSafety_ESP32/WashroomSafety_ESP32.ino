@@ -400,6 +400,12 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
       if (doc.containsKey("hb_interval")) heartbeatIntervalMin = doc["hb_interval"].as<unsigned long>();
       saveEscalationConfig();
       updateBleConfig();
+    } else if (strcmp(cmd, "PING") == 0) {
+      Serial.println("[BLE] PING command accepted -> sending PONG");
+      if (pStatusChar) {
+        pStatusChar->setValue("{\"status\":\"PONG\"}");
+        pStatusChar->notify();
+      }
     } else if (strcmp(cmd, "GET_ESCALATION_CONFIG") == 0 || strcmp(cmd, "GET_CONFIG") == 0) {
       updateBleConfig();
     } else if (strcmp(cmd, "TEST_EMERGENCY") == 0) {
@@ -1161,7 +1167,7 @@ void setup() {
 
   pProvisionChar = pService->createCharacteristic(
     CHAR_PROVISION_UUID,
-    BLECharacteristic::PROPERTY_WRITE
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
   );
   pProvisionChar->setCallbacks(new ProvisionCallbacks());
 

@@ -135,6 +135,14 @@ export class DeviceProvisioningService {
       ts: Date.now(),
     });
 
+    console.log('[Provisioning] Starting WSG-01 Wi-Fi provisioning:', {
+      deviceId: session.device.id,
+      deviceName: session.device.name,
+      ssid: creds.ssid.trim(),
+      provisionChar: session.provisionChar.uuid,
+      statusChar: session.statusChar?.uuid,
+    });
+
     onProgress?.('SENDING_CREDENTIALS', 'Writing network credentials to ESP32 provisioning characteristic...');
 
     const encoder = new TextEncoder();
@@ -142,11 +150,15 @@ export class DeviceProvisioningService {
 
     try {
       if (session.provisionChar.writeValueWithResponse) {
+        console.log('[Provisioning] Writing PROV_WIFI via writeValueWithResponse to:', session.provisionChar.uuid);
         await session.provisionChar.writeValueWithResponse(encodedBytes);
       } else {
+        console.log('[Provisioning] Writing PROV_WIFI via writeValue to:', session.provisionChar.uuid);
         await session.provisionChar.writeValue(encodedBytes);
       }
+      console.log('[Provisioning] PROV_WIFI write completed successfully');
     } catch (writeErr: any) {
+      console.error('[Provisioning] PROV_WIFI write failed:', writeErr?.message || writeErr);
       throw new Error(`Failed to write credentials to device: ${writeErr.message || 'GATT write rejected'}`);
     }
 

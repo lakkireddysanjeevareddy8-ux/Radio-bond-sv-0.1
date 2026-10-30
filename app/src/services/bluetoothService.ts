@@ -613,18 +613,22 @@ export class BluetoothService {
       uuid: c.uuid,
       writeValue: async (data: Uint8Array | string) => {
         const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-        if (c.writeValueWithoutResponse) {
-          await c.writeValueWithoutResponse(bytes);
-        } else {
+        if (c.writeValueWithResponse) {
+          await c.writeValueWithResponse(bytes);
+        } else if (c.writeValue) {
           await c.writeValue(bytes);
+        } else if (c.writeValueWithoutResponse) {
+          await c.writeValueWithoutResponse(bytes);
         }
       },
       writeValueWithResponse: async (data: Uint8Array | string) => {
         const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
         if (c.writeValueWithResponse) {
           await c.writeValueWithResponse(bytes);
-        } else {
+        } else if (c.writeValue) {
           await c.writeValue(bytes);
+        } else if (c.writeValueWithoutResponse) {
+          await c.writeValueWithoutResponse(bytes);
         }
       },
       readValue: async () => {
@@ -912,7 +916,6 @@ export class BluetoothService {
     }
 
     console.log('[TEST DEBUG 7] provisionChar UUID =', targetChar.uuid);
-    console.log('[TEST DEBUG 8] write method = writeValue');
     console.log('[WSG-01] Command characteristic:', 'provisionChar');
     console.log('[WSG-01] Command characteristic UUID:', targetChar.uuid);
 
@@ -924,10 +927,17 @@ export class BluetoothService {
     console.log('[TEST DEBUG 9] payload byte length =', payloadBytes.length);
     console.log('[WSG-01] Payload:', payload);
     console.log('[WSG-01] Sending TEST_EMERGENCY...');
-    console.log('[WSG-01] NORMAL BLE WRITE (writeValue)');
 
     try {
-      await targetChar.writeValue(payload);
+      if (typeof targetChar.writeValueWithResponse === 'function') {
+        console.log('[TEST DEBUG 8] write method = writeValueWithResponse');
+        console.log('[WSG-01] BLE WRITE (writeValueWithResponse)');
+        await targetChar.writeValueWithResponse(payload);
+      } else {
+        console.log('[TEST DEBUG 8] write method = writeValue');
+        console.log('[WSG-01] BLE WRITE (writeValue)');
+        await targetChar.writeValue(payload);
+      }
       console.log('[WSG-01] BLE WRITE SUCCESS');
       return true;
     } catch (e: any) {
