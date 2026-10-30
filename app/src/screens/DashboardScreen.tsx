@@ -5,36 +5,47 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  ActivityIndicator,
   Modal,
+  Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '../store/useAppStore';
-import { useDeviceStore, SavedDevice } from '../store/useDeviceStore';
+import { useDeviceStore } from '../store/useDeviceStore';
 import { DeviceConnectionService } from '../services/deviceConnectionService';
-import { colors, typography, spacing, borderRadius } from '../utils/theme';
+import { colors, typography, spacing, borderRadius, TOUCH_TARGET } from '../utils/theme';
 import { APP_VERSION_STRING } from '../utils/version';
 import { SafetyStatusCard } from '../components/SafetyStatusCard';
-import { DeviceHealthBar } from '../components/DeviceHealthBar';
+import { DeviceHealthBar, DeviceDiagnosticsSection } from '../components/DeviceHealthBar';
 import { WellnessTabView } from '../components/WellnessTabView';
 import { ManageTrustedContactsScreen } from './ManageTrustedContactsScreen';
 import {
+  Card,
+  Button,
+  Pill,
+  Collapsible,
+  IconBadge,
+} from '../components/ui';
+import {
   Shield,
   Wifi,
+  WifiOff,
   User,
   Activity,
   Clock,
   Volume2,
-  RefreshCw,
   ChevronDown,
   Check,
   Users,
   HeartPulse,
-  Sliders,
-  AlertTriangle,
+  Radio,
   X,
+  AlertTriangle,
+  Lock,
 } from 'lucide-react-native';
 
 export const DashboardScreen: React.FC = () => {
+  const insets = useSafeAreaInsets();
+
   const {
     deviceConfig,
     telemetry,
@@ -45,13 +56,15 @@ export const DashboardScreen: React.FC = () => {
     setIsOnline,
     setTelemetry,
     hardwareMode,
+    deviceHealth,
   } = useAppStore();
 
   const { devices, activeDeviceId, setActiveDeviceId, getActiveDevice } = useDeviceStore();
   const activeDevice = getActiveDevice();
   const isSharedViewer = Boolean(activeDevice?.userRole === 'SHARED_VIEWER' || activeDevice?.isShared);
+
   const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'STATUS' | 'WELLNESS' | 'CAREGIVERS'>('STATUS');
+  const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'ROUTINE'>('OVERVIEW');
   const [showDeviceDropdown, setShowDeviceDropdown] = useState<boolean>(false);
   const [showCaregiversModal, setShowCaregiversModal] = useState<boolean>(false);
 
@@ -135,230 +148,295 @@ export const DashboardScreen: React.FC = () => {
   const currentDeviceId = activeDevice?.deviceId || deviceConfig?.deviceId || 'WSG-000001';
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.background }}>
-      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-        {/* Header with Multi-Device Selector */}
-        <View style={styles.header}>
-          <View style={{ flex: 1 }}>
-            <TouchableOpacity
-              style={styles.devicePickerBtn}
-              onPress={() => setShowDeviceDropdown(true)}
-              activeOpacity={0.8}
-            >
-              <View>
-                <Text style={styles.deviceName} numberOfLines={1}>
-                  {currentDisplayName}
-                </Text>
-                <View style={styles.deviceSubRow}>
-                  <Text style={styles.roomBadgeText}>{currentRoom}</Text>
-                  {isSharedViewer && (
-                    <View style={styles.sharedRoleBadge}>
-                      <Users size={11} color="#1D4ED8" />
-                      <Text style={styles.sharedRoleBadgeText}>Caregiver</Text>
-                    </View>
-                  )}
-                  <ChevronDown size={14} color={colors.textSecondary} />
-                </View>
-              </View>
-            </TouchableOpacity>
-
-            <View style={styles.statusRow}>
-              <View style={[styles.statusDot, { backgroundColor: isOnline ? colors.safe : colors.offline }]} />
-              <Text style={[styles.statusText, { color: isOnline ? colors.safe : colors.offline }]}>
-                {isOnline ? '● ONLINE' : '● OFFLINE (LOCAL SAFEGUARD)'}
+    <View style={[styles.screen, { paddingTop: Math.max(insets.top, 12) }]}>
+      {/* Custom Safe-Area Header */}
+      <View style={styles.customHeader}>
+        {/* Device Switcher */}
+        <TouchableOpacity
+          style={styles.devicePickerBtn}
+          onPress={() => setShowDeviceDropdown(true)}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={`Switch device, currently selected ${currentDisplayName}`}
+        >
+          <View style={styles.devicePickerLeft}>
+            <View style={styles.deviceNameRow}>
+              <Text style={styles.deviceNameText} numberOfLines={1}>
+                {currentDisplayName}
               </Text>
+              <ChevronDown size={18} color={colors.textSecondary} style={{ marginLeft: 4 }} />
+            </View>
+            <View style={styles.deviceSubRow}>
+              <Text style={styles.roomBadgeText}>{currentRoom}</Text>
+              {isSharedViewer && (
+                <View style={styles.sharedRoleBadge}>
+                  <Users size={11} color="#1D4ED8" />
+                  <Text style={styles.sharedRoleBadgeText}>Caregiver</Text>
+                </View>
+              )}
             </View>
           </View>
+        </TouchableOpacity>
 
-          <View style={styles.shieldIcon}>
-            <Shield color={colors.primary} size={30} />
-          </View>
-        </View>
-
-        {/* Device Health Bar (Battery %, RSSI, Maintenance Warning) */}
-        <DeviceHealthBar
-          batteryPct={telemetry?.batteryPct ?? 94}
-          rssi={telemetry?.wifiRSSI ?? -62}
-          isOnline={isOnline}
+        {/* Online / Offline Pill */}
+        <Pill
+          tone={isOnline ? 'safe' : 'offline'}
+          icon={
+            isOnline ? (
+              <Wifi size={13} color={colors.safeText} />
+            ) : (
+              <WifiOff size={13} color={colors.offlineText} />
+            )
+          }
+          label={isOnline ? 'Online' : 'Offline'}
+          size="md"
         />
+      </View>
 
-        {/* Tab Navigation Segmented Bar */}
-        <View style={styles.tabsContainer}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* 2-Way Segmented Control */}
+        <View style={styles.segmentedControl}>
           <TouchableOpacity
-            style={[styles.tabBtn, activeTab === 'STATUS' && styles.tabBtnActive]}
-            onPress={() => setActiveTab('STATUS')}
+            style={[
+              styles.segmentBtn,
+              activeTab === 'OVERVIEW' && styles.segmentBtnActive,
+            ]}
+            onPress={() => setActiveTab('OVERVIEW')}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: activeTab === 'OVERVIEW' }}
+            accessibilityLabel="Overview tab"
           >
-            <Activity size={15} color={activeTab === 'STATUS' ? colors.primary : colors.textSecondary} />
-            <Text style={[styles.tabBtnText, activeTab === 'STATUS' && styles.tabBtnTextActive]}>
-              Live Status
+            <Activity
+              size={16}
+              color={activeTab === 'OVERVIEW' ? colors.primaryDark : colors.textSecondary}
+              style={{ marginRight: 6 }}
+            />
+            <Text
+              style={[
+                styles.segmentText,
+                activeTab === 'OVERVIEW' && styles.segmentTextActive,
+              ]}
+            >
+              Overview
             </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.tabBtn, activeTab === 'WELLNESS' && styles.tabBtnActive]}
-            onPress={() => setActiveTab('WELLNESS')}
+            style={[
+              styles.segmentBtn,
+              activeTab === 'ROUTINE' && styles.segmentBtnActive,
+            ]}
+            onPress={() => setActiveTab('ROUTINE')}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: activeTab === 'ROUTINE' }}
+            accessibilityLabel="Daily routine tab"
           >
-            <HeartPulse size={15} color={activeTab === 'WELLNESS' ? colors.primary : colors.textSecondary} />
-            <Text style={[styles.tabBtnText, activeTab === 'WELLNESS' && styles.tabBtnTextActive]}>
-              Routine
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.tabBtn, activeTab === 'CAREGIVERS' && styles.tabBtnActive]}
-            onPress={() => setActiveTab('CAREGIVERS')}
-          >
-            <Users size={15} color={activeTab === 'CAREGIVERS' ? colors.primary : colors.textSecondary} />
-            <Text style={[styles.tabBtnText, activeTab === 'CAREGIVERS' && styles.tabBtnTextActive]}>
-              Caregivers
+            <HeartPulse
+              size={16}
+              color={activeTab === 'ROUTINE' ? colors.primaryDark : colors.textSecondary}
+              style={{ marginRight: 6 }}
+            />
+            <Text
+              style={[
+                styles.segmentText,
+                activeTab === 'ROUTINE' && styles.segmentTextActive,
+              ]}
+            >
+              Daily routine
             </Text>
           </TouchableOpacity>
         </View>
 
-        {/* TAB 1: Live Status */}
-        {activeTab === 'STATUS' && (
-          <View>
-            {/* Safety Status Card */}
+        {/* TAB 1: OVERVIEW */}
+        {activeTab === 'OVERVIEW' && (
+          <View style={styles.tabContent}>
+            {/* Big Status Hero */}
             <SafetyStatusCard status={safetyStatus} />
 
-            {/* Voice Prompt Banner */}
-            {voicePrompt && (
-              <View style={styles.voiceBanner}>
-                <Volume2 size={20} color="#0284C7" />
-                <Text style={styles.voiceBannerText}>Device says: "{voicePrompt}"</Text>
-              </View>
-            )}
+            {/* 3 Metric Chips: Battery, Signal, Last seen (Real data, never fake defaults) */}
+            <DeviceHealthBar
+              batteryPct={telemetry?.batteryPct}
+              rssi={telemetry?.wifiRSSI}
+              lastSeen={activeDevice?.lastSeen}
+              isOnline={isOnline}
+              health={deviceHealth}
+            />
 
-            {/* Offline Warning with Controlled Reconnect & Local Alarm Guarantee */}
+            {/* Offline Friendly Card */}
             {!isOnline && (
-              <View style={styles.offlineCard}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <Text style={styles.offlineTitle}>⚠️ Device Cloud Sync Offline</Text>
-                  {activeDevice?.ipAddress && (
-                    <TouchableOpacity
-                      style={styles.reconnectBtn}
-                      onPress={handleManualReconnect}
-                      disabled={isReconnecting}
-                      activeOpacity={0.8}
-                    >
-                      {isReconnecting ? (
-                        <ActivityIndicator size="small" color="#DC2626" style={{ marginRight: 4 }} />
-                      ) : (
-                        <RefreshCw size={14} color="#DC2626" style={{ marginRight: 4 }} />
-                      )}
-                      <Text style={styles.reconnectBtnText}>
-                        {isReconnecting ? 'Reconnecting...' : 'Reconnect'}
-                      </Text>
-                    </TouchableOpacity>
-                  )}
+              <Card tone="warning" style={styles.offlineCard}>
+                <View style={styles.offlineHeader}>
+                  <View style={styles.offlineTitleWrap}>
+                    <AlertTriangle size={18} color={colors.warningText} style={{ marginRight: 8 }} />
+                    <Text style={styles.offlineTitle}>
+                      Not connected. The device still sounds its own alarm
+                    </Text>
+                  </View>
                 </View>
-                <Text style={styles.offlineText}>
-                  Cloud connectivity is paused. <Text style={{ fontWeight: '700' }}>Local Safety Guard is ACTIVE</Text>: The physical LD2410C millimeter-wave radar and piezo buzzer continue to run directly on the hardware in the washroom.
+                <Text style={styles.offlineDesc}>
+                  We cannot communicate with the washroom unit right now over the network, but its
+                  built-in millimeter-wave radar sensor and local siren remain completely active.
                 </Text>
-              </View>
+                {activeDevice?.ipAddress && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    loading={isReconnecting}
+                    title={isReconnecting ? 'Reconnecting...' : 'Try again'}
+                    onPress={handleManualReconnect}
+                    style={{ alignSelf: 'flex-start', marginTop: spacing.xs }}
+                  />
+                )}
+              </Card>
             )}
 
-            {/* Live Metrics */}
-            {isOnline && telemetry && (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Live Sensor Telemetry</Text>
-                <View style={styles.metricsGrid}>
-                  <MetricBox
-                    icon={<User size={18} color={telemetry.presence ? colors.info : colors.textSecondary} />}
-                    title="Person"
-                    value={telemetry.presence ? 'Detected' : 'Not detected'}
-                    active={telemetry.presence}
+            {/* Device Voice Prompt Banner */}
+            {voicePrompt && (
+              <Card tone="info" style={styles.voiceCard}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <IconBadge
+                    icon={<Volume2 size={18} color={colors.primaryDark} />}
+                    tone="primary"
+                    size={36}
+                    style={{ marginRight: spacing.sm }}
                   />
-                  <MetricBox
-                    icon={<Activity size={18} color={telemetry.movement ? colors.safe : colors.textSecondary} />}
-                    title="Movement"
-                    value={telemetry.movement ? 'Moving' : 'Still'}
-                    active={telemetry.movement}
-                  />
-                  <MetricBox
-                    icon={<Clock size={18} color={colors.textSecondary} />}
-                    title="Stillness"
-                    value={`${telemetry.stillnessSeconds}s`}
-                    active={false}
-                  />
-                  <MetricBox
-                    icon={<Wifi size={18} color={colors.info} />}
-                    title="Wi-Fi"
-                    value={`${telemetry.wifiRSSI} dBm`}
-                    active={true}
-                  />
-                  <MetricBox
-                    icon={<Activity size={18} color="#059669" />}
-                    title="Radar Sensor"
-                    value="LD2410C Active"
-                    active={true}
-                  />
-                  <MetricBox
-                    icon={<Shield size={18} color={colors.textSecondary} />}
-                    title="Safety State"
-                    value={telemetry.state.replace(/_/g, ' ')}
-                    active={false}
-                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.voiceTitle}>Device Voice Check-in</Text>
+                    <Text style={styles.voiceText}>"{voicePrompt}"</Text>
+                  </View>
                 </View>
-              </View>
+              </Card>
             )}
 
-            {/* Privacy note */}
-            <View style={styles.privacyNote}>
-              <Text style={styles.privacyText}>
-                🔒 Voice detection listens for emergency keywords only. Audio is never stored or uploaded.
-              </Text>
-            </View>
-          </View>
-        )}
-
-        {/* TAB 2: Wellness & Routine */}
-        {activeTab === 'WELLNESS' && (
-          <WellnessTabView
-            deviceId={currentDeviceId}
-            isSimulatorMode={hardwareMode === 'DEMO_SIMULATOR'}
-          />
-        )}
-
-        {/* TAB 3: Caregivers & Trusted Contacts */}
-        {activeTab === 'CAREGIVERS' && (
-          <View style={styles.caregiverSummaryCard}>
-            <View style={styles.caregiverHeaderRow}>
-              <View style={styles.caregiverIconWrapper}>
-                <Users size={22} color={colors.primary} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.caregiverCardTitle}>Trusted Contacts & Caregivers</Text>
-                <Text style={styles.caregiverCardSubtitle}>
-                  Device: {currentDisplayName} ({currentDeviceId})
-                </Text>
-              </View>
-            </View>
-
-            <Text style={styles.caregiverDesc}>
-              Caregivers receive push alerts simultaneously when an emergency is verified on this unit. They can inspect live device status with a secure, read-only dashboard.
-            </Text>
-
-            <TouchableOpacity
-              style={styles.openCaregiversBtn}
-              onPress={() => setShowCaregiversModal(true)}
-              activeOpacity={0.85}
+            {/* Collapsed Device Details Section */}
+            <Collapsible
+              title="Device details"
+              subtitle="Live sensors, radar, and diagnostics"
+              icon={
+                <IconBadge
+                  icon={<Radio size={18} color={colors.primaryDark} />}
+                  tone="primary"
+                  size={36}
+                />
+              }
+              defaultOpen={false}
+              style={{ marginTop: spacing.sm }}
             >
-              <Users size={16} color="#FFFFFF" />
-              <Text style={styles.openCaregiversBtnText}>
-                {isSharedViewer ? 'View Connected Caregivers' : 'Manage Trusted Contacts'}
+              <Text style={styles.detailsGroupTitle}>Sensor Grid</Text>
+              <View style={styles.sensorGrid}>
+                <View style={styles.sensorItem}>
+                  <View style={styles.sensorIconRow}>
+                    <User
+                      size={16}
+                      color={telemetry?.presence ? colors.info : colors.textSecondary}
+                    />
+                    <Text style={styles.sensorLabel}>Person</Text>
+                  </View>
+                  <Text style={styles.sensorValue}>
+                    {telemetry ? (telemetry.presence ? 'Detected' : 'Not detected') : 'Unknown'}
+                  </Text>
+                </View>
+
+                <View style={styles.sensorItem}>
+                  <View style={styles.sensorIconRow}>
+                    <Activity
+                      size={16}
+                      color={telemetry?.movement ? colors.safe : colors.textSecondary}
+                    />
+                    <Text style={styles.sensorLabel}>Movement</Text>
+                  </View>
+                  <Text style={styles.sensorValue}>
+                    {telemetry ? (telemetry.movement ? 'Moving' : 'Still') : 'Unknown'}
+                  </Text>
+                </View>
+
+                <View style={styles.sensorItem}>
+                  <View style={styles.sensorIconRow}>
+                    <Clock size={16} color={colors.textSecondary} />
+                    <Text style={styles.sensorLabel}>Stillness</Text>
+                  </View>
+                  <Text style={styles.sensorValue}>
+                    {telemetry?.stillnessSeconds !== undefined
+                      ? `${telemetry.stillnessSeconds}s`
+                      : 'Unknown'}
+                  </Text>
+                </View>
+
+                <View style={styles.sensorItem}>
+                  <View style={styles.sensorIconRow}>
+                    <Wifi size={16} color={isOnline ? colors.info : colors.textSecondary} />
+                    <Text style={styles.sensorLabel}>Wi-Fi</Text>
+                  </View>
+                  <Text style={styles.sensorValue}>
+                    {telemetry?.wifiRSSI !== undefined ? `${telemetry.wifiRSSI} dBm` : 'Unknown'}
+                  </Text>
+                </View>
+
+                <View style={styles.sensorItem}>
+                  <View style={styles.sensorIconRow}>
+                    <Radio size={16} color={colors.safe} />
+                    <Text style={styles.sensorLabel}>Radar</Text>
+                  </View>
+                  <Text style={styles.sensorValue}>
+                    {deviceHealth?.radarStatus ??
+                      (telemetry?.presence !== undefined ? 'Active' : 'Unknown')}
+                  </Text>
+                </View>
+
+                <View style={styles.sensorItem}>
+                  <View style={styles.sensorIconRow}>
+                    <Shield size={16} color={colors.textSecondary} />
+                    <Text style={styles.sensorLabel}>State</Text>
+                  </View>
+                  <Text style={styles.sensorValue}>
+                    {telemetry?.state ? telemetry.state.replace(/_/g, ' ') : 'Unknown'}
+                  </Text>
+                </View>
+              </View>
+
+              <Text style={[styles.detailsGroupTitle, { marginTop: spacing.md }]}>
+                Diagnostics & Hardware Health
               </Text>
-            </TouchableOpacity>
+              <DeviceDiagnosticsSection
+                health={deviceHealth}
+                radarActive={telemetry?.presence !== undefined}
+              />
+            </Collapsible>
+
+            {/* Privacy Note */}
+            <View style={styles.privacyBox}>
+              <Lock size={15} color={colors.textSecondary} style={{ marginRight: 8 }} />
+              <Text style={styles.privacyText}>
+                Voice detection listens for emergency keywords only. Audio is never stored or
+                uploaded.
+              </Text>
+            </View>
+
+            {/* Version Footer */}
+            <View style={styles.versionFooter}>
+              <Text style={styles.versionFooterText}>
+                WSG-01 Guardian App • {APP_VERSION_STRING}
+              </Text>
+            </View>
           </View>
         )}
 
-        {/* App Version Tag */}
-        <View style={styles.versionFooter}>
-          <Text style={styles.versionFooterText}>WSG-01 Guardian App • {APP_VERSION_STRING}</Text>
-        </View>
+        {/* TAB 2: ROUTINE */}
+        {activeTab === 'ROUTINE' && (
+          <View style={styles.tabContent}>
+            <WellnessTabView
+              deviceId={currentDeviceId}
+              isSimulatorMode={hardwareMode === 'DEMO_SIMULATOR'}
+            />
+          </View>
+        )}
       </ScrollView>
 
-      {/* Multi-Device Selector Dropdown Modal */}
+      {/* Multi-Device Selector Sheet Modal */}
       <Modal
         visible={showDeviceDropdown}
         transparent={true}
@@ -373,7 +451,12 @@ export const DashboardScreen: React.FC = () => {
           <View style={styles.dropdownCard}>
             <View style={styles.dropdownHeader}>
               <Text style={styles.dropdownTitle}>Switch Monitored Device</Text>
-              <TouchableOpacity onPress={() => setShowDeviceDropdown(false)}>
+              <TouchableOpacity
+                onPress={() => setShowDeviceDropdown(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close device switcher"
+                style={styles.closeBtn}
+              >
                 <X size={18} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
@@ -385,7 +468,9 @@ export const DashboardScreen: React.FC = () => {
               </View>
             ) : (
               devices.map((dev) => {
-                const isSelected = (dev.deviceId === activeDeviceId) || (!activeDeviceId && dev.deviceId === currentDeviceId);
+                const isSelected =
+                  dev.deviceId === activeDeviceId ||
+                  (!activeDeviceId && dev.deviceId === currentDeviceId);
                 const isDevShared = dev.userRole === 'SHARED_VIEWER' || dev.isShared;
                 return (
                   <TouchableOpacity
@@ -395,10 +480,17 @@ export const DashboardScreen: React.FC = () => {
                       setActiveDeviceId(dev.deviceId);
                       setShowDeviceDropdown(false);
                     }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Select device ${dev.name || dev.deviceId}`}
                   >
                     <View style={{ flex: 1 }}>
                       <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                        <Text style={[styles.deviceOptionName, isSelected && { color: colors.primary }]}>
+                        <Text
+                          style={[
+                            styles.deviceOptionName,
+                            isSelected && { color: colors.primaryDark, fontWeight: '700' },
+                          ]}
+                        >
                           {dev.name || dev.deviceId}
                         </Text>
                         {isDevShared && (
@@ -411,7 +503,7 @@ export const DashboardScreen: React.FC = () => {
                         {dev.room || 'Washroom'} • {dev.deviceId}
                       </Text>
                     </View>
-                    {isSelected && <Check size={18} color={colors.primary} />}
+                    {isSelected && <Check size={18} color={colors.primaryDark} />}
                   </TouchableOpacity>
                 );
               })
@@ -435,310 +527,280 @@ export const DashboardScreen: React.FC = () => {
   );
 };
 
-const MetricBox = ({
-  icon,
-  title,
-  value,
-  active,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  value: string;
-  active: boolean;
-}) => (
-  <View style={[styles.metricBox, active && styles.metricBoxActive]}>
-    <View style={styles.metricIconRow}>{icon}</View>
-    <Text style={styles.metricTitle}>{title}</Text>
-    <Text style={styles.metricValue}>{value}</Text>
-  </View>
-);
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.md, paddingBottom: spacing.xxl },
-  header: {
+  screen: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  customHeader: {
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.sm,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
   devicePickerBtn: {
-    marginBottom: 4,
+    flex: 1,
+    minHeight: TOUCH_TARGET,
+    justifyContent: 'center',
+    marginRight: spacing.sm,
   },
-  deviceName: {
-    ...typography.h2,
+  devicePickerLeft: {
+    justifyContent: 'center',
+  },
+  deviceNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  deviceNameText: {
+    ...typography.h3,
     color: colors.textPrimary,
+    fontWeight: '700',
+    maxWidth: 220,
   },
   deviceSubRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
     marginTop: 2,
-    marginBottom: 4,
+    gap: 6,
   },
   roomBadgeText: {
-    fontSize: 12,
-    color: colors.textSecondary,
-    fontWeight: '600',
-  },
-  statusRow: { flexDirection: 'row', alignItems: 'center' },
-  statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
-  statusText: { ...typography.caption, fontWeight: '700' },
-  shieldIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: borderRadius.md,
-    backgroundColor: '#E0F2FE',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  /* Tabs Segmented Control */
-  tabsContainer: {
-    flexDirection: 'row',
-    backgroundColor: '#F1F5F9',
-    borderRadius: borderRadius.md,
-    padding: 3,
-    marginVertical: spacing.sm,
-    gap: 4,
-  },
-  tabBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 8,
-    borderRadius: borderRadius.sm,
-  },
-  tabBtnActive: {
-    backgroundColor: colors.surface,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 2,
-    elevation: 2,
-  },
-  tabBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.textSecondary,
-  },
-  tabBtnTextActive: {
-    color: colors.primary,
-    fontWeight: '700',
-  },
-
-  voiceBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    backgroundColor: '#E0F2FE',
-    padding: spacing.md,
-    borderRadius: borderRadius.md,
-    marginBottom: spacing.md,
-    borderWidth: 1,
-    borderColor: '#BAE6FD',
-  },
-  voiceBannerText: { ...typography.body2, color: '#0284C7', fontWeight: '600', flex: 1 },
-  offlineCard: {
-    backgroundColor: '#FEF2F2',
-    borderRadius: borderRadius.md,
-    padding: spacing.md,
-    marginBottom: spacing.md,
-    borderWidth: 1,
-    borderColor: '#FCA5A5',
-  },
-  offlineTitle: { ...typography.body2, color: colors.emergency, fontWeight: '700' },
-  reconnectBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: borderRadius.full,
-    backgroundColor: '#FEE2E2',
-  },
-  reconnectBtnText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#DC2626',
-  },
-  offlineText: { ...typography.body2, color: '#991B1B', lineHeight: 18 },
-  section: { marginTop: spacing.xs },
-  sectionTitle: { ...typography.h3, color: colors.textPrimary, marginBottom: spacing.sm },
-  metricsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  metricBox: {
-    width: '47%',
-    backgroundColor: colors.surface,
-    padding: spacing.md,
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  metricBoxActive: { borderColor: colors.primary + '60', backgroundColor: '#F0F9FF' },
-  metricIconRow: { marginBottom: spacing.xs },
-  metricTitle: { ...typography.caption, color: colors.textSecondary, textTransform: 'uppercase', marginBottom: 2 },
-  metricValue: { ...typography.body2, color: colors.textPrimary, fontWeight: '700' },
-  privacyNote: {
-    marginTop: spacing.lg,
-    padding: spacing.md,
-    backgroundColor: '#F0FDF4',
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-  },
-  privacyText: { ...typography.caption, color: '#166534' },
-
-  /* Caregivers Card in Tab 3 */
-  caregiverSummaryCard: {
-    backgroundColor: colors.surface,
-    borderRadius: borderRadius.lg,
-    padding: spacing.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    marginBottom: spacing.md,
-  },
-  caregiverHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: spacing.sm,
-  },
-  caregiverIconWrapper: {
-    width: 44,
-    height: 44,
-    borderRadius: borderRadius.md,
-    backgroundColor: '#EFF6FF',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  caregiverCardTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.textPrimary,
-  },
-  caregiverCardSubtitle: {
-    fontSize: 12,
-    color: colors.textSecondary,
-    marginTop: 2,
-  },
-  caregiverDesc: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    lineHeight: 18,
-    marginBottom: spacing.md,
-  },
-  openCaregiversBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: colors.primary,
-    paddingVertical: 10,
-    borderRadius: borderRadius.md,
-  },
-  openCaregiversBtnText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-
-  versionFooter: {
-    alignItems: 'center',
-    marginTop: spacing.md,
-    marginBottom: spacing.xs,
-  },
-  versionFooterText: {
     ...typography.caption,
     color: colors.textSecondary,
-    fontSize: 11,
     fontWeight: '500',
-  },
-
-  /* Dropdown Modal Styles */
-  dropdownBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: spacing.lg,
-  },
-  dropdownCard: {
-    width: '100%',
-    backgroundColor: colors.surface,
-    borderRadius: borderRadius.lg,
-    padding: spacing.md,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  dropdownHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: spacing.md,
-    paddingBottom: spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  dropdownTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.textPrimary,
-  },
-  deviceOptionRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 8,
-    borderRadius: borderRadius.md,
-  },
-  deviceOptionSelected: {
-    backgroundColor: '#EFF6FF',
-  },
-  deviceOptionName: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.textPrimary,
-  },
-  deviceOptionRoom: {
-    fontSize: 12,
-    color: colors.textSecondary,
-    marginTop: 2,
   },
   sharedRoleBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
     backgroundColor: '#DBEAFE',
     paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 8,
-    marginRight: 6,
+    paddingVertical: 1,
+    borderRadius: borderRadius.full,
+    gap: 3,
   },
   sharedRoleBadgeText: {
     fontSize: 10,
-    fontWeight: '700',
+    fontWeight: '600',
     color: '#1D4ED8',
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xxl,
+  },
+  segmentedControl: {
+    flexDirection: 'row',
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: borderRadius.lg,
+    padding: 3,
+    marginBottom: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  segmentBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: TOUCH_TARGET - 6,
+    borderRadius: borderRadius.md,
+  },
+  segmentBtnActive: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  segmentText: {
+    ...typography.body2,
+    color: colors.textSecondary,
+    fontWeight: '500',
+  },
+  segmentTextActive: {
+    color: colors.textPrimary,
+    fontWeight: '700',
+  },
+  tabContent: {
+    marginTop: spacing.xs,
+  },
+  offlineCard: {
+    marginTop: spacing.sm,
+  },
+  offlineHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  offlineTitleWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  offlineTitle: {
+    ...typography.body2,
+    color: colors.warningText,
+    fontWeight: '700',
+    flex: 1,
+  },
+  offlineDesc: {
+    ...typography.caption,
+    color: colors.warningText,
+    lineHeight: 18,
+    marginVertical: 4,
+  },
+  voiceCard: {
+    marginTop: spacing.xs,
+  },
+  voiceTitle: {
+    ...typography.caption,
+    color: colors.primaryDark,
+    fontWeight: '600',
+  },
+  voiceText: {
+    ...typography.body2,
+    fontWeight: '600',
+    color: colors.textPrimary,
+    marginTop: 2,
+  },
+  detailsGroupTitle: {
+    ...typography.label,
+    color: colors.textSecondary,
+    marginBottom: spacing.xs,
+  },
+  sensorGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+  },
+  sensorItem: {
+    flex: 1,
+    minWidth: '30%',
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.sm,
+  },
+  sensorIconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 4,
+  },
+  sensorLabel: {
+    ...typography.caption,
+    fontSize: 11,
+    color: colors.textSecondary,
+  },
+  sensorValue: {
+    ...typography.body2,
+    fontWeight: '600',
+    color: colors.textPrimary,
+  },
+  privacyBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginTop: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  privacyText: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    lineHeight: 18,
+    flex: 1,
+  },
+  versionFooter: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: spacing.lg,
+    paddingBottom: spacing.md,
+  },
+  versionFooterText: {
+    ...typography.caption,
+    color: colors.textMuted,
+  },
+  dropdownBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    justifyContent: 'center',
+    padding: spacing.lg,
+  },
+  dropdownCard: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.xl,
+    padding: spacing.lg,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  dropdownHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+  },
+  dropdownTitle: {
+    ...typography.h3,
+    color: colors.textPrimary,
+  },
+  closeBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deviceOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    minHeight: TOUCH_TARGET,
+  },
+  deviceOptionSelected: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.sm,
+    borderColor: 'transparent',
+  },
+  deviceOptionName: {
+    ...typography.body1,
+    fontWeight: '600',
+    color: colors.textPrimary,
+  },
+  deviceOptionRoom: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    marginTop: 2,
   },
   dropdownSharedPill: {
     backgroundColor: '#DBEAFE',
     paddingHorizontal: 6,
     paddingVertical: 1,
-    borderRadius: 6,
+    borderRadius: borderRadius.full,
     marginLeft: 6,
   },
   dropdownSharedPillText: {
-    fontSize: 9,
-    fontWeight: '700',
+    fontSize: 10,
+    fontWeight: '600',
     color: '#1D4ED8',
   },
 });
