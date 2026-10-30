@@ -5,7 +5,6 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useAppStore } from '../store/useAppStore';
 import { PermissionService } from '../services/PermissionService';
-import { LoginScreen } from '../screens/LoginScreen';
 import { AnimatedBottomTabBar } from './AnimatedTabBar';
 import { DashboardScreen } from '../screens/DashboardScreen';
 import { DevicesScreen } from '../screens/DevicesScreen';
@@ -19,21 +18,35 @@ import { colors } from '../utils/theme';
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
 
+const cleanHeaderOptions = {
+  headerStyle: {
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  headerShadowVisible: false,
+  headerTitleAlign: 'left' as const,
+  headerTitleStyle: {
+    color: colors.textPrimary,
+    fontSize: 22,
+    fontWeight: '700' as const,
+    letterSpacing: -0.3,
+  },
+  headerTintColor: colors.primaryDark,
+};
+
 const MainTabs = () => {
   return (
     <Tab.Navigator
       tabBar={(props) => <AnimatedBottomTabBar {...props} />}
-      screenOptions={{
-        headerStyle: { backgroundColor: colors.surface },
-        headerTitleStyle: { color: colors.textPrimary, fontWeight: '600' as const },
-      }}
+      screenOptions={cleanHeaderOptions}
     >
       <Tab.Screen
         name="Home"
         component={DashboardScreen}
         options={{
-          title: 'Dashboard',
-          headerTitle: '🛡️  Washroom Safety',
+          headerShown: false,
+          title: 'Home',
         }}
       />
       <Tab.Screen
@@ -41,20 +54,15 @@ const MainTabs = () => {
         component={DevicesScreen}
         options={{
           title: 'Devices',
+          headerTitle: 'Devices',
         }}
       />
       <Tab.Screen
-        name="Events"
+        name="History"
         component={EventsScreen}
         options={{
-          title: 'Events',
-        }}
-      />
-      <Tab.Screen
-        name="Contacts"
-        component={ContactsScreen}
-        options={{
-          title: 'Contacts',
+          title: 'History',
+          headerTitle: 'History',
         }}
       />
       <Tab.Screen
@@ -62,14 +70,7 @@ const MainTabs = () => {
         component={SettingsScreen}
         options={{
           title: 'Settings',
-        }}
-      />
-      <Tab.Screen
-        name="Demo"
-        component={DemoScreen}
-        options={{
-          title: 'Demo',
-          tabBarBadge: 'TEST',
+          headerTitle: 'Settings',
         }}
       />
     </Tab.Navigator>
@@ -90,13 +91,9 @@ export const AppNavigator = () => {
 
     const checkInitialState = async () => {
       try {
-        // 1. Initialize persisted state from AsyncStorage
         const persistedCompleted = await initAppStore();
-
-        // 2. Audit actual OS permissions (Bluetooth, Notifications, etc.)
         const report = await PermissionService.checkAllPermissions();
 
-        // If the user already completed onboarding previously OR if OS permissions are already allowed
         if (persistedCompleted || report.allEssentialGranted) {
           setHasCompletedSafetyOnboarding(true);
         }
@@ -126,9 +123,12 @@ export const AppNavigator = () => {
 
   return (
     <NavigationContainer>
-      <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Navigator screenOptions={cleanHeaderOptions}>
         {!hasCompletedSafetyOnboarding ? (
-          <Stack.Screen name="SafetySetup">
+          <Stack.Screen
+            name="SafetySetup"
+            options={{ headerShown: false }}
+          >
             {() => (
               <SafetySetupScreen
                 onComplete={() => setHasCompletedSafetyOnboarding(true)}
@@ -137,7 +137,31 @@ export const AppNavigator = () => {
             )}
           </Stack.Screen>
         ) : (
-          <Stack.Screen name="MainTabs" component={MainTabs} />
+          <>
+            <Stack.Screen
+              name="MainTabs"
+              component={MainTabs}
+              options={{ headerShown: false }}
+            />
+            <Stack.Screen
+              name="Contacts"
+              component={ContactsScreen}
+              options={{
+                headerShown: true,
+                title: 'Emergency contacts',
+                headerTitle: 'Emergency contacts',
+              }}
+            />
+            <Stack.Screen
+              name="Demo"
+              component={DemoScreen}
+              options={{
+                headerShown: true,
+                title: 'Demo & testing',
+                headerTitle: 'Demo & testing',
+              }}
+            />
+          </>
         )}
       </Stack.Navigator>
     </NavigationContainer>
@@ -147,9 +171,8 @@ export const AppNavigator = () => {
 const styles = StyleSheet.create({
   splashContainer: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: colors.background,
     justifyContent: 'center',
     alignItems: 'center',
   },
 });
-

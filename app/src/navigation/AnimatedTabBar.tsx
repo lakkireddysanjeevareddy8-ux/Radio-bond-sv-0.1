@@ -13,12 +13,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   LayoutDashboard,
   Cpu,
-  ClipboardList,
-  Phone,
+  History,
   Settings,
-  FlaskConical,
 } from 'lucide-react-native';
-import { colors } from '../utils/theme';
+import { colors, TOUCH_TARGET } from '../utils/theme';
 
 interface TabConfig {
   label: string;
@@ -33,7 +31,7 @@ const getTabConfig = (routeName: string): TabConfig => {
   switch (routeName) {
     case 'Home':
       return {
-        label: 'Dashboard',
+        label: 'Home',
         Icon: LayoutDashboard,
       };
     case 'Devices':
@@ -41,25 +39,15 @@ const getTabConfig = (routeName: string): TabConfig => {
         label: 'Devices',
         Icon: Cpu,
       };
-    case 'Events':
+    case 'History':
       return {
-        label: 'Events',
-        Icon: ClipboardList,
-      };
-    case 'Contacts':
-      return {
-        label: 'Contacts',
-        Icon: Phone,
+        label: 'History',
+        Icon: History,
       };
     case 'Settings':
       return {
         label: 'Settings',
         Icon: Settings,
-      };
-    case 'Demo':
-      return {
-        label: 'Demo',
-        Icon: FlaskConical,
       };
     default:
       return {
@@ -104,7 +92,7 @@ const AnimatedTabButton: React.FC<AnimatedTabButtonProps> = ({
 
   const handlePressIn = () => {
     Animated.spring(pressScale, {
-      toValue: 0.88,
+      toValue: 0.9,
       tension: 320,
       friction: 15,
       useNativeDriver: true,
@@ -121,20 +109,19 @@ const AnimatedTabButton: React.FC<AnimatedTabButtonProps> = ({
   };
 
   const handlePress = () => {
-    // Beautiful formal ripple pulse effect on click
     rippleScale.setValue(0.5);
     rippleOpacity.setValue(0.35);
 
     Animated.parallel([
       Animated.timing(rippleScale, {
         toValue: 2.1,
-        duration: 400,
+        duration: 350,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
       Animated.timing(rippleOpacity, {
         toValue: 0,
-        duration: 400,
+        duration: 350,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
@@ -143,17 +130,16 @@ const AnimatedTabButton: React.FC<AnimatedTabButtonProps> = ({
     onPress();
   };
 
-  // Interpolated animated values for icon and active highlights
   const iconScale = focusAnim.interpolate({
     inputRange: [0, 0.5, 1],
-    outputRange: [1, 1.2, 1.08],
+    outputRange: [1, 1.15, 1.05],
   });
 
   const combinedScale = Animated.multiply(pressScale, iconScale);
 
   const translateY = focusAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [0, -2.5],
+    outputRange: [0, -2],
   });
 
   const pillOpacity = focusAnim.interpolate({
@@ -163,7 +149,7 @@ const AnimatedTabButton: React.FC<AnimatedTabButtonProps> = ({
 
   const pillScale = focusAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [0.72, 1],
+    outputRange: [0.75, 1],
   });
 
   const indicatorScaleX = focusAnim.interpolate({
@@ -177,7 +163,7 @@ const AnimatedTabButton: React.FC<AnimatedTabButtonProps> = ({
   });
 
   const activeColor = colors.primary;
-  const inactiveColor = '#64748B';
+  const inactiveColor = colors.textSecondary;
 
   return (
     <Pressable
@@ -319,9 +305,9 @@ export const AnimatedBottomTabBar: React.FC<BottomTabBarProps> = ({
 
 const styles = StyleSheet.create({
   tabBarContainer: {
-    backgroundColor: '#FFFFFF',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#E2E8F0',
+    backgroundColor: colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
     paddingTop: 6,
     ...Platform.select({
       ios: {
@@ -334,7 +320,7 @@ const styles = StyleSheet.create({
         elevation: 8,
       },
       web: {
-        boxShadow: '0 -3px 14px rgba(15, 23, 42, 0.05)',
+        boxShadow: '0 -2px 10px rgba(0, 0, 0, 0.03)',
       } as any,
     }),
   },
@@ -342,13 +328,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    height: 52,
+    height: Math.max(52, TOUCH_TARGET),
   },
   tabButton: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     height: '100%',
+    minHeight: TOUCH_TARGET,
     ...Platform.select({
       web: {
         cursor: 'pointer',
@@ -366,10 +353,10 @@ const styles = StyleSheet.create({
   pillBackdrop: {
     position: 'absolute',
     top: 0,
-    width: 46,
+    width: 48,
     height: 30,
     borderRadius: 15,
-    backgroundColor: 'rgba(14, 165, 233, 0.12)',
+    backgroundColor: colors.primarySoft,
   },
   rippleWave: {
     position: 'absolute',
