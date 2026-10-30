@@ -302,3 +302,4 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ user: null, session: null });
   },
 }));
+

@@ -82,7 +82,7 @@ export const DemoScreen: React.FC = () => {
           </View>
           <TouchableOpacity
             style={styles.viewDashboardLink}
-            onPress={() => navigation.navigate('Dashboard')}
+            onPress={() => navigation.navigate('Home')}
           >
             <Text style={styles.viewDashboardText}>View Dashboard</Text>
             <ArrowRight size={14} color={colors.primary} />
