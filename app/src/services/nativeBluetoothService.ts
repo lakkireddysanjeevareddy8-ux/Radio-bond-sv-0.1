@@ -1,6 +1,7 @@
 import { Platform, PermissionsAndroid, Linking } from 'react-native';
 import { BleManager, Device, State, Characteristic, BleError } from 'react-native-ble-plx';
 import { ProductDefinition, PRODUCT_CATALOG } from './productCatalog';
+import { useConnectionStore } from '../store/useConnectionStore';
 
 // Base64 helper utilities (pure JS for Hermes / React Native compatibility)
 const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
@@ -592,6 +593,17 @@ class NativeBluetoothServiceClass {
         timeout: 10000,
       });
 
+      if (typeof connectedDevice.onDisconnected === 'function') {
+        try {
+          connectedDevice.onDisconnected(() => {
+            console.log('[conn] Native BLE disconnected event fired');
+            useConnectionStore.getState().setDisconnected('Native BLE disconnected');
+          });
+        } catch (e) {
+          console.warn('[NativeBLE] onDisconnected attachment error:', e);
+        }
+      }
+
       return await this.buildSessionFromConnectedDevice(connectedDevice, product, discovered);
     } catch (err: any) {
       console.warn('[NativeBLE] GATT connection error:', err);
@@ -705,6 +717,7 @@ class NativeBluetoothServiceClass {
    * Disconnect an active native session.
    */
   public async disconnect(session: ConnectedNativeSession | null): Promise<void> {
+    useConnectionStore.getState().setDisconnected('NativeBluetoothService disconnect called');
     if (session?.server) {
       try {
         await session.server.cancelConnection();

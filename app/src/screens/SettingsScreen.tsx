@@ -25,6 +25,7 @@ import {
 } from '../components/ui';
 import { useAppStore } from '../store/useAppStore';
 import { useDeviceStore } from '../store/useDeviceStore';
+import { useConnectionStore } from '../store/useConnectionStore';
 import { useContactStore } from '../store/useContactStore';
 import { EmergencyPushService } from '../services/EmergencyPushService';
 import { EmergencySoundService } from '../services/EmergencySoundService';
@@ -88,6 +89,12 @@ export const SettingsScreen: React.FC = () => {
     setActiveEmergency,
     escalationLogs,
   } = useAppStore();
+
+  const {
+    status: connStatus,
+    connectedDevice: connConnectedDevice,
+    disconnect: connDisconnect,
+  } = useConnectionStore();
 
   const { getPrimaryContact } = useContactStore();
   const primaryContact = getPrimaryContact();
@@ -1170,10 +1177,50 @@ export const SettingsScreen: React.FC = () => {
           </View>
           <View style={[styles.settingRow, { borderBottomWidth: 0 }]}>
             <Text style={styles.settingLabel}>Live Connection</Text>
-            <Text style={[styles.settingValue, { color: isOnline ? '#10B981' : '#EF4444', fontWeight: '700' }]}>
-              {isOnline ? 'CONNECTED' : 'DISCONNECTED'}
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <View
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: 4,
+                  backgroundColor: connStatus === 'connected' ? '#10B981' : connStatus === 'connecting' ? '#F59E0B' : '#EF4444',
+                }}
+              />
+              <Text
+                style={[
+                  styles.settingValue,
+                  {
+                    color: connStatus === 'connected' ? '#10B981' : connStatus === 'connecting' ? '#F59E0B' : '#EF4444',
+                    fontWeight: '700',
+                  },
+                ]}
+              >
+                {connStatus === 'connected'
+                  ? `CONNECTED (${connConnectedDevice?.name || 'WSG-01'})`
+                  : connStatus === 'connecting'
+                  ? 'CONNECTING...'
+                  : 'DISCONNECTED'}
+              </Text>
+            </View>
           </View>
+          {connStatus === 'connected' && (
+            <TouchableOpacity
+              style={{
+                alignSelf: 'flex-start',
+                backgroundColor: '#FEE2E2',
+                paddingHorizontal: 12,
+                paddingVertical: 6,
+                borderRadius: borderRadius.md,
+                marginTop: 6,
+                marginBottom: 10,
+              }}
+              onPress={() => connDisconnect()}
+              accessibilityRole="button"
+              accessibilityLabel="Disconnect device"
+            >
+              <Text style={{ color: '#DC2626', fontWeight: '700', fontSize: 12 }}>Disconnect Device</Text>
+            </TouchableOpacity>
+          )}
 
           <View style={styles.divider} />
 

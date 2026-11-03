@@ -3,6 +3,7 @@ import { ProductDefinition, PRODUCT_CATALOG } from './productCatalog';
 import { NativeBluetoothService, base64ToBytes } from './nativeBluetoothService';
 import { EscalationLogEntry, EscalationConfig, EmergencyEvent } from '../types';
 import { useAppStore } from '../store/useAppStore';
+import { useConnectionStore } from '../store/useConnectionStore';
 import { EmergencyPushService } from './EmergencyPushService';
 
 export interface DiscoveredBleDevice {
@@ -657,6 +658,18 @@ export class BluetoothService {
       },
     });
 
+    if (raw && typeof raw.addEventListener === 'function') {
+      try {
+        raw.addEventListener('gattserverdisconnected', () => {
+          console.log('[conn] Web GATT disconnected event');
+          this.activeSession = null;
+          useConnectionStore.getState().setDisconnected('Web GATT disconnected');
+        }, { once: true });
+      } catch (e) {
+        console.warn('[conn] Could not attach gattserverdisconnected:', e);
+      }
+    }
+
     const webSession: ConnectedBleSession = {
       device: discovered,
       server,
@@ -1261,6 +1274,8 @@ export class BluetoothService {
     if (this.activeSession === session) {
       this.activeSession = null;
     }
+
+    useConnectionStore.getState().setDisconnected('BluetoothService.disconnect called');
 
     if (session.isNative) {
       NativeBluetoothService.disconnect(session as any);

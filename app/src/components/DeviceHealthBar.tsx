@@ -22,6 +22,7 @@ import {
   Tone,
 } from '../utils/theme';
 import { useAppStore } from '../store/useAppStore';
+import { useConnectionStore } from '../store/useConnectionStore';
 import { DeviceHealth } from '../types';
 
 interface DeviceHealthBarProps {
@@ -41,15 +42,17 @@ export const DeviceHealthBar: React.FC<DeviceHealthBarProps> = ({
 }) => {
   const storeHealth = useAppStore((state) => state.deviceHealth);
   const storeOnline = useAppStore((state) => state.isOnline);
+  const connStatus = useConnectionStore((state) => state.status);
+  const connDevice = useConnectionStore((state) => state.connectedDevice);
 
   const health = propHealth !== undefined ? propHealth : storeHealth;
-  const isOnline = propIsOnline !== undefined ? propIsOnline : storeOnline;
+  const isOnline = propIsOnline !== undefined ? propIsOnline : (connStatus === 'connected' || storeOnline);
 
-  const rawBattery = health?.batteryPct ?? propBatteryPct;
+  const rawBattery = health?.batteryPct ?? propBatteryPct ?? connDevice?.batteryLevel;
   const hasBattery = typeof rawBattery === 'number' && !isNaN(rawBattery);
   const batteryPct = hasBattery ? rawBattery : null;
 
-  const rawRssi = health?.rssi ?? propRssi;
+  const rawRssi = health?.rssi ?? propRssi ?? connDevice?.rssi;
   const hasRssi = typeof rawRssi === 'number' && !isNaN(rawRssi);
   const rssi = hasRssi ? rawRssi : null;
 

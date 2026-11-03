@@ -44,6 +44,7 @@ import { BluetoothService, DiscoveredBleDevice, ConnectedBleSession } from '../s
 import { DeviceProvisioningService } from '../services/deviceProvisioningService';
 import { useDeviceStore } from '../store/useDeviceStore';
 import { useAppStore } from '../store/useAppStore';
+import { useConnectionStore } from '../store/useConnectionStore';
 import { PermissionPrimerModal } from '../components/PermissionPrimerModal';
 import { PermissionService } from '../services/PermissionService';
 import { EmergencyPushService } from '../services/EmergencyPushService';
@@ -662,7 +663,16 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
       const isCloudOk = await DeviceProvisioningService.checkCloudConnectivity();
       setCloudStatus(isCloudOk ? 'CONNECTED' : 'DISCONNECTED');
 
-      setIsOnline(true);
+      useConnectionStore.getState().setConnected({
+        id: finalId,
+        name: finalName,
+        connectionType: 'WIFI',
+        ipAddress: ip,
+        model: targetDevice?.product?.model || 'WSG-01',
+        room: 'Master Washroom',
+        rssi: typeof result.rssi === 'number' ? result.rssi : 0,
+      });
+
       setIsSimulatorMode(false);
 
       addOrUpdateDevice({

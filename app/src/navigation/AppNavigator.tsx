@@ -4,6 +4,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useAppStore } from '../store/useAppStore';
+import { useConnectionStore } from '../store/useConnectionStore';
 import { PermissionService } from '../services/PermissionService';
 import { AnimatedBottomTabBar } from './AnimatedTabBar';
 import { DashboardScreen } from '../screens/DashboardScreen';
@@ -91,6 +92,7 @@ export const AppNavigator = () => {
 
     const checkInitialState = async () => {
       try {
+        await useConnectionStore.getState().initConnectionStore();
         const persistedCompleted = await initAppStore();
         const report = await PermissionService.checkAllPermissions();
 

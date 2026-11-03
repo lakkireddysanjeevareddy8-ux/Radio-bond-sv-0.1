@@ -20,6 +20,7 @@ import { DeviceProvisioningService } from '../services/deviceProvisioningService
 import { Esp32Service } from '../services/esp32Service';
 import { useDeviceStore } from '../store/useDeviceStore';
 import { useAppStore } from '../store/useAppStore';
+import { useConnectionStore } from '../store/useConnectionStore';
 import {
   ArrowLeft,
   ArrowRight,
@@ -501,7 +502,17 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
         firmwareVersion: info.firmware,
       });
 
-      setIsOnline(true);
+      useConnectionStore.getState().setConnected({
+        id: newSavedDevice.deviceId,
+        name: newSavedDevice.name,
+        connectionType: 'WIFI',
+        ipAddress: ip,
+        model: newSavedDevice.model,
+        room: newSavedDevice.room,
+        rssi: -52,
+        firmwareVersion: info.firmware,
+      });
+
       setIsSimulatorMode(false);
 
       setCurrentStep('SETUP_COMPLETE');

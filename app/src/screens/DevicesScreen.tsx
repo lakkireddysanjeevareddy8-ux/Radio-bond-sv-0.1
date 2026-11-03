@@ -18,6 +18,7 @@ import {
 import { colors, typography, spacing, borderRadius } from '../utils/theme';
 import { useAppStore } from '../store/useAppStore';
 import { useDeviceStore } from '../store/useDeviceStore';
+import { useConnectionStore } from '../store/useConnectionStore';
 import { DeviceOnboardingScreen } from './DeviceOnboardingScreen';
 import { BluetoothOffScreen } from './BluetoothOffScreen';
 import { AddDeviceSearchScreen } from './AddDeviceSearchScreen';
@@ -104,6 +105,12 @@ export const DevicesScreen: React.FC = () => {
   const effectiveWifiStatus = DeviceProvisioningService.getEffectiveWifiStatus(wifiStatus);
 
   const { devices, activeDeviceId, setActiveDeviceId } = useDeviceStore();
+  const {
+    status: connStatus,
+    connectedDevice: connConnectedDevice,
+    disconnect: connDisconnect,
+    setConnected: connSetConnected,
+  } = useConnectionStore();
   const [showOnboarding, setShowOnboarding] = useState(false);
 
   // Rename modal state
@@ -661,6 +668,23 @@ export const DevicesScreen: React.FC = () => {
     const finalName = customDeviceName.trim() || selectedDevice.name;
     const finalId = selectedDevice.deviceId;
 
+    // Call connection store flow to establish single source of truth:
+    // marks connected, registers in useDeviceStore, sets activeDeviceId, sets bluetoothStatus to CONNECTED
+    connSetConnected({
+      id: finalId,
+      name: finalName,
+      connectionType: 'BLE',
+      model: selectedDevice.isEarbuds ? 'Windows Bluetooth Audio' : (selectedDevice.type || 'WSG-01'),
+      room: 'Main Bathroom',
+      rssi: selectedDevice.rssi ?? 0,
+      batteryLevel: batteryPct,
+      firmwareVersion:
+        selectedDevice.firmware ||
+        (selectedDevice.isEarbuds ? 'Windows Bluetooth Audio' : 'v1.2.0-esp32'),
+      rawDevice: selectedDevice.rawDevice,
+      isEarbuds: selectedDevice.isEarbuds,
+    });
+
     if (deviceConfig) {
       setDeviceConfig({
         ...deviceConfig,
@@ -686,7 +710,6 @@ export const DevicesScreen: React.FC = () => {
       batteryLevel: batteryPct,
     });
 
-    setIsOnline(true);
     setIsSimulatorMode(false);
     setPairingStep('SUCCESS');
 
@@ -712,7 +735,17 @@ export const DevicesScreen: React.FC = () => {
     }
     const isDev = Boolean(typeof __DEV__ !== 'undefined' && __DEV__);
     setIsSimulatorMode(isDev);
-    setIsOnline(isDev);
+    if (isDev) {
+      connSetConnected({
+        id: manualDeviceId.trim(),
+        name: manualDeviceName.trim(),
+        connectionType: 'BLE',
+        model: 'WSG-01 Simulator',
+        room: 'Main Bathroom',
+      });
+    } else {
+      useConnectionStore.getState().setDisconnected('Manual registration waiting for telemetry');
+    }
     setShowPairingModal(false);
     Alert.alert(
       'Device Configured',
@@ -794,10 +827,10 @@ export const DevicesScreen: React.FC = () => {
           </View>
           <View style={styles.deviceHeroInfo}>
             <Text style={styles.deviceHeroTitle}>
-              {deviceConfig?.deviceName || 'SafeGuard WSG-01'}
+              {connConnectedDevice?.name || deviceConfig?.deviceName || 'SafeGuard WSG-01'}
             </Text>
-            <Text style={styles.deviceHeroSubtitle}>
-              {isOnline ? 'Connected' : 'Disconnected'}
+            <Text style={[styles.deviceHeroSubtitle, { color: connStatus === 'connected' ? colors.safe : colors.textSecondary }]}>
+              {connStatus === 'connected' ? 'Connected' : connStatus === 'connecting' ? 'Connecting...' : 'Disconnected'}
             </Text>
             <View style={styles.deviceHeroSetupRow}>
               <Text style={styles.deviceHeroSetupText}>→] Set up</Text>
@@ -895,17 +928,19 @@ export const DevicesScreen: React.FC = () => {
         </View>
       )}
 
-      {/* Legacy Fast Connect Button */}
-      <TouchableOpacity
-        style={[styles.addDeviceButton, { marginBottom: spacing.md }]}
-        onPress={handleOpenPairing}
-        activeOpacity={0.8}
-      >
-        <Radio size={16} color={colors.textSecondary} />
-        <Text style={[styles.addDeviceText, { color: colors.textSecondary, fontSize: 13 }]}>
-          Manual Pairing &amp; Windows Audio Scan
-        </Text>
-      </TouchableOpacity>
+      {/* Legacy Fast Connect Button (Hidden when already connected) */}
+      {connStatus !== 'connected' && (
+        <TouchableOpacity
+          style={[styles.addDeviceButton, { marginBottom: spacing.md }]}
+          onPress={handleOpenPairing}
+          activeOpacity={0.8}
+        >
+          <Radio size={16} color={colors.textSecondary} />
+          <Text style={[styles.addDeviceText, { color: colors.textSecondary, fontSize: 13 }]}>
+            Manual Pairing &amp; Windows Audio Scan
+          </Text>
+        </TouchableOpacity>
+      )}
 
       {/* Active Device Card */}
       <View style={styles.deviceCard}>
@@ -918,21 +953,25 @@ export const DevicesScreen: React.FC = () => {
             )}
           </View>
           <View style={styles.deviceInfo}>
-            <Text style={styles.deviceName}>{deviceConfig?.deviceName || 'No device'}</Text>
+            <Text style={styles.deviceName}>{connConnectedDevice?.name || deviceConfig?.deviceName || 'No device'}</Text>
             <View style={styles.onlineRow}>
-              <View
-                style={[
-                  styles.dot,
-                  { backgroundColor: isOnline ? colors.safe : colors.offline },
-                ]}
-              />
+              {connStatus === 'connecting' ? (
+                <ActivityIndicator size="small" color={colors.primary} style={{ marginRight: 6 }} />
+              ) : (
+                <View
+                  style={[
+                    styles.dot,
+                    { backgroundColor: connStatus === 'connected' ? colors.safe : colors.offline },
+                  ]}
+                />
+              )}
               <Text
                 style={[
                   styles.onlineText,
-                  { color: isOnline ? colors.safe : colors.offline },
+                  { color: connStatus === 'connected' ? colors.safe : colors.offline },
                 ]}
               >
-                {isOnline ? 'ONLINE' : 'OFFLINE'}
+                {connStatus === 'connected' ? 'CONNECTED' : connStatus === 'connecting' ? 'CONNECTING...' : 'OFFLINE'}
               </Text>
               <Text style={styles.modeBadge}>
                 {isSimulatorMode
@@ -942,6 +981,29 @@ export const DevicesScreen: React.FC = () => {
                   : '📡 REAL HARDWARE'}
               </Text>
             </View>
+
+            {/* Disconnect Button when connected */}
+            {connStatus === 'connected' && (
+              <TouchableOpacity
+                style={{
+                  marginTop: 8,
+                  backgroundColor: '#FEE2E2',
+                  paddingHorizontal: 10,
+                  paddingVertical: 5,
+                  borderRadius: borderRadius.md,
+                  alignSelf: 'flex-start',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
+                onPress={() => connDisconnect()}
+                accessibilityRole="button"
+                accessibilityLabel="Disconnect device"
+              >
+                <X size={13} color="#DC2626" />
+                <Text style={{ fontSize: 11, fontWeight: '700', color: '#DC2626' }}>Disconnect</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
@@ -951,11 +1013,11 @@ export const DevicesScreen: React.FC = () => {
             <View
               style={[
                 styles.connDot,
-                { backgroundColor: bluetoothStatus === 'CONNECTED' ? colors.safe : colors.offline },
+                { backgroundColor: (connConnectedDevice?.connectionType === 'BLE' && connStatus === 'connected') || bluetoothStatus === 'CONNECTED' ? colors.safe : colors.offline },
               ]}
             />
             <Text style={styles.connText}>
-              Bluetooth: {bluetoothStatus === 'CONNECTED' ? 'Connected' : 'Disconnected'}
+              Bluetooth: {(connConnectedDevice?.connectionType === 'BLE' && connStatus === 'connected') || bluetoothStatus === 'CONNECTED' ? 'Connected' : 'Disconnected'}
             </Text>
           </View>
 
@@ -1003,11 +1065,11 @@ export const DevicesScreen: React.FC = () => {
             <View
               style={[
                 styles.connDot,
-                { backgroundColor: isOnline ? colors.safe : colors.offline },
+                { backgroundColor: connStatus === 'connected' ? colors.safe : connStatus === 'connecting' ? '#F59E0B' : colors.offline },
               ]}
             />
             <Text style={styles.connText}>
-              Device: {isOnline ? 'Online' : 'Offline'}
+              Device: {connStatus === 'connected' ? 'Online' : connStatus === 'connecting' ? 'Connecting...' : 'Offline'}
             </Text>
           </View>
         </View>

@@ -7,10 +7,12 @@ import {
   TouchableOpacity,
   Modal,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '../store/useAppStore';
 import { useDeviceStore } from '../store/useDeviceStore';
+import { useConnectionStore } from '../store/useConnectionStore';
 import { DeviceConnectionService } from '../services/deviceConnectionService';
 import { colors, typography, spacing, borderRadius, TOUCH_TARGET } from '../utils/theme';
 import { APP_VERSION_STRING } from '../utils/version';
@@ -63,19 +65,38 @@ export const DashboardScreen: React.FC = () => {
   const activeDevice = getActiveDevice();
   const isSharedViewer = Boolean(activeDevice?.userRole === 'SHARED_VIEWER' || activeDevice?.isShared);
 
+  const {
+    status: connStatus,
+    connectedDevice,
+    disconnect: disconnectDevice,
+  } = useConnectionStore();
+
   const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'ROUTINE'>('OVERVIEW');
   const [showDeviceDropdown, setShowDeviceDropdown] = useState<boolean>(false);
   const [showCaregiversModal, setShowCaregiversModal] = useState<boolean>(false);
 
-  // Live Wi-Fi telemetry polling
+  // Live Wi-Fi telemetry polling - ONLY runs when connected device is WIFI and status is 'connected'
+  // Treats BLE as primary: never calls setIsOnline(false) or touches status while BLE is active
   useEffect(() => {
-    if (activeDevice && activeDevice.connectionType === 'WIFI' && activeDevice.ipAddress) {
-      const unsubscribe = DeviceConnectionService.subscribe(activeDevice.ipAddress, {
+    if (
+      connStatus === 'connected' &&
+      connectedDevice?.connectionType === 'WIFI' &&
+      connectedDevice.ipAddress &&
+      connectedDevice.ipAddress !== '0.0.0.0'
+    ) {
+      const targetIp = connectedDevice.ipAddress;
+      const unsubscribe = DeviceConnectionService.subscribe(targetIp, {
         onStatusChange: (status) => {
-          setIsOnline(status === 'CONNECTED');
+          // Guard: Never change status or call setIsOnline if a BLE device is active
+          const currentStore = useConnectionStore.getState();
+          if (currentStore.connectedDevice?.connectionType === 'BLE') {
+            return;
+          }
           if (status === 'CONNECTED') {
             setIsReconnecting(false);
+          } else if (status === 'OFFLINE') {
+            useConnectionStore.getState().setDisconnected('Wi-Fi device offline');
           }
         },
         onTelemetry: (t) => {
@@ -83,7 +104,7 @@ export const DashboardScreen: React.FC = () => {
           if (t.state === 'EMERGENCY' && !activeEmergency) {
             setActiveEmergency({
               id: `emg-wifi-${Date.now()}`,
-              deviceId: t.deviceId || activeDevice?.deviceId || 'ESP32-LIVE',
+              deviceId: t.deviceId || connectedDevice?.id || 'ESP32-LIVE',
               eventType: 'EMERGENCY',
               trigger: 'BUTTON',
               timestamp: new Date().toISOString(),
@@ -97,17 +118,25 @@ export const DashboardScreen: React.FC = () => {
         unsubscribe();
       };
     }
-  }, [activeDevice?.deviceId, activeDevice?.ipAddress]);
+  }, [connStatus, connectedDevice?.id, connectedDevice?.connectionType, connectedDevice?.ipAddress]);
 
   const handleManualReconnect = async () => {
-    if (!activeDevice?.ipAddress) return;
+    const ip = connectedDevice?.ipAddress || activeDevice?.ipAddress;
+    if (!ip) return;
     setIsReconnecting(true);
-    const success = await DeviceConnectionService.reconnect(activeDevice.ipAddress);
+    const success = await DeviceConnectionService.reconnect(ip);
     setIsReconnecting(false);
     if (success) {
-      setIsOnline(true);
+      useConnectionStore.getState().setConnected({
+        id: activeDevice?.deviceId || 'ESP32-LIVE',
+        name: activeDevice?.name || 'Washroom Guardian',
+        connectionType: 'WIFI',
+        ipAddress: ip,
+      });
     }
   };
+
+  const isDeviceConnected = connStatus === 'connected';
 
   let safetyStatus:
     | 'SAFE'
@@ -119,7 +148,7 @@ export const DashboardScreen: React.FC = () => {
     | 'EMERGENCY'
     | 'OFFLINE' = 'SAFE';
 
-  if (!isOnline || telemetry?.state === 'DEVICE_OFFLINE') {
+  if (!isDeviceConnected || telemetry?.state === 'DEVICE_OFFLINE') {
     safetyStatus = 'OFFLINE';
   } else if (
     telemetry?.state === 'ALARM' ||
@@ -143,9 +172,11 @@ export const DashboardScreen: React.FC = () => {
     safetyStatus = 'MONITORING';
   }
 
-  const currentDisplayName = activeDevice?.name || deviceConfig?.deviceName || 'Washroom Guardian';
+  const currentDisplayName =
+    connectedDevice?.name || activeDevice?.name || deviceConfig?.deviceName || 'Washroom Guardian';
   const currentRoom = activeDevice?.room || 'Main Bathroom';
-  const currentDeviceId = activeDevice?.deviceId || deviceConfig?.deviceId || 'WSG-000001';
+  const currentDeviceId =
+    connectedDevice?.id || activeDevice?.deviceId || deviceConfig?.deviceId || 'WSG-000001';
 
   return (
     <View style={[styles.screen, { paddingTop: Math.max(insets.top, 12) }]}>
@@ -180,15 +211,23 @@ export const DashboardScreen: React.FC = () => {
 
         {/* Online / Offline Pill */}
         <Pill
-          tone={isOnline ? 'safe' : 'offline'}
+          tone={isDeviceConnected ? 'safe' : connStatus === 'connecting' ? 'warning' : 'offline'}
           icon={
-            isOnline ? (
+            isDeviceConnected ? (
               <Wifi size={13} color={colors.safeText} />
+            ) : connStatus === 'connecting' ? (
+              <ActivityIndicator size="small" color={colors.warningText} style={{ transform: [{ scale: 0.6 }] }} />
             ) : (
               <WifiOff size={13} color={colors.offlineText} />
             )
           }
-          label={isOnline ? 'Online' : 'Offline'}
+          label={
+            isDeviceConnected
+              ? 'Connected'
+              : connStatus === 'connecting'
+              ? 'Connecting...'
+              : 'Offline'
+          }
           size="md"
         />
       </View>
@@ -259,15 +298,15 @@ export const DashboardScreen: React.FC = () => {
 
             {/* 3 Metric Chips: Battery, Signal, Last seen (Real data, never fake defaults) */}
             <DeviceHealthBar
-              batteryPct={telemetry?.batteryPct}
-              rssi={telemetry?.wifiRSSI}
+              batteryPct={telemetry?.batteryPct ?? connectedDevice?.batteryLevel}
+              rssi={telemetry?.wifiRSSI ?? connectedDevice?.rssi}
               lastSeen={activeDevice?.lastSeen}
-              isOnline={isOnline}
+              isOnline={isDeviceConnected}
               health={deviceHealth}
             />
 
             {/* Offline Friendly Card */}
-            {!isOnline && (
+            {!isDeviceConnected && (
               <Card tone="warning" style={styles.offlineCard}>
                 <View style={styles.offlineHeader}>
                   <View style={styles.offlineTitleWrap}>
@@ -405,6 +444,16 @@ export const DashboardScreen: React.FC = () => {
                 health={deviceHealth}
                 radarActive={telemetry?.presence !== undefined}
               />
+
+              {isDeviceConnected && (
+                <Button
+                  variant="danger"
+                  size="sm"
+                  title="Disconnect Device"
+                  onPress={() => disconnectDevice()}
+                  style={{ marginTop: spacing.md, alignSelf: 'flex-start' }}
+                />
+              )}
             </Collapsible>
 
             {/* Privacy Note */}
