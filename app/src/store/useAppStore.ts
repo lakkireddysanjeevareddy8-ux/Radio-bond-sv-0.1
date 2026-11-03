@@ -255,7 +255,24 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Emergency events
   activeEmergency: null,
-  setActiveEmergency: (activeEmergency) => set({ activeEmergency }),
+  setActiveEmergency: (activeEmergency) => {
+    if (activeEmergency) {
+      const current = get().activeEmergency;
+      if (current && current.status === 'ACTIVE') {
+        if (current.id === activeEmergency.id || current.eventId === activeEmergency.eventId) {
+          console.log(`[event] ignored (already handled / duplicate id): ${activeEmergency.id}`);
+          return;
+        }
+        const currentTs = new Date(current.timestamp).getTime();
+        const eventTs = new Date(activeEmergency.timestamp).getTime();
+        if (current.deviceId === activeEmergency.deviceId && Math.abs(currentTs - eventTs) < 10000) {
+          console.log(`[event] ignored (already handled / active within 10s): ${activeEmergency.id}`);
+          return;
+        }
+      }
+    }
+    set({ activeEmergency });
+  },
   escalationLogs: [],
   setEscalationLogs: (escalationLogs) => set({ escalationLogs }),
 

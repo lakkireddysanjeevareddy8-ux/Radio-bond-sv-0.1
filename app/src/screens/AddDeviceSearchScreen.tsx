@@ -755,6 +755,48 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
           .catch(() => {});
       } catch {}
 
+      // Query real hardware deviceId directly from ESP32 local HTTP REST API
+      try {
+        fetch(`http://${ip}/api/device/info`)
+          .then((res) => res.json())
+          .then((info) => {
+            if (info && info.deviceId && info.deviceId !== 'WSG-000001') {
+              console.log('[Wi-Fi] Learned real hardware device ID from /api/device/info:', info.deviceId);
+              const realId = info.deviceId;
+              useConnectionStore.getState().setConnected({
+                id: realId,
+                name: finalName,
+                connectionType: 'WIFI',
+                ipAddress: ip,
+                model: info.model || 'WSG-01',
+                room: 'Master Washroom',
+                rssi: realRssi,
+              });
+              addOrUpdateDevice({
+                deviceId: realId,
+                name: finalName,
+                model: info.model || 'WSG-01',
+                room: 'Master Washroom',
+                ipAddress: ip,
+                isOnline: true,
+                lastSeen: new Date().toISOString(),
+                firmwareVersion: info.firmware || 'v1.2.0-esp32',
+                sensor: info.sensor || 'LD2410C 24GHz mmWave',
+                connectionType: 'WIFI',
+              });
+              setActiveDeviceId(realId);
+              if (deviceConfig) {
+                setDeviceConfig({
+                  ...deviceConfig,
+                  deviceName: finalName,
+                  deviceId: realId,
+                });
+              }
+            }
+          })
+          .catch(() => {});
+      } catch {}
+
       playSuccessChime();
       setPhase('SUCCESS');
       primeNotificationPermissionIfNeeded();

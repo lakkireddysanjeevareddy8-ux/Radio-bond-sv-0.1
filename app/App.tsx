@@ -6,6 +6,7 @@ import { EmergencyScreen } from './src/screens/EmergencyScreen';
 import { deviceService } from './src/services/DeviceCommunicationService';
 import { useAppStore } from './src/store/useAppStore';
 import { useDeviceStore } from './src/store/useDeviceStore';
+import { useConnectionStore } from './src/store/useConnectionStore';
 import { useContactStore } from './src/store/useContactStore';
 import { EmergencySoundService } from './src/services/EmergencySoundService';
 import { EmergencyPushService } from './src/services/EmergencyPushService';
@@ -105,6 +106,9 @@ export default function App() {
     };
   }, []);
 
+  const connectedDevice = useConnectionStore((s) => s.connectedDevice);
+  const activeDeviceId = useDeviceStore((s) => s.activeDeviceId);
+
   useEffect(() => {
     if (deviceConfig) {
       deviceService.setCallbacks(
@@ -131,14 +135,22 @@ export default function App() {
       if (isSimulatorMode) {
         deviceService.connectToDemoDevice(deviceConfig);
       } else {
-        deviceService.connectToSupabaseDevice(deviceConfig.deviceId);
+        const realTargetId =
+          connectedDevice?.id ||
+          activeDeviceId ||
+          (deviceConfig.deviceId !== 'WSG-000001' ? deviceConfig.deviceId : null);
+
+        if (realTargetId) {
+          console.log(`[Supabase Realtime] Subscribing to real hardware device: ${realTargetId}`);
+          deviceService.connectToSupabaseDevice(realTargetId);
+        }
       }
     }
 
     return () => {
       deviceService.disconnect();
     };
-  }, [deviceConfig?.deviceId, isSimulatorMode]);
+  }, [deviceConfig?.deviceId, connectedDevice?.id, activeDeviceId, isSimulatorMode]);
 
   return (
     <>

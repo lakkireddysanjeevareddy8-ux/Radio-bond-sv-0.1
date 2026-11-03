@@ -357,6 +357,16 @@ class NativeBluetoothServiceClass {
     product: ProductDefinition = PRODUCT_CATALOG[0],
     discoveredDevice?: DiscoveredNativeDevice
   ): Promise<ConnectedNativeSession> {
+    // Request MTU 512 right after connecting and before discovering services/characteristics
+    if (Platform.OS === 'android') {
+      try {
+        await connectedDevice.requestMTU(512);
+        console.log('[NativeBLE] Negotiated MTU 512 for device:', connectedDevice.id);
+      } catch (mtuErr) {
+        console.warn('[NativeBLE] MTU negotiation note:', mtuErr);
+      }
+    }
+
     // 1. Discover all services and characteristics
     const deviceWithServices = await connectedDevice.discoverAllServicesAndCharacteristics();
 
@@ -518,38 +528,27 @@ class NativeBluetoothServiceClass {
           }
         },
         monitor: (listener: (data: Uint8Array) => void) => {
-        console.log('[NativeBLE] Subscribed to characteristic monitor:', char.uuid);
-        const sub = char.monitor((err, c) => {
-          if (err) {
-            console.warn('[NativeBLE] Monitor callback error for ' + char.uuid + ':', err);
-            return;
-          }
-          if (c && c.value != null && c.value !== '') {
-            const rawBytes = base64ToBytes(c.value);
-            let decodedText = '';
-            try {
-              decodedText = new TextDecoder('utf-8').decode(rawBytes);
-            } catch {
-              decodedText = String.fromCharCode.apply(null, Array.from(rawBytes));
+          console.log(`[event] subscribed ${char.uuid}`);
+          const sub = char.monitor((err, c) => {
+            if (err) {
+              console.warn(`[event] monitor callback error for ${char.uuid}:`, err);
+              return;
             }
-            console.log('[BLE RAW NOTIFICATION RECEIVED]');
-            console.log('characteristicUUID:', char.uuid);
-            console.log('byteLength:', rawBytes.length);
-            console.log('rawBytes:', Array.from(rawBytes));
-            console.log('decodedText:', decodedText);
-
-            listener(rawBytes);
-          }
-        });
-        return () => {
-          console.log('[NativeBLE] Unsubscribed from characteristic monitor:', char.uuid);
-          try {
-            sub.remove();
-          } catch (remErr) {
-            console.warn('[NativeBLE] Error removing monitor subscription:', remErr);
-          }
-        };
-      },
+            if (c && c.value != null && c.value !== '') {
+              console.log(`[event] raw received ${c.value}`);
+              const rawBytes = base64ToBytes(c.value);
+              listener(rawBytes);
+            }
+          });
+          return () => {
+            console.log('[NativeBLE] Unsubscribed from characteristic monitor:', char.uuid);
+            try {
+              sub.remove();
+            } catch (remErr) {
+              console.warn('[NativeBLE] Error removing monitor subscription:', remErr);
+            }
+          };
+        },
     };
   };
 

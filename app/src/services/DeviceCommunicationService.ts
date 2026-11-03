@@ -295,6 +295,7 @@ export class DeviceCommunicationService {
       metadata: row.metadata || {},
     };
 
+    console.log(`[event] showing emergency UI: ${eventId}`);
     this.onEmergencyEvent?.(emergency);
 
     // If event is active / detected, start escalation countdown

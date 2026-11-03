@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import { storage } from '../utils/storage';
 import { useAppStore } from './useAppStore';
 import { useDeviceStore, SavedDevice } from './useDeviceStore';
+import { BluetoothService } from '../services/bluetoothService';
+import { deviceService } from '../services/DeviceCommunicationService';
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -60,6 +62,17 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
   setConnected: (device) => {
     console.log(`[conn] connected: "${device.name}" (${device.id}) via ${device.connectionType}`);
+
+    // 0. Single location: Ensure BLE characteristic discovery & monitoring is started, or Wi-Fi Realtime subscribed
+    if (device.connectionType === 'BLE') {
+      BluetoothService.ensureSessionAndMonitoring(device).catch((err) => {
+        console.warn('[conn] ensureSessionAndMonitoring note:', err);
+      });
+    } else if (device.connectionType === 'WIFI') {
+      if (device.id && device.id !== 'WSG-000001') {
+        deviceService.connectToSupabaseDevice(device.id);
+      }
+    }
 
     // 1. Single source of truth updates useAppStore
     useAppStore.getState().setIsOnline(true);
@@ -134,6 +147,9 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
   setDisconnected: (reason = 'Disconnected') => {
     console.log(`[conn] disconnected: ${reason}`);
+
+    // Remove active BLE event monitors
+    BluetoothService.stopDeviceEventMonitoring();
 
     // Update single-writer stores
     useAppStore.getState().setIsOnline(false);

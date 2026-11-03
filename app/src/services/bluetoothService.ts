@@ -1,10 +1,11 @@
 import { Platform, Linking } from 'react-native';
 import { ProductDefinition, PRODUCT_CATALOG } from './productCatalog';
-import { NativeBluetoothService, base64ToBytes } from './nativeBluetoothService';
+import { NativeBluetoothService, base64ToBytes, bytesToBase64 } from './nativeBluetoothService';
 import { EscalationLogEntry, EscalationConfig, EmergencyEvent } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useConnectionStore } from '../store/useConnectionStore';
 import { EmergencyPushService } from './EmergencyPushService';
+import { storage } from '../utils/storage';
 
 export interface DiscoveredBleDevice {
   id: string;
@@ -88,6 +89,10 @@ export class BluetoothService {
   private static activeStatusMonitorCleanup: (() => void) | null = null;
   private static activeMonitoredSessionId: string | null = null;
   private static emergencyListeners: Set<(event: EmergencyEvent) => void> = new Set();
+  private static lastHandledEmergencyMarker: number = 0;
+  private static isInitialBufferBaseline: boolean = true;
+  private static incomingBufferByChar: Map<string, string> = new Map();
+  private static markerInitialized: boolean = false;
 
   /**
    * Returns the currently active connected BLE session, if any.
@@ -638,10 +643,14 @@ export class BluetoothService {
       },
       monitor: (listener: (data: Uint8Array) => void) => {
         if (c.addEventListener) {
+          console.log(`[event] subscribed ${c.uuid}`);
           const handler = (evt: any) => {
             const dv = evt.target?.value;
             if (dv) {
-              listener(new Uint8Array(dv.buffer));
+              const bytes = new Uint8Array(dv.buffer);
+              const b64 = bytesToBase64(bytes);
+              console.log(`[event] raw received ${b64}`);
+              listener(bytes);
             }
           };
           c.startNotifications().then(() => {
@@ -1034,6 +1043,17 @@ export class BluetoothService {
     return str;
   }
 
+  private static async ensureMarkerLoaded(): Promise<void> {
+    if (this.markerInitialized) return;
+    this.markerInitialized = true;
+    try {
+      const saved = await storage.getItem('wsg_last_handled_emergency_marker');
+      if (saved) {
+        this.lastHandledEmergencyMarker = Number(saved) || 0;
+      }
+    } catch {}
+  }
+
   /**
    * Processes incoming BLE notifications from Event Characteristic or Status Characteristic.
    */
@@ -1045,54 +1065,132 @@ export class BluetoothService {
     const rawStr = this.decodeBleNotificationData(data);
     if (!rawStr) return;
 
-    if (source === 'event') {
-      console.log('[WSG NOTIFICATION]\nSOURCE = EVENT');
-      console.log(`[WSG BLE EVENT] Raw notification:\n${rawStr}`);
-    } else {
-      console.log('[WSG NOTIFICATION]\nSOURCE = STATUS');
-      console.log(`[WSG BLE STATUS] Raw notification:\n${rawStr}`);
+    const charKey = `${session.device.id}_${source}`;
+    let candidate = rawStr;
+    const existingChunk = this.incomingBufferByChar.get(charKey);
+    if (existingChunk) {
+      candidate = existingChunk + rawStr;
     }
 
     let parsed: any = null;
     try {
-      parsed = JSON.parse(rawStr);
-      if (source === 'event') {
-        console.log('[WSG BLE EVENT] Parsed:\n', parsed);
+      parsed = JSON.parse(candidate);
+      // Valid JSON received, clear the chunk buffer
+      this.incomingBufferByChar.delete(charKey);
+    } catch (parseErr: any) {
+      // If it looks like a partial fragment of a JSON object/array, buffer it for next chunk
+      if ((candidate.startsWith('{') || candidate.startsWith('[')) && candidate.length < 4096) {
+        this.incomingBufferByChar.set(charKey, candidate);
       } else {
-        console.log('[WSG BLE STATUS] Parsed:\n', parsed);
+        this.incomingBufferByChar.delete(charKey);
       }
-    } catch (parseErr) {
-      if (source === 'event') {
-        console.warn('[WSG BLE EVENT] JSON parsing failed:', parseErr);
-      }
+      console.log(`[event] parse error ${parseErr?.message || parseErr} | raw: ${candidate}`);
       return;
     }
 
-    const eventName = parsed?.event || parsed?.status || parsed?.type || '';
-    if (source === 'event') {
-      console.log(`[WSG BLE EVENT] Event:\n${eventName}`);
+    console.log(`[event] parsed ${JSON.stringify(parsed)}`);
+
+    // Update real hardware ID if present in status / heartbeat
+    const reportedDevId = parsed?.device_id || parsed?.deviceId;
+    if (reportedDevId && reportedDevId !== 'WSG-000001') {
+      const currentConfig = useAppStore.getState().deviceConfig;
+      if (currentConfig && currentConfig.deviceId !== reportedDevId) {
+        console.log(`[device] learned real hardware ID from BLE notification: ${reportedDevId}`);
+        useAppStore.getState().setDeviceConfig({
+          ...currentConfig,
+          deviceId: reportedDevId,
+        });
+        const conn = useConnectionStore.getState().connectedDevice;
+        if (conn && conn.id !== reportedDevId) {
+          useConnectionStore.setState({
+            connectedDevice: { ...conn, id: reportedDevId },
+          });
+        }
+      }
     }
 
-    // If it's a circular buffer array of escalation history logs, update escalation logs in app store
+    // A. Array handling: Circular buffer escalation history
     if (Array.isArray(parsed)) {
-      if (source === 'event') {
-        console.log(`[WSG BLE EVENT] Received escalation history log (${parsed.length} entries)`);
-      }
       const mapped = parsed.map((item: any, idx: number) => ({
-        id: item.id || `log-${idx}-${item.timestamp || Date.now()}`,
-        timestamp: item.timestamp ? new Date(item.timestamp).toISOString() : new Date().toISOString(),
+        id: item.id || `log-${idx}-${item.timestamp || item.timestampMs || Date.now()}`,
+        timestamp: (item.timestamp || item.timestampMs) ? new Date(item.timestamp || item.timestampMs).toISOString() : new Date().toISOString(),
         fromState: item.from || item.fromState || 'IDLE',
         toState: item.to || item.toState || 'IDLE',
         trigger: item.trigger || 'UNKNOWN',
-        stillnessSeconds: Number(item.stillness_seconds || item.stillnessSeconds || 0),
+        stillnessSeconds: Number(item.stillness_seconds || item.stillnessSec || item.stillnessSeconds || 0),
       }));
       useAppStore.getState().setEscalationLogs(mapped);
+
+      // Baseline check on initial connection: ignore existing historical buffer
+      if (this.isInitialBufferBaseline) {
+        const maxTs = Math.max(0, ...parsed.map((item: any) => Number(item.timestamp || item.timestampMs || 0)));
+        this.lastHandledEmergencyMarker = Math.max(this.lastHandledEmergencyMarker, maxTs);
+        storage.setItem('wsg_last_handled_emergency_marker', String(this.lastHandledEmergencyMarker)).catch(() => {});
+        console.log(`[event] ignored (already handled / initial history) - baseline established with ${parsed.length} entries (marker: ${this.lastHandledEmergencyMarker})`);
+        this.isInitialBufferBaseline = false;
+        return;
+      }
+
+      // Check newest entry for new emergency
+      if (parsed.length > 0) {
+        const newest = parsed[parsed.length - 1];
+        const toState = String(newest.to || newest.toState || '').toUpperCase();
+        if (toState === 'ALARM' || toState === 'EMERGENCY') {
+          const itemTs = Number(newest.timestamp || newest.timestampMs || 0);
+          const itemEventId = `emg_${session.device.id}_${itemTs || Date.now()}`;
+
+          if (itemTs > 0 && itemTs <= this.lastHandledEmergencyMarker) {
+            console.log(`[event] ignored (already handled / initial history) - timestamp ${itemTs} <= marker ${this.lastHandledEmergencyMarker}`);
+            return;
+          }
+
+          if (EmergencyPushService.isEventAlreadyProcessed(itemEventId)) {
+            console.log(`[event] ignored (already handled / initial history) - event ID ${itemEventId} already processed`);
+            return;
+          }
+
+          // Mark and persist
+          this.lastHandledEmergencyMarker = Math.max(this.lastHandledEmergencyMarker, itemTs);
+          storage.setItem('wsg_last_handled_emergency_marker', String(this.lastHandledEmergencyMarker)).catch(() => {});
+          EmergencyPushService.markEventProcessed(itemEventId);
+
+          const trigger = String(newest.trigger || 'ALARM');
+          const isTestEmergency = trigger.includes('TEST');
+          const emergencyEvent: EmergencyEvent = {
+            id: itemEventId,
+            eventId: itemEventId,
+            deviceId: session.device.id,
+            deviceName: session.device.name || 'Washroom Safety Guardian',
+            type: 'EMERGENCY',
+            eventType: 'EMERGENCY',
+            trigger: trigger,
+            source: isTestEmergency ? 'test' : 'manual_device_trigger',
+            severity: 'CRITICAL',
+            status: 'ACTIVE',
+            timestamp: itemTs ? new Date(itemTs).toISOString() : new Date().toISOString(),
+            isTestAlert: isTestEmergency,
+            isTest: isTestEmergency,
+            presenceDuration: Number(newest.stillness_seconds || newest.stillnessSec || 20),
+            metadata: {
+              bleReceived: true,
+              sourceCharacteristic: source,
+              ...newest,
+            },
+          };
+
+          console.log(`[event] showing emergency UI: ${itemEventId}`);
+          EmergencyPushService.handleIncomingPush(emergencyEvent);
+          useAppStore.getState().setActiveEmergency(emergencyEvent);
+          this.emergencyListeners.forEach((listener) => {
+            try { listener(emergencyEvent); } catch (e) { console.warn('[event] listener error:', e); }
+          });
+          return;
+        }
+      }
       return;
     }
 
-    // Check for TEST_EMERGENCY from:
-    // A. Event Characteristic: event === "TEST_EMERGENCY"
-    // B. Status Characteristic: status === "TEST_EMERGENCY"
+    // B. Single object handling (TEST_EMERGENCY, Status Characteristic, etc.)
     const isTestEmergency =
       parsed.event === 'TEST_EMERGENCY' ||
       parsed.status === 'TEST_EMERGENCY' ||
@@ -1120,6 +1218,12 @@ export class BluetoothService {
         `emg_${devId}_${parsed.timestamp || Date.now()}`
       );
 
+      if (EmergencyPushService.isEventAlreadyProcessed(eventId)) {
+        console.log(`[event] ignored (already handled / initial history) - event ID ${eventId} already processed`);
+        return;
+      }
+      EmergencyPushService.markEventProcessed(eventId);
+
       const trigger = isTestEmergency ? 'TEST' : (parsed.trigger || (parsed.state === 'EMERGENCY' ? 'VOICE' : 'OTHER'));
       const triggerSource = isTestEmergency ? 'device' : (parsed.source || 'manual_device_trigger');
 
@@ -1145,9 +1249,7 @@ export class BluetoothService {
         },
       };
 
-      console.log(`[WSG BLE EVENT] Dispatching emergency event to app:`, emergencyEvent.eventId, 'isTest:', emergencyEvent.isTestAlert);
-
-      // Trigger app's existing emergency handling system
+      console.log(`[event] showing emergency UI: ${emergencyEvent.eventId}`);
       EmergencyPushService.handleIncomingPush(emergencyEvent);
       useAppStore.getState().setActiveEmergency(emergencyEvent);
 
@@ -1156,7 +1258,7 @@ export class BluetoothService {
         try {
           listener(emergencyEvent);
         } catch (e) {
-          console.warn('[WSG BLE EVENT] Listener error:', e);
+          console.warn('[event] listener error:', e);
         }
       });
     } else if (parsed.test_cancelled || parsed.event === 'TEST_CANCELLED' || (parsed.status === 'OK' && parsed.test_cancelled)) {
@@ -1183,6 +1285,9 @@ export class BluetoothService {
       this.emergencyListeners.add(onEmergency);
     }
 
+    this.isInitialBufferBaseline = true;
+    this.ensureMarkerLoaded().catch(() => {});
+
     const sessionId = targetSession.device.id + '_' + (targetSession.connectedAt ? targetSession.connectedAt.getTime() : '0');
     if (this.activeMonitoredSessionId === sessionId && this.activeEventMonitorCleanup) {
       console.log('[WSG BLE EVENT] Event monitoring already active for session:', sessionId);
@@ -1204,7 +1309,7 @@ export class BluetoothService {
           this.handleIncomingBleNotification(targetSession, data, 'event');
         });
         this.activeEventMonitorCleanup = unsubEvent;
-        console.log('[WSG BLE EVENT] Subscribed to Event Characteristic:', targetSession.eventLogChar.uuid);
+        console.log(`[event] subscribed ${targetSession.eventLogChar.uuid}`);
       } catch (err) {
         console.error('[WSG BLE EVENT] Failed to monitor Event Characteristic:', err);
       }
@@ -1219,7 +1324,7 @@ export class BluetoothService {
           this.handleIncomingBleNotification(targetSession, data, 'status');
         });
         this.activeStatusMonitorCleanup = unsubStatus;
-        console.log('[WSG BLE EVENT] Subscribed to Status Characteristic:', targetSession.statusChar.uuid);
+        console.log(`[event] subscribed ${targetSession.statusChar.uuid}`);
       } catch (err) {
         console.error('[WSG BLE EVENT] Failed to monitor Status Characteristic:', err);
       }
@@ -1228,6 +1333,68 @@ export class BluetoothService {
     return () => {
       if (onEmergency) this.emergencyListeners.delete(onEmergency);
     };
+  }
+
+  /**
+   * Ensures GATT session is discovered and event characteristic monitoring is running.
+   * Can be called safely from any connection flow.
+   */
+  public static async ensureSessionAndMonitoring(
+    deviceInfo: { id: string; name: string; rawDevice?: any; connectionType?: string }
+  ): Promise<ConnectedBleSession | null> {
+    if (deviceInfo.connectionType && deviceInfo.connectionType !== 'BLE') {
+      return null;
+    }
+
+    // 1. If active session already exists for this device, ensure event monitors are running
+    if (this.activeSession && this.activeSession.device.id === deviceInfo.id) {
+      this.startDeviceEventMonitoring(this.activeSession);
+      return this.activeSession;
+    }
+
+    // 2. If raw device exists, build session and discover characteristics
+    if (deviceInfo.rawDevice) {
+      if (Platform.OS === 'android' || Platform.OS === 'ios') {
+        try {
+          const rawDev = deviceInfo.rawDevice;
+          if (Platform.OS === 'android' && typeof rawDev.requestMTU === 'function') {
+            try {
+              await rawDev.requestMTU(512);
+              console.log('[NativeBLE] Negotiated MTU 512 for device:', deviceInfo.id);
+            } catch (e) {}
+          }
+          const nativeSession = await NativeBluetoothService.buildSessionFromConnectedDevice(
+            rawDev,
+            PRODUCT_CATALOG[0]
+          );
+          const session: ConnectedBleSession = {
+            device: {
+              id: deviceInfo.id,
+              name: deviceInfo.name,
+              rssi: -50,
+              rawDevice: rawDev,
+              product: PRODUCT_CATALOG[0],
+              isNative: true,
+            },
+            server: nativeSession.server,
+            service: nativeSession.service,
+            provisionChar: nativeSession.provisionChar,
+            statusChar: nativeSession.statusChar,
+            eventLogChar: nativeSession.eventLogChar,
+            configChar: nativeSession.configChar,
+            connectedAt: nativeSession.connectedAt,
+            isNative: true,
+          };
+          this.activeSession = session;
+          this.startDeviceEventMonitoring(session);
+          return session;
+        } catch (err) {
+          console.warn('[BluetoothService] ensureSessionAndMonitoring native note:', err);
+        }
+      }
+    }
+
+    return null;
   }
 
   /**
