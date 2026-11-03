@@ -41,6 +41,7 @@ import {
 } from 'lucide-react-native';
 import { colors, spacing } from '../utils/theme';
 import { BluetoothService, DiscoveredBleDevice, ConnectedBleSession } from '../services/bluetoothService';
+import { BleScanManager } from '../services/bleScanManager';
 import { DeviceProvisioningService } from '../services/deviceProvisioningService';
 import { useDeviceStore } from '../store/useDeviceStore';
 import { useAppStore } from '../store/useAppStore';
@@ -102,12 +103,27 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
   const [provisionStatusText, setProvisionStatusText] = useState<string>('Sending Wi-Fi configuration...');
   const [assignedIpAddress, setAssignedIpAddress] = useState<string>('');
 
-  const [isScanningActive, setIsScanningActive] = useState<boolean>(false);
+  const [isScanningActive, setIsScanningActive] = useState<boolean>(BleScanManager.getIsScanning());
+  const [cooldownSeconds, setCooldownSeconds] = useState<number>(BleScanManager.getCooldownSeconds());
   const [availableDevices, setAvailableDevices] = useState<DiscoveredBleDevice[]>([]);
   const [fastPairDevice, setFastPairDevice] = useState<DiscoveredBleDevice | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const [connectingDeviceName, setConnectingDeviceName] = useState<string>('');
+
+  // Subscribe to BleScanManager singleton state
+  useEffect(() => {
+    const unsubScanning = BleScanManager.subscribeScanning((scanning) => {
+      setIsScanningActive(scanning);
+    });
+    const unsubCooldown = BleScanManager.subscribeCooldown((secs) => {
+      setCooldownSeconds(secs);
+    });
+    return () => {
+      unsubScanning();
+      unsubCooldown();
+    };
+  }, []);
 
   // Permission Priming State
   const [primerModalVisible, setPrimerModalVisible] = useState(false);
@@ -276,67 +292,101 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     outputRange: ['0deg', '360deg'],
   });
 
-  // Real BLE Scanner invocation
-  const startRealBleScan = (mountedCheck: () => boolean) => {
-    setIsScanningActive(true);
-    setPhase('SCANNING');
-    setErrorMessage('');
-
-    if (Platform.OS !== 'web') {
-      BluetoothService.startDeviceScan(
-        (discovered) => {
-          if (!mountedCheck()) return;
-
-          // Strictly filter out any Windows audio, microphone, or speaker devices
-          const lowerName = (discovered.name || '').toLowerCase();
-          if (
-            lowerName.includes('microphone') ||
-            lowerName.includes('audio') ||
-            lowerName.includes('speaker') ||
-            lowerName.includes('headset') ||
-            lowerName.includes('hands-free') ||
-            lowerName.includes('realtek')
-          ) {
-            return;
-          }
-
-          setAvailableDevices((prev) => {
-            const idx = prev.findIndex((d) => d.id === discovered.id);
-            if (idx >= 0) {
-              const updated = [...prev];
-              updated[idx] = discovered;
-              return updated;
-            }
-            return [...prev, discovered];
-          });
-
-          // Fast pair candidate if matches WSG-01
-          if (
-            lowerName.includes('wsg') ||
-            lowerName.includes('washroom') ||
-            lowerName.includes('safeguard')
-          ) {
-            setFastPairDevice(discovered);
-            setPhase('DEVICE_FOUND');
-          }
-        },
-        (scanErr) => {
-          console.warn('[AddDeviceSearch] Scan error:', scanErr);
-          setIsScanningActive(false);
-          const msg = String(scanErr.message || '').toLowerCase();
-          if (
-            msg.includes('bluetooth_disabled') ||
-            msg.includes('disabled') ||
-            msg.includes('poweredoff')
-          ) {
-            handleBluetoothOff();
-          } else if (mountedCheck()) {
-            setErrorMessage(scanErr.message);
-          }
-        },
-        { targetNamePrefix: 'WSG-01', timeoutMs: 25000 }
-      );
+  // Managed BLE Scanner invocation via BleScanManager (single source of truth)
+  const startManagedScan = async (triggerSource: string = 'manual') => {
+    if (cooldownSeconds > 0) {
+      setErrorMessage(`Please wait ${cooldownSeconds}s before scanning again.`);
+      return;
     }
+    if (BleScanManager.getIsScanning()) {
+      return;
+    }
+
+    setErrorMessage('');
+    setPhase('SCANNING');
+    if (triggerSource !== 'mount' && triggerSource !== 'resume') {
+      setAvailableDevices([]);
+      setFastPairDevice(null);
+    }
+
+    await BleScanManager.startScan({
+      triggerSource,
+      targetNamePrefix: 'WSG-01',
+      onDeviceFound: (discovered) => {
+        if (!isMountedRef.current) return;
+
+        // Strictly filter out any Windows audio, microphone, or speaker devices
+        const lowerName = (discovered.name || '').toLowerCase();
+        if (
+          lowerName.includes('microphone') ||
+          lowerName.includes('audio') ||
+          lowerName.includes('speaker') ||
+          lowerName.includes('headset') ||
+          lowerName.includes('hands-free') ||
+          lowerName.includes('realtek')
+        ) {
+          return;
+        }
+
+        setAvailableDevices((prev) => {
+          const idx = prev.findIndex((d) => d.id === discovered.id);
+          if (idx >= 0) {
+            const updated = [...prev];
+            updated[idx] = discovered;
+            return updated;
+          }
+          return [...prev, discovered];
+        });
+
+        // Fast pair candidate if matches WSG-01
+        if (
+          lowerName.includes('wsg') ||
+          lowerName.includes('washroom') ||
+          lowerName.includes('safeguard')
+        ) {
+          setFastPairDevice(discovered);
+          setPhase('DEVICE_FOUND');
+        }
+      },
+      onError: (scanErr) => {
+        if (!isMountedRef.current) return;
+        const msg = String(scanErr.message || '').toLowerCase();
+        if (
+          msg.includes('bluetooth_disabled') ||
+          msg.includes('disabled') ||
+          msg.includes('poweredoff')
+        ) {
+          handleBluetoothOff();
+        } else if (scanErr.message.startsWith('THROTTLED:')) {
+          const secs = scanErr.message.split(':')[1] || '30';
+          setErrorMessage(`Please wait ${secs}s before scanning again.`);
+        } else if (scanErr.message === 'SCAN_LIMIT_REACHED') {
+          setErrorMessage('Scan limit reached. Please wait 30 seconds before trying again.');
+        } else if (scanErr.message === 'PERMISSION_DENIED') {
+          setPhase('BLUETOOTH_PERMISSION');
+          setErrorMessage('Bluetooth permissions are required to scan for WSG-01 devices.');
+        } else if (
+          msg === 'user_cancelled' ||
+          msg === 'no_device_chosen' ||
+          (scanErr as any).name === 'NotFoundError'
+        ) {
+          setPhase('BLUETOOTH_STANDBY');
+        } else {
+          setErrorMessage(scanErr.message || 'Scanning encountered an issue.');
+          setPhase('BLUETOOTH_STANDBY');
+        }
+      },
+      onTimeout: () => {
+        if (!isMountedRef.current) return;
+        setAvailableDevices((current) => {
+          if (current.length === 0) {
+            setErrorMessage('No device found. Make sure it is in pairing mode.');
+            setPhase('BLUETOOTH_STANDBY');
+          }
+          return current;
+        });
+      },
+    });
   };
 
   const handleBluetoothOff = () => {
@@ -344,7 +394,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     lastFiredStateRef.current = 'off';
     setIsScanningActive(false);
     setPhase('BLUETOOTH_OFF');
-    BluetoothService.stopScan();
+    BleScanManager.stopScan('bluetooth off');
     onBluetoothOff();
   };
 
@@ -407,7 +457,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
 
     // 6. If state === "on":
     //    request permissions if necessary.
-    //    only after permission succeeds: start REAL BLE scanning.
+    //    only after permission succeeds: start REAL BLE scanning via BleScanManager.
     if (effectiveState === 'on') {
       lastFiredStateRef.current = 'on';
       const granted = await ensureBluetoothPermission();
@@ -418,7 +468,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
         return;
       }
 
-      startRealBleScan(() => isMountedRef.current);
+      startManagedScan('mount');
     }
   };
 
@@ -429,9 +479,11 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     }
     isMountedRef.current = true;
 
-    // Listen for AppState changes: if user disables Bluetooth while app is backgrounded, detect it on resume
+    // Listen for AppState changes: stop scan when backgrounded, detect changes on resume
     const appStateSub = AppState.addEventListener('change', async (nextState: AppStateStatus) => {
-      if (nextState === 'active') {
+      if (nextState !== 'active') {
+        BleScanManager.stopScan('background');
+      } else {
         const effectiveState = await BluetoothService.getEffectiveBluetoothState();
         if (effectiveState === 'off') {
           handleBluetoothOff();
@@ -460,12 +512,21 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
       lastFiredStateRef.current = null;
       appStateSub.remove();
       btStateSub();
-      BluetoothService.stopScan();
+      BleScanManager.stopScan('unmount');
     };
   }, [user]);
 
+  // Back button handler ensuring scan is stopped
+  const handleBackPress = async () => {
+    await BleScanManager.stopScan('back');
+    onBack();
+  };
+
   // Manual "Scan for Nearby Devices" button preflight check
-  const handleStartScan = async () => {
+  const handleStartScan = async (triggerSource: string = 'button') => {
+    if (cooldownSeconds > 0 || isScanningActive) {
+      return;
+    }
     setErrorMessage('');
 
     // 1. Check effective Bluetooth state
@@ -496,12 +557,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
       return;
     }
 
-    // 5. If ON (or Web user gesture): start REAL scan
-    setIsScanningActive(true);
-    setPhase('SCANNING');
-    setAvailableDevices([]);
-    setFastPairDevice(null);
-
+    // 5. If ON: ensure permissions and trigger scan via BleScanManager
     if (Platform.OS !== 'web') {
       const granted = await ensureBluetoothPermission();
       if (!granted) {
@@ -509,49 +565,9 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
         setPhase('BLUETOOTH_PERMISSION');
         return;
       }
-      startRealBleScan(() => true);
-    } else {
-      // Trigger Web Bluetooth browser/device chooser via user gesture
-      // NEVER call getSystemBluetoothDevices() which returns microphones/speakers!
-      try {
-        const found = await BluetoothService.scanNearbyDevices();
-        if (found) {
-          const lowerName = (found.name || '').toLowerCase();
-          if (
-            !lowerName.includes('microphone') &&
-            !lowerName.includes('audio') &&
-            !lowerName.includes('speaker') &&
-            !lowerName.includes('realtek')
-          ) {
-            setAvailableDevices([found]);
-            setFastPairDevice(found);
-            setPhase('DEVICE_FOUND');
-          }
-        } else {
-          setIsScanningActive(false);
-          setPhase('BLUETOOTH_STANDBY');
-        }
-      } catch (err: any) {
-        setIsScanningActive(false);
-        const msg = String(err.message || '').toLowerCase();
-        if (
-          msg.includes('disabled') ||
-          msg.includes('bluetooth_disabled') ||
-          msg.includes('poweredoff')
-        ) {
-          handleBluetoothOff();
-        } else if (
-          msg === 'user_cancelled' ||
-          msg === 'no_device_chosen' ||
-          err.name === 'NotFoundError'
-        ) {
-          setPhase('BLUETOOTH_STANDBY');
-        } else {
-          setErrorMessage(err.message || 'Scanning encountered an issue.');
-          setPhase('BLUETOOTH_STANDBY');
-        }
-      }
     }
+
+    await startManagedScan(triggerSource);
   };
 
   const getSearchTitle = () => {
@@ -592,6 +608,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
 
   // Step 1: Connect BLE GATT -> on success, transition to WIFI_SETUP
   const handleConnectDevice = async (device: DiscoveredBleDevice) => {
+    await BleScanManager.stopScan('connecting');
     setIsConnecting(true);
     setConnectingDeviceName(device.name);
     setErrorMessage('');
@@ -886,11 +903,16 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
 
       {/* Top Header Bar */}
       <View style={[styles.headerBar, { maxWidth: isTablet ? 640 : '100%', alignSelf: 'center', width: '100%' }]}>
-        <TouchableOpacity style={styles.backButton} onPress={onBack} activeOpacity={0.7}>
+        <TouchableOpacity style={styles.backButton} onPress={handleBackPress} activeOpacity={0.7}>
           <ArrowLeft size={24} color="#0F172A" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Add new device</Text>
-        <TouchableOpacity onPress={handleStartScan} style={styles.scanHeaderAction} activeOpacity={0.7}>
+        <TouchableOpacity
+          onPress={() => handleStartScan('refresh')}
+          style={[styles.scanHeaderAction, (isScanningActive || cooldownSeconds > 0) && { opacity: 0.4 }]}
+          disabled={isScanningActive || cooldownSeconds > 0}
+          activeOpacity={0.7}
+        >
           <RefreshCw size={18} color="#0F172A" />
         </TouchableOpacity>
       </View>
@@ -1210,7 +1232,8 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
                   marginBottom: isCompactMobile ? 24 : 36,
                 },
               ]}
-              onPress={handleStartScan}
+              onPress={() => handleStartScan('radar')}
+              disabled={isScanningActive || cooldownSeconds > 0}
               activeOpacity={0.9}
             >
               {/* Rotating radar sweep: Only visible when isScanningActive is true */}
@@ -1287,20 +1310,39 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
             {/* Quick 1-Tap Search Button */}
             {phase !== 'CHECKING_BLUETOOTH' && (
               <TouchableOpacity
-                style={styles.tapToScanBtn}
-                onPress={handleStartScan}
+                style={[
+                  styles.tapToScanBtn,
+                  (isScanningActive || cooldownSeconds > 0) && { opacity: 0.7, backgroundColor: '#475569' },
+                ]}
+                onPress={() => handleStartScan('button')}
+                disabled={isScanningActive || cooldownSeconds > 0}
                 activeOpacity={0.85}
               >
-                <RefreshCw size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
+                {isScanningActive ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} />
+                ) : (
+                  <RefreshCw size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
+                )}
                 <Text style={styles.tapToScanText}>
-                  {phase === 'BLUETOOTH_PERMISSION'
+                  {isScanningActive
+                    ? 'Scanning...'
+                    : cooldownSeconds > 0
+                    ? `Please wait ${cooldownSeconds}s`
+                    : phase === 'BLUETOOTH_PERMISSION'
                     ? 'Grant Bluetooth Permission'
                     : 'Scan for Nearby Devices'}
                 </Text>
               </TouchableOpacity>
             )}
 
-            {errorMessage ? (
+            {cooldownSeconds > 0 ? (
+              <View style={styles.warningBox}>
+                <AlertTriangle size={16} color="#DC2626" style={{ marginRight: 6 }} />
+                <Text style={styles.warningText}>
+                  Please wait {cooldownSeconds}s before scanning again
+                </Text>
+              </View>
+            ) : errorMessage ? (
               <View style={styles.warningBox}>
                 <AlertTriangle size={16} color="#DC2626" style={{ marginRight: 6 }} />
                 <Text style={styles.warningText}>{errorMessage}</Text>
@@ -1349,11 +1391,13 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
               {availableDevices.length === 0 ? (
                 <View style={{ paddingVertical: 18, alignItems: 'center' }}>
                   <Text style={{ fontSize: 13, color: '#94A3B8' }}>
-                    {phase === 'SCANNING'
+                    {isScanningActive
                       ? 'Listening for nearby WSG-01 BLE broadcasts...'
                       : phase === 'CHECKING_BLUETOOTH'
                       ? 'Checking Bluetooth...'
-                      : 'No devices found. Tap "Scan for Nearby Devices" above.'}
+                      : cooldownSeconds > 0
+                      ? `Scan cooling down (${cooldownSeconds}s remaining)`
+                      : 'No device found. Make sure it is in pairing mode.'}
                   </Text>
                 </View>
               ) : (
