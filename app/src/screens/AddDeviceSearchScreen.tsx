@@ -41,6 +41,8 @@ import {
 } from 'lucide-react-native';
 import { colors, spacing } from '../utils/theme';
 import { BluetoothService, DiscoveredBleDevice, ConnectedBleSession } from '../services/bluetoothService';
+import { NativeBluetoothService } from '../services/nativeBluetoothService';
+import { PRODUCT_CATALOG } from '../services/productCatalog';
 import { BleScanManager } from '../services/bleScanManager';
 import { DeviceProvisioningService } from '../services/deviceProvisioningService';
 import { useDeviceStore } from '../store/useDeviceStore';
@@ -88,6 +90,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     | 'BLUETOOTH_PERMISSION'
     | 'BLUETOOTH_UNSUPPORTED'
     | 'BLUETOOTH_STANDBY'
+    | 'ALREADY_CONNECTED'
     | 'SCANNING'
     | 'DEVICE_FOUND'
     | 'WIFI_SETUP'
@@ -95,6 +98,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     | 'WIFI_FAILED'
     | 'SUCCESS';
   const [phase, setPhase] = useState<SetupPhase>('CHECKING_BLUETOOTH');
+  const [alreadyConnectedDevice, setAlreadyConnectedDevice] = useState<{ id: string; name: string } | null>(null);
   const [connectedSession, setConnectedSession] = useState<ConnectedBleSession | null>(null);
   const [targetDevice, setTargetDevice] = useState<DiscoveredBleDevice | null>(null);
   const [wifiSsid, setWifiSsid] = useState<string>('Home_2.4G');
@@ -294,6 +298,10 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
 
   // Managed BLE Scanner invocation via BleScanManager (single source of truth)
   const startManagedScan = async (triggerSource: string = 'manual') => {
+    if (phase === 'ALREADY_CONNECTED' || alreadyConnectedDevice) {
+      console.log('[AddDeviceSearchScreen] Scan prevented: 1 device already connected');
+      return;
+    }
     if (cooldownSeconds > 0) {
       setErrorMessage(`Please wait ${cooldownSeconds}s before scanning again.`);
       return;
@@ -455,7 +463,38 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
       return;
     }
 
-    // 6. If state === "on":
+    // 6. Check if a device is ALREADY connected before starting scan:
+    const connectionStore = useConnectionStore.getState();
+    const connDev = connectionStore.connectedDevice;
+    const isConnStatus = connectionStore.status === 'connected';
+
+    if (isConnStatus && connDev) {
+      console.log('[AddDeviceSearchScreen] Device already connected in store:', connDev.name, connDev.id);
+      setAlreadyConnectedDevice({ id: connDev.id, name: connDev.name });
+      setPhase('ALREADY_CONNECTED');
+      setIsScanningActive(false);
+      return;
+    }
+
+    if (Platform.OS === 'android' || Platform.OS === 'ios') {
+      try {
+        const defaultProduct = PRODUCT_CATALOG.find((p) => p.id === 'wsg-01') || PRODUCT_CATALOG[0];
+        const connectedNativeList = await NativeBluetoothService.connectedDevices([defaultProduct.bleServiceUuid]);
+        if (connectedNativeList && connectedNativeList.length > 0) {
+          const firstDev = connectedNativeList[0];
+          const devName = firstDev.name || firstDev.localName || 'WSG-01 Safety Gadget';
+          console.log('[AddDeviceSearchScreen] Native BLE device already connected:', devName, firstDev.id);
+          setAlreadyConnectedDevice({ id: firstDev.id, name: devName });
+          setPhase('ALREADY_CONNECTED');
+          setIsScanningActive(false);
+          return;
+        }
+      } catch (checkErr) {
+        console.warn('[AddDeviceSearchScreen] Native connected check error:', checkErr);
+      }
+    }
+
+    // 7. If state === "on":
     //    request permissions if necessary.
     //    only after permission succeeds: start REAL BLE scanning via BleScanManager.
     if (effectiveState === 'on') {
@@ -557,7 +596,13 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
       return;
     }
 
-    // 5. If ON: ensure permissions and trigger scan via BleScanManager
+    // 5. If a device is already connected, do not scan
+    if (phase === 'ALREADY_CONNECTED' || alreadyConnectedDevice) {
+      console.log('[AddDeviceSearchScreen] Scan prevented: 1 device already connected');
+      return;
+    }
+
+    // 6. If ON: ensure permissions and trigger scan via BleScanManager
     if (Platform.OS !== 'web') {
       const granted = await ensureBluetoothPermission();
       if (!granted) {
@@ -572,6 +617,8 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
 
   const getSearchTitle = () => {
     switch (phase) {
+      case 'ALREADY_CONNECTED':
+        return '1 device already connected';
       case 'CHECKING_BLUETOOTH':
         return 'Checking Bluetooth...';
       case 'BLUETOOTH_PERMISSION':
@@ -590,6 +637,8 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
 
   const getSearchSubtitle = () => {
     switch (phase) {
+      case 'ALREADY_CONNECTED':
+        return `"${alreadyConnectedDevice?.name || 'WSG-01'}" is currently connected and active.`;
       case 'CHECKING_BLUETOOTH':
         return 'Verifying Bluetooth adapter status...';
       case 'BLUETOOTH_PERMISSION':
@@ -951,8 +1000,8 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
         <Text style={styles.headerTitle}>Add new device</Text>
         <TouchableOpacity
           onPress={() => handleStartScan('refresh')}
-          style={[styles.scanHeaderAction, (isScanningActive || cooldownSeconds > 0) && { opacity: 0.4 }]}
-          disabled={isScanningActive || cooldownSeconds > 0}
+          style={[styles.scanHeaderAction, (isScanningActive || cooldownSeconds > 0 || phase === 'ALREADY_CONNECTED') && { opacity: 0.4 }]}
+          disabled={isScanningActive || cooldownSeconds > 0 || phase === 'ALREADY_CONNECTED'}
           activeOpacity={0.7}
         >
           <RefreshCw size={18} color="#0F172A" />
@@ -1336,6 +1385,8 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
               >
                 {phase === 'CHECKING_BLUETOOTH' ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : phase === 'ALREADY_CONNECTED' ? (
+                  <ShieldCheck size={isCompactMobile ? 32 : 36} color="#10B981" />
                 ) : (
                   <Search size={isCompactMobile ? 32 : 36} color="#FFFFFF" strokeWidth={2.4} />
                 )}
@@ -1349,32 +1400,88 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
               {getSearchSubtitle()}
             </Text>
 
-            {/* Quick 1-Tap Search Button */}
-            {phase !== 'CHECKING_BLUETOOTH' && (
-              <TouchableOpacity
-                style={[
-                  styles.tapToScanBtn,
-                  (isScanningActive || cooldownSeconds > 0) && { opacity: 0.7, backgroundColor: '#475569' },
-                ]}
-                onPress={() => handleStartScan('button')}
-                disabled={isScanningActive || cooldownSeconds > 0}
-                activeOpacity={0.85}
-              >
-                {isScanningActive ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} />
-                ) : (
-                  <RefreshCw size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
-                )}
-                <Text style={styles.tapToScanText}>
-                  {isScanningActive
-                    ? 'Scanning...'
-                    : cooldownSeconds > 0
-                    ? `Please wait ${cooldownSeconds}s`
-                    : phase === 'BLUETOOTH_PERMISSION'
-                    ? 'Grant Bluetooth Permission'
-                    : 'Scan for Nearby Devices'}
-                </Text>
-              </TouchableOpacity>
+            {phase === 'ALREADY_CONNECTED' ? (
+              <View style={[styles.wifiCard, { width: '100%', marginTop: 8 }]}>
+                <View style={styles.wifiCardHeader}>
+                  <View style={[styles.wifiIconWrap, { backgroundColor: '#ECFDF5' }]}>
+                    <ShieldCheck size={28} color="#059669" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.wifiCardTitle, { color: '#0F172A' }]}>
+                      {alreadyConnectedDevice?.name || 'WSG-01 Safety Gadget'}
+                    </Text>
+                    <Text style={styles.wifiCardSubtitle}>
+                      Device ID: {alreadyConnectedDevice?.id || 'Connected'}
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={[styles.statusPillsContainer, { marginVertical: 14 }]}>
+                  <View style={styles.statusPillItem}>
+                    <View style={[styles.statusPillDot, { backgroundColor: '#10B981' }]} />
+                    <Text style={styles.statusPillLabel}>Bluetooth: Connected</Text>
+                  </View>
+                  <View style={styles.statusPillItem}>
+                    <View style={[styles.statusPillDot, { backgroundColor: '#10B981' }]} />
+                    <Text style={styles.statusPillLabel}>Status: Active Monitoring</Text>
+                  </View>
+                </View>
+
+                {/* Primary Action: View Device in Dashboard */}
+                <TouchableOpacity
+                  style={[styles.connectWifiBtn, { backgroundColor: '#0F172A' }]}
+                  onPress={() => {
+                    const finalName = alreadyConnectedDevice?.name || 'WSG-01 Safety Gadget';
+                    const finalId = alreadyConnectedDevice?.id || 'wsg-01';
+                    onDeviceConnected(finalName, finalId);
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Check size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
+                  <Text style={styles.connectWifiBtnText}>View Device in Dashboard</Text>
+                </TouchableOpacity>
+
+                {/* Secondary Action: Disconnect Device to scan another */}
+                <TouchableOpacity
+                  style={[styles.skipWifiBtn, { marginTop: 10, borderColor: '#CBD5E1', borderWidth: 1 }]}
+                  onPress={async () => {
+                    await useConnectionStore.getState().disconnect();
+                    setAlreadyConnectedDevice(null);
+                    setPhase('BLUETOOTH_STANDBY');
+                  }}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.skipWifiBtnText, { color: '#DC2626' }]}>Disconnect Device</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              /* Quick 1-Tap Search Button */
+              phase !== 'CHECKING_BLUETOOTH' && (
+                <TouchableOpacity
+                  style={[
+                    styles.tapToScanBtn,
+                    (isScanningActive || cooldownSeconds > 0) && { opacity: 0.7, backgroundColor: '#475569' },
+                  ]}
+                  onPress={() => handleStartScan('button')}
+                  disabled={isScanningActive || cooldownSeconds > 0}
+                  activeOpacity={0.85}
+                >
+                  {isScanningActive ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} />
+                  ) : (
+                    <RefreshCw size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
+                  )}
+                  <Text style={styles.tapToScanText}>
+                    {isScanningActive
+                      ? 'Scanning...'
+                      : cooldownSeconds > 0
+                      ? `Please wait ${cooldownSeconds}s`
+                      : phase === 'BLUETOOTH_PERMISSION'
+                      ? 'Grant Bluetooth Permission'
+                      : 'Scan for Nearby Devices'}
+                  </Text>
+                </TouchableOpacity>
+              )
             )}
 
             {cooldownSeconds > 0 ? (

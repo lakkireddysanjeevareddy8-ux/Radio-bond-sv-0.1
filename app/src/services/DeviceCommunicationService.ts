@@ -158,6 +158,12 @@ export class DeviceCommunicationService {
       )
       .subscribe((status) => {
         if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+          try {
+            const { useConnectionStore } = require('../store/useConnectionStore');
+            if (useConnectionStore.getState().connectedDevice?.connectionType === 'BLE') {
+              return;
+            }
+          } catch {}
           this.setStatus('DISCONNECTED');
         }
       });
@@ -166,10 +172,19 @@ export class DeviceCommunicationService {
   private startHeartbeatWatchdog() {
     this.stopHeartbeatWatchdog();
     this.heartbeatTimer = setInterval(() => {
-      // 1. Telemetry staleness
+      // If BLE connection is active, NEVER flip status to DISCONNECTED based on Supabase telemetry timeout
+      try {
+        const { useConnectionStore } = require('../store/useConnectionStore');
+        const conn = useConnectionStore.getState();
+        if (conn.status === 'connected' && conn.connectedDevice?.connectionType === 'BLE') {
+          return;
+        }
+      } catch {}
+
+      // 1. Telemetry staleness for Wi-Fi/Supabase mode
       if (this.lastTelemetryTime > 0 && Date.now() - this.lastTelemetryTime > DeviceCommunicationService.STALE_HEARTBEAT_MS) {
         if (this.status === 'CONNECTED') {
-          this.setStatus('DISCONNECTED');
+          console.warn('[DeviceCommunicationService] Supabase telemetry heartbeat delayed');
         }
       }
 
@@ -177,6 +192,14 @@ export class DeviceCommunicationService {
       const timeoutMs = 2 * this.expectedHeartbeatIntervalMs;
       if (this.lastHealthHeartbeatTime > 0 && Date.now() - this.lastHealthHeartbeatTime > timeoutMs) {
         if (!this.offlineNotificationDispatched) {
+          try {
+            const { useConnectionStore } = require('../store/useConnectionStore');
+            const conn = useConnectionStore.getState();
+            if (conn.status === 'connected') {
+              return;
+            }
+          } catch {}
+
           this.offlineNotificationDispatched = true;
           useAppStore.getState().setIsOnline(false);
           const minutesOffline = Math.round((Date.now() - this.lastHealthHeartbeatTime) / 60000);

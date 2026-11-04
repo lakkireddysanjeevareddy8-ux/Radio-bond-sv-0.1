@@ -34,6 +34,7 @@ interface ConnectionState {
   setError: (error: string) => void;
   connect: (device: ConnectedDeviceInfo) => Promise<void>;
   disconnect: () => Promise<void>;
+  reconnect: (preferredId?: string) => Promise<void>;
   initConnectionStore: () => Promise<void>;
 }
 
@@ -146,7 +147,15 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   },
 
   setDisconnected: (reason = 'Disconnected') => {
-    console.log(`[conn] disconnected: ${reason}`);
+    const currentDevice = get().connectedDevice;
+    console.log(`[conn] disconnected: ${reason} (Device: ${currentDevice?.name || 'none'} ID: ${currentDevice?.id || 'none'})`);
+    console.log('[conn drop diagnostic]', {
+      timestamp: new Date().toISOString(),
+      reason,
+      deviceId: currentDevice?.id,
+      deviceName: currentDevice?.name,
+      connectionType: currentDevice?.connectionType,
+    });
 
     // Remove active BLE event monitors
     BluetoothService.stopDeviceEventMonitoring();
@@ -156,7 +165,6 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     useAppStore.getState().setBluetoothStatus('DISCONNECTED');
 
     // Update active device in useDeviceStore
-    const currentDevice = get().connectedDevice;
     if (currentDevice) {
       const devStore = useDeviceStore.getState();
       const updated = devStore.devices.map((d) =>
@@ -210,7 +218,70 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       }
     }
 
+    if (current?.rawDevice && typeof current.rawDevice.cancelConnection === 'function') {
+      try {
+        console.log('[conn] Calling cancelConnection on native BLE device:', current.id);
+        await current.rawDevice.cancelConnection();
+      } catch (e) {
+        console.warn('[conn] Native cancelConnection note:', e);
+      }
+    }
+
     get().setDisconnected('User initiated disconnect');
+  },
+
+  reconnect: async (preferredId?: string) => {
+    const id = preferredId || get().lastConnectedDeviceId || get().connectedDevice?.id;
+    if (!id) {
+      console.warn('[conn] reconnect aborted: No known device ID');
+      return;
+    }
+
+    console.log(`[conn] Reconnect attempt for device: ${id}`);
+    get().setConnecting({ id, name: get().connectedDevice?.name || 'WSG-01 Device' });
+
+    try {
+      const { NativeBluetoothService } = require('../services/nativeBluetoothService');
+      const isStillConnected = await NativeBluetoothService.isDeviceConnected(id);
+
+      if (isStillConnected) {
+        console.log('[conn] Native BLE link is already active. Refreshing session and re-attaching event monitors...');
+        const session = await BluetoothService.ensureActiveSession();
+        if (session) {
+          get().setConnected({
+            id: session.device.id,
+            name: session.device.name,
+            connectionType: 'BLE',
+            rawDevice: session.server,
+          });
+          return;
+        }
+      }
+
+      // If false, cancel connection if hanging, wait 500ms, then connect cleanly
+      console.log('[conn] Link not active. Calling cancelConnection, pausing 500ms before reconnect...');
+      try {
+        const mgr = NativeBluetoothService.getManager();
+        await mgr.cancelDeviceConnection(id);
+      } catch (cancelErr) {
+        console.warn('[conn] cancelDeviceConnection cleanup note:', cancelErr);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      const session = await BluetoothService.ensureActiveSession();
+      if (session) {
+        get().setConnected({
+          id: session.device.id,
+          name: session.device.name,
+          connectionType: 'BLE',
+          rawDevice: session.server,
+        });
+      }
+    } catch (err: any) {
+      console.error('[conn] Reconnect failed:', err?.message || err);
+      get().setError(err?.message || 'Reconnect failed');
+      throw err;
+    }
   },
 
   initConnectionStore: async () => {

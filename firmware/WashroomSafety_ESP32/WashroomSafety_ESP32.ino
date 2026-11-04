@@ -192,6 +192,50 @@ void saveEscalationConfig() {
 }
 
 void updateBleConfig(); // Forward declaration
+void reportCurrentStatus(); // Forward declaration
+void sendEmergencyAlert(const char* trigger, bool isTest); // Forward declaration
+
+void notifyChar(BLECharacteristic* pChar, const String& val) {
+  if (!pChar || !bleClientConnected) {
+    Serial.printf("[BLE] Skip notify: %s\n", !pChar ? "char null" : "client not connected");
+    return;
+  }
+  pChar->setValue(val.c_str());
+  pChar->notify();
+  Serial.printf("[BLE] Notified %d bytes\n", val.length());
+}
+
+void sendEmergency() {
+  emergencyActive = true;
+  digitalWrite(PIN_STATUS_LED, HIGH);
+  beepBuzzer(3, 100, 80);
+  transitionToState(STATE_ALARM, "EMERGENCY_TRIGGERED", 0);
+
+  String devIdShort = (deviceId.length() >= 4) ? ("WSG-01-" + deviceId.substring(deviceId.length() - 4)) : "WSG-01-001";
+  String payload = "{\"type\":\"EMERGENCY\",\"id\":\"" + devIdShort + "\",\"msg\":\"Emergency triggered\"}";
+  Serial.printf("[BLE] Sending emergency alert: %s\n", payload.c_str());
+  notifyChar(pEventLogChar, payload);
+  notifyChar(pStatusChar, payload);
+
+  sendEmergencyAlert("MANUAL_EMERGENCY", false);
+}
+
+void cancelEmergency() {
+  emergencyActive = false;
+  digitalWrite(PIN_BUZZER, LOW);
+  digitalWrite(PIN_STATUS_LED, LOW);
+  transitionToState(STATE_IDLE, "EMERGENCY_CANCELLED", 0);
+
+  String devIdShort = (deviceId.length() >= 4) ? ("WSG-01-" + deviceId.substring(deviceId.length() - 4)) : "WSG-01-001";
+  String payload = "{\"type\":\"WSG01_CANCEL\",\"id\":\"" + devIdShort + "\",\"msg\":\"Emergency cancelled\"}";
+  Serial.printf("[BLE] Sending cancel emergency: %s\n", payload.c_str());
+  notifyChar(pEventLogChar, payload);
+  notifyChar(pStatusChar, payload);
+}
+
+void sendStatus() {
+  reportCurrentStatus();
+}
 
 void updateBleEventLog() {
   if (!pEventLogChar) return;
@@ -213,8 +257,7 @@ void updateBleEventLog() {
   }
   String jsonOut;
   serializeJson(doc, jsonOut);
-  pEventLogChar->setValue(jsonOut.c_str());
-  pEventLogChar->notify();
+  notifyChar(pEventLogChar, jsonOut);
 }
 
 void updateBleConfig() {
@@ -530,8 +573,7 @@ void sendWiFiConnectedStatus(const String& ssid, const String& ipStr) {
 
   String jsonOut;
   serializeJson(resp, jsonOut);
-  pStatusChar->setValue(jsonOut.c_str());
-  pStatusChar->notify();
+  notifyChar(pStatusChar, jsonOut);
   Serial.printf("[BLE] Sent status confirmation to app: %s\n", jsonOut.c_str());
 }
 
@@ -571,8 +613,7 @@ void reportCurrentStatus() {
 
   String jsonOut;
   serializeJson(resp, jsonOut);
-  pStatusChar->setValue(jsonOut.c_str());
-  pStatusChar->notify();
+  notifyChar(pStatusChar, jsonOut);
   Serial.printf("[BLE] Reported current Wi-Fi status: %s\n", jsonOut.c_str());
 }
 
@@ -596,8 +637,7 @@ void initiateWiFiConnection(const String& ssid, const String& pass) {
 
     String jsonOut;
     serializeJson(resp, jsonOut);
-    pStatusChar->setValue(jsonOut.c_str());
-    pStatusChar->notify();
+    notifyChar(pStatusChar, jsonOut);
   }
 
   // Disconnect any existing link cleanly
@@ -605,6 +645,7 @@ void initiateWiFiConnection(const String& ssid, const String& pass) {
   delay(100);
 
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(ssid.c_str(), pass.c_str());
 
   wifiConnectStartTime = millis();
@@ -617,7 +658,7 @@ void processWiFiStateMachine() {
   // 1. Actively monitor connection health: Detect router powered off, link lost, or IP dropped
   if (wifiConnState == WIFI_CONNECTED) {
     if (WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0, 0, 0, 0)) {
-      Serial.println("\n[WiFi] Connection lost! Router powered off or out of range.");
+      Serial.println("\n[WiFi] Connection lost! Waiting for auto-reconnect...");
       wifiConnState = WIFI_FAILED;
       digitalWrite(PIN_STATUS_LED, LOW);
       reportCurrentStatus();
@@ -626,13 +667,12 @@ void processWiFiStateMachine() {
     return;
   }
 
-  // 2. Background Auto-Reconnect when router is restored
+  // 2. Background Auto-Reconnect is handled automatically by ESP32 WiFi.setAutoReconnect(true).
+  // We do NOT call WiFi.disconnect() or WiFi.begin() repeatedly in loop() to avoid disturbing BLE RF radio.
   if (wifiConnState == WIFI_FAILED && activeSsid.length() > 0) {
-    if (now - lastReconnectAttemptTime >= RECONNECT_INTERVAL_MS) {
+    if (now - lastReconnectAttemptTime >= 30000) {
       lastReconnectAttemptTime = now;
-      Serial.printf("[WiFi] Auto-reconnecting to stored router: \"%s\"...\n", activeSsid.c_str());
-      initiateWiFiConnection(activeSsid, activePass);
-      return;
+      Serial.println("[WiFi] Wi-Fi is currently disconnected; ESP32 background auto-reconnect active.");
     }
   }
 
@@ -1160,6 +1200,7 @@ void setup() {
   // 1. Initialize BLE GATT Server
   String bleDeviceName = "WSG-01-" + deviceId.substring(deviceId.length() - 4);
   BLEDevice::init(bleDeviceName.c_str());
+  BLEDevice::setMTU(247);
   pBleServer = BLEDevice::createServer();
   pBleServer->setCallbacks(new BleServerCallbacks());
 
@@ -1217,6 +1258,8 @@ void setup() {
                 t1ThresholdSec, repeatIntervalSec, alarmVolume, heartbeatIntervalMin);
   updateBleConfig();
 
+  WiFi.setAutoReconnect(true);
+
   if (savedSsid.length() > 0) {
     Serial.printf("[NVS] Stored Wi-Fi network found: \"%s\". Auto-connecting...\n", savedSsid.c_str());
     activeSsid = savedSsid;
@@ -1237,6 +1280,18 @@ void loop() {
   server.handleClient();
   unsigned long currentMillis = millis();
 
+  // 0. Serial Monitor Commands ('E' / 'e' for Emergency, 'C' / 'c' for Cancel)
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == 'E' || c == 'e') {
+      Serial.println("[SERIAL] 'E' received -> Triggering emergency alert!");
+      sendEmergency();
+    } else if (c == 'C' || c == 'c') {
+      Serial.println("[SERIAL] 'C' received -> Cancelling emergency alert!");
+      cancelEmergency();
+    }
+  }
+
   // 1. Process Queued Wi-Fi Provisioning
   if (pendingWiFiTrigger) {
     pendingWiFiTrigger = false;
@@ -1253,9 +1308,7 @@ void loop() {
   // Highest priority: Emergency Button
   if (emergencyButtonPressed && currentState != STATE_ALARM && currentState != STATE_EMERGENCY) {
     Serial.println("[ALERT] Emergency physical button pressed!");
-    emergencyActive = true;
-    transitionToState(STATE_ALARM, "BUTTON", 0);
-    sendEmergencyAlert("BUTTON");
+    sendEmergency();
   }
 
   // 4. Staged Washroom Escalation State Machine

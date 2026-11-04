@@ -1064,6 +1064,7 @@ export class BluetoothService {
   ): void {
     const rawStr = this.decodeBleNotificationData(data);
     if (!rawStr) return;
+    console.log('EVENT raw:', rawStr);
 
     const charKey = `${session.device.id}_${source}`;
     let candidate = rawStr;
@@ -1191,19 +1192,24 @@ export class BluetoothService {
     }
 
     // B. Single object handling (TEST_EMERGENCY, Status Characteristic, etc.)
+    const normType = String(parsed.type || '').toUpperCase();
+    const normStatus = String(parsed.status || '').toUpperCase();
+    const normState = String(parsed.state || '').toUpperCase();
+    const normEvent = String(parsed.event || '').toUpperCase();
+
     const isTestEmergency =
-      parsed.event === 'TEST_EMERGENCY' ||
-      parsed.status === 'TEST_EMERGENCY' ||
-      (parsed.type === 'status' && parsed.status === 'TEST_EMERGENCY') ||
-      Boolean(parsed.is_test && (parsed.state === 'EMERGENCY' || parsed.status === 'EMERGENCY'));
+      normEvent === 'TEST_EMERGENCY' ||
+      normStatus === 'TEST_EMERGENCY' ||
+      (normType === 'STATUS' && normStatus === 'TEST_EMERGENCY') ||
+      Boolean(parsed.is_test && (normState === 'EMERGENCY' || normStatus === 'EMERGENCY'));
 
     const isGeneralEmergency =
-      parsed.type === 'emergency' ||
-      parsed.status === 'EMERGENCY' ||
-      parsed.status === 'ALARM' ||
-      parsed.state === 'EMERGENCY' ||
-      parsed.event === 'EMERGENCY' ||
-      parsed.event === 'ALARM';
+      normType === 'EMERGENCY' ||
+      normStatus === 'EMERGENCY' ||
+      normStatus === 'ALARM' ||
+      normState === 'EMERGENCY' ||
+      normEvent === 'EMERGENCY' ||
+      normEvent === 'ALARM';
 
     if (isTestEmergency || isGeneralEmergency) {
       const devId = parsed.deviceId || parsed.device_id || session.device.id || 'WSG-000001';
@@ -1261,7 +1267,13 @@ export class BluetoothService {
           console.warn('[event] listener error:', e);
         }
       });
-    } else if (parsed.test_cancelled || parsed.event === 'TEST_CANCELLED' || (parsed.status === 'OK' && parsed.test_cancelled)) {
+    } else if (
+      parsed.test_cancelled ||
+      normEvent === 'TEST_CANCELLED' ||
+      normEvent === 'WSG01_CANCEL' ||
+      normType === 'WSG01_CANCEL' ||
+      (normStatus === 'OK' && parsed.test_cancelled)
+    ) {
       console.log('[WSG BLE EVENT] Emergency cancelled by device notification');
       useAppStore.getState().setActiveEmergency(null);
     }

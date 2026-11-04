@@ -82,11 +82,32 @@ class NativeBluetoothServiceClass {
   private manager: BleManager | null = null;
   private isScanning = false;
 
-  private getManager(): BleManager {
+  public getManager(): BleManager {
     if (!this.manager) {
       this.manager = new BleManager();
     }
     return this.manager;
+  }
+
+  public async isDeviceConnected(deviceId: string): Promise<boolean> {
+    if (!deviceId) return false;
+    try {
+      const mgr = this.getManager();
+      return await mgr.isDeviceConnected(deviceId);
+    } catch (e) {
+      console.warn('[NativeBLE] isDeviceConnected check error:', e);
+      return false;
+    }
+  }
+
+  public async connectedDevices(serviceUuids: string[]): Promise<Device[]> {
+    try {
+      const mgr = this.getManager();
+      return await mgr.connectedDevices(serviceUuids);
+    } catch (e) {
+      console.warn('[NativeBLE] connectedDevices query error:', e);
+      return [];
+    }
   }
 
   /**
@@ -357,11 +378,11 @@ class NativeBluetoothServiceClass {
     product: ProductDefinition = PRODUCT_CATALOG[0],
     discoveredDevice?: DiscoveredNativeDevice
   ): Promise<ConnectedNativeSession> {
-    // Request MTU 512 right after connecting and before discovering services/characteristics
+    // Request MTU 247 right after connecting and before discovering services/characteristics
     if (Platform.OS === 'android') {
       try {
-        await connectedDevice.requestMTU(512);
-        console.log('[NativeBLE] Negotiated MTU 512 for device:', connectedDevice.id);
+        await connectedDevice.requestMTU(247);
+        console.log('[NativeBLE] Negotiated MTU 247 for device:', connectedDevice.id);
       } catch (mtuErr) {
         console.warn('[NativeBLE] MTU negotiation note:', mtuErr);
       }
@@ -586,17 +607,22 @@ class NativeBluetoothServiceClass {
     }
 
     try {
-      // 1. Establish native BLE connection
+      // 1. Establish native BLE connection with MTU 247
+      console.log('[NativeBLE] Connecting to GATT on device:', rawDevice.id);
       const connectedDevice = await rawDevice.connect({
         autoConnect: false,
         timeout: 10000,
+        requestMTU: 247,
       });
+
+      // Stop scan immediately on success
+      this.stopScan();
 
       if (typeof connectedDevice.onDisconnected === 'function') {
         try {
-          connectedDevice.onDisconnected(() => {
-            console.log('[conn] Native BLE disconnected event fired');
-            useConnectionStore.getState().setDisconnected('Native BLE disconnected');
+          connectedDevice.onDisconnected((error, dev) => {
+            console.log('[conn] Native BLE disconnected event fired for device:', dev?.id || rawDevice.id, 'Error:', error?.message);
+            useConnectionStore.getState().setDisconnected(error?.message || 'Native BLE disconnected');
           });
         } catch (e) {
           console.warn('[NativeBLE] onDisconnected attachment error:', e);
@@ -626,6 +652,7 @@ class NativeBluetoothServiceClass {
         const isConn = await mgr.isDeviceConnected(preferredDeviceId);
         if (isConn) {
           console.log('[NativeBLE] Device already connected, discovering services:', preferredDeviceId);
+          this.stopScan();
           const devList = await mgr.devices([preferredDeviceId]);
           if (devList && devList[0]) {
             return await this.buildSessionFromConnectedDevice(devList[0], product);
@@ -640,7 +667,9 @@ class NativeBluetoothServiceClass {
         const directDev = await mgr.connectToDevice(preferredDeviceId, {
           autoConnect: false,
           timeout: 4000,
+          requestMTU: 247,
         });
+        this.stopScan();
         console.log('[NativeBLE] Direct connect succeeded:', preferredDeviceId);
         return await this.buildSessionFromConnectedDevice(directDev, product);
       } catch (directErr) {
@@ -670,7 +699,8 @@ class NativeBluetoothServiceClass {
 
         try {
           console.log('[NativeBLE] Targeted scan found WSG-01:', device.name, device.id);
-          const connected = await device.connect({ autoConnect: false, timeout: 6000 });
+          const connected = await device.connect({ autoConnect: false, timeout: 6000, requestMTU: 247 });
+          this.stopScan();
           const session = await this.buildSessionFromConnectedDevice(connected, product);
           resolve(session);
         } catch (connErr: any) {
@@ -716,9 +746,11 @@ class NativeBluetoothServiceClass {
    * Disconnect an active native session.
    */
   public async disconnect(session: ConnectedNativeSession | null): Promise<void> {
+    console.log('[NativeBLE] Disconnecting active session for:', session?.device?.name || session?.device?.id);
     useConnectionStore.getState().setDisconnected('NativeBluetoothService disconnect called');
     if (session?.server) {
       try {
+        console.log('[NativeBLE] Calling cancelConnection on device:', session.server.id);
         await session.server.cancelConnection();
       } catch (e) {
         console.warn('[NativeBLE] Disconnect note:', e);
@@ -727,13 +759,10 @@ class NativeBluetoothServiceClass {
   }
 
   /**
-   * Destroy BleManager instance.
+   * Destroy BleManager instance - preserved as singleton across screen lifecycles.
    */
   public destroy(): void {
-    if (this.manager) {
-      this.manager.destroy();
-      this.manager = null;
-    }
+    console.log('[NativeBLE] destroy() requested - BleManager singleton preserved');
   }
 }
 
