@@ -41,6 +41,13 @@
     },
     "plugins": [
       [
+        "@sentry/react-native/expo",
+        {
+          "organization": "wsg-safety",
+          "project": "wsg-01"
+        }
+      ],
+      [
         "react-native-ble-plx",
         {
           "isBackgroundEnabled": false,

@@ -2,7 +2,7 @@ import { Platform } from 'react-native';
 import { storage } from './storage';
 import { APP_VERSION_STRING, APP_DETAILS } from './version';
 
-export type LogLevel = 'info' | 'warn' | 'error';
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export interface LogEntry {
   id: string;
@@ -26,12 +26,56 @@ export interface SerializedError {
   deviceID?: string | null;
   serviceUUID?: string | null;
   characteristicUUID?: string | null;
+  // Generic error fields
+  code?: string | number;
+  status?: string | number;
+  statusCode?: number;
   [key: string]: any;
 }
 
 const STORAGE_KEY_LOGS = 'wsg_diagnostic_logs_v1';
 const MAX_LOG_ENTRIES = 500;
 const DEBOUNCE_PERSIST_MS = 1000;
+
+// Sensitive field names to automatically redact
+const SENSITIVE_KEYS_REGEX =
+  /^(pass(word)?|pin|secret|token|auth(orization)?|apikey|anon_key|key|ssid_pass|wifi_pass|credential|access_token|refresh_token)$/i;
+
+// String replacement regexes for sensitive tokens and passwords
+const SENSITIVE_STRING_PATTERNS: Array<{ regex: RegExp; replace: string }> = [
+  // JSON or unquoted key-value: "pass":"xyz", pass: "xyz", pass=xyz, password: 'xyz'
+  {
+    regex: /(["']?)(pass(?:word)?|pin|secret|token|auth(?:orization)?|apikey|anon_key|wifi_pass|wifiPass)\1\s*[:=]\s*(["']?)[^"',\s\n\r\)\}\]]+\3/gi,
+    replace: '$1$2$1: [REDACTED]',
+  },
+  // Key-value pair in query/URL/form: pass=xyz, token=xyz, key=xyz
+  {
+    regex: /(pass(?:word)?|token|secret|apiKey|anon_key)=([^&,\s\n\r]+)/gi,
+    replace: '$1=[REDACTED]',
+  },
+  // Bearer tokens: Bearer ey... or Bearer xyz
+  {
+    regex: /bearer\s+[a-zA-Z0-9_\-\.]{8,}/gi,
+    replace: 'Bearer [REDACTED]',
+  },
+  // JWT tokens: eyJ...
+  {
+    regex: /eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+/g,
+    replace: '[REDACTED_JWT]',
+  },
+];
+
+/**
+ * Redacts any sensitive credentials or tokens found in plain strings.
+ */
+export function redactSensitiveString(str: string): string {
+  if (!str || typeof str !== 'string') return str;
+  let redacted = str;
+  for (const { regex, replace } of SENSITIVE_STRING_PATTERNS) {
+    redacted = redacted.replace(regex, replace);
+  }
+  return redacted;
+}
 
 class LoggerService {
   private buffer: LogEntry[] = [];
@@ -50,7 +94,6 @@ class LoggerService {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          // Prepend or merge, keeping up to MAX_LOG_ENTRIES
           const existingIds = new Set(this.buffer.map((e) => e.id));
           const loaded = parsed.filter((e) => e && e.timestamp && !existingIds.has(e.id));
           this.buffer = [...loaded, ...this.buffer].slice(-MAX_LOG_ENTRIES);
@@ -76,9 +119,20 @@ class LoggerService {
     }, DEBOUNCE_PERSIST_MS);
   }
 
-  private sanitizeData(data: any, seen = new WeakSet()): any {
+  /**
+   * Recursively sanitizes data payloads, protecting against circular references
+   * and automatically redacting sensitive credentials, keys, and tokens.
+   */
+  public sanitizeData(data: any, seen = new WeakSet()): any {
     if (data === null || data === undefined) return data;
-    if (typeof data !== 'object') return data;
+
+    if (typeof data === 'string') {
+      return redactSensitiveString(data);
+    }
+
+    if (typeof data !== 'object') {
+      return data;
+    }
 
     if (data instanceof Error) {
       return this.serializeError(data);
@@ -95,11 +149,22 @@ class LoggerService {
 
     const cleaned: Record<string, any> = {};
     const keys = Object.keys(data).slice(0, 50);
+
     for (const key of keys) {
       try {
+        if (SENSITIVE_KEYS_REGEX.test(key)) {
+          cleaned[key] = '[REDACTED]';
+          continue;
+        }
+
         const val = data[key];
         if (typeof val === 'function') continue;
-        cleaned[key] = this.sanitizeData(val, seen);
+
+        if (typeof val === 'string' && SENSITIVE_KEYS_REGEX.test(key)) {
+          cleaned[key] = '[REDACTED]';
+        } else {
+          cleaned[key] = this.sanitizeData(val, seen);
+        }
       } catch {
         cleaned[key] = '[Inaccessible]';
       }
@@ -109,6 +174,7 @@ class LoggerService {
 
   /**
    * Expands ALL fields of react-native-ble-plx BleError and standard Errors.
+   * Also guarantees sensitive tokens and credentials are safe.
    */
   public serializeError(e: any): SerializedError {
     if (!e) {
@@ -116,7 +182,7 @@ class LoggerService {
     }
 
     if (typeof e === 'string') {
-      return { message: e };
+      return { message: redactSensitiveString(e) };
     }
 
     if (typeof e !== 'object') {
@@ -124,18 +190,18 @@ class LoggerService {
     }
 
     const out: SerializedError = {
-      message: e.message || String(e),
+      message: redactSensitiveString(e.message || String(e)),
       name: e.name || 'Error',
     };
 
-    if (e.stack) out.stack = String(e.stack);
+    if (e.stack) out.stack = redactSensitiveString(String(e.stack));
 
     // react-native-ble-plx BleError fields
     if ('errorCode' in e) out.errorCode = e.errorCode;
     if ('attErrorCode' in e) out.attErrorCode = e.attErrorCode;
     if ('iosErrorCode' in e) out.iosErrorCode = e.iosErrorCode;
     if ('androidErrorCode' in e) out.androidErrorCode = e.androidErrorCode;
-    if ('reason' in e) out.reason = e.reason;
+    if ('reason' in e) out.reason = e.reason ? redactSensitiveString(String(e.reason)) : e.reason;
     if ('deviceID' in e) out.deviceID = e.deviceID;
     if ('serviceUUID' in e) out.serviceUUID = e.serviceUUID;
     if ('characteristicUUID' in e) out.characteristicUUID = e.characteristicUUID;
@@ -145,11 +211,15 @@ class LoggerService {
     if ('status' in e) out.status = e.status;
     if ('statusCode' in e) out.statusCode = e.statusCode;
 
-    // Collect any other enumerable properties
+    // Collect any other enumerable properties with sensitive redaction
     try {
       for (const k of Object.keys(e)) {
         if (!(k in out) && typeof e[k] !== 'function') {
-          out[k] = this.sanitizeData(e[k]);
+          if (SENSITIVE_KEYS_REGEX.test(k)) {
+            out[k] = '[REDACTED]';
+          } else {
+            out[k] = this.sanitizeData(e[k]);
+          }
         }
       }
     } catch {}
@@ -164,6 +234,7 @@ class LoggerService {
     const timestamp = new Date().toISOString();
     const entryId = `${Date.now()}_${++this.logIdCounter}`;
 
+    const safeMessage = redactSensitiveString(message || '');
     const sanitizedData = data !== undefined ? this.sanitizeData(data) : undefined;
 
     const entry: LogEntry = {
@@ -171,24 +242,27 @@ class LoggerService {
       timestamp,
       level,
       tag: tag || 'APP',
-      message: message || '',
+      message: safeMessage,
       data: sanitizedData,
     };
 
-    // Keep ring buffer at max 500 entries
+    // Maintain 500-entry ring buffer
     this.buffer.push(entry);
     if (this.buffer.length > MAX_LOG_ENTRIES) {
       this.buffer.shift();
     }
 
-    // Mirror to native console
-    const consoleTag = `[${level.toUpperCase()}] [${tag}] ${message}`;
+    // Mirror to console
+    const consoleTag = `[${level.toUpperCase()}] [${tag}] ${safeMessage}`;
     if (level === 'error') {
       if (sanitizedData !== undefined) console.error(consoleTag, sanitizedData);
       else console.error(consoleTag);
     } else if (level === 'warn') {
       if (sanitizedData !== undefined) console.warn(consoleTag, sanitizedData);
       else console.warn(consoleTag);
+    } else if (level === 'debug') {
+      if (sanitizedData !== undefined) console.debug(consoleTag, sanitizedData);
+      else console.debug(consoleTag);
     } else {
       if (sanitizedData !== undefined) console.log(consoleTag, sanitizedData);
       else console.log(consoleTag);
@@ -196,6 +270,10 @@ class LoggerService {
 
     this.schedulePersist();
     this.notifySubscribers();
+  }
+
+  public debug(tag: string, message: string, data?: any): void {
+    this.log('debug', tag, message, data);
   }
 
   public info(tag: string, message: string, data?: any): void {
@@ -211,7 +289,7 @@ class LoggerService {
   }
 
   /**
-   * Returns current log entries (chronological order).
+   * Returns current log entries in chronological order.
    */
   public getLogs(): LogEntry[] {
     return [...this.buffer];
@@ -239,7 +317,6 @@ class LoggerService {
    */
   public subscribe(listener: (entries: LogEntry[]) => void): () => void {
     this.subscribers.add(listener);
-    // Initial emission
     listener(this.getLogs());
     return () => {
       this.subscribers.delete(listener);
@@ -263,7 +340,10 @@ class LoggerService {
   public exportLogsAsText(systemMeta?: Record<string, any>): string {
     const now = new Date().toISOString();
     const constants = (Platform as any)?.constants || {};
-    const model = constants.Model || constants.model || (Platform.OS === 'ios' ? 'Apple Device' : 'Android/Web Device');
+    const model =
+      constants.Model ||
+      constants.model ||
+      (Platform.OS === 'ios' ? 'Apple Device' : 'Android/Web Device');
     const brand = constants.Brand || constants.brand || constants.Manufacturer || '';
 
     let header = '========================================\n';
@@ -306,7 +386,7 @@ class LoggerService {
 export const logger = new LoggerService();
 
 /**
- * Standardized Short User-Facing BLE Error Codes:
+ * Standardized Short User-Facing Error Codes:
  * BLE-101: Device not found nearby / pairing timeout
  * BLE-102: Bluetooth radio powered off
  * BLE-103: Bluetooth / Location permissions denied
@@ -317,28 +397,98 @@ export const logger = new LoggerService();
  * BLE-301: Command write failed
  * BLE-302: Read characteristic failed
  * BLE-401: Notification monitor subscription failed
- * DEV-501: Device reported internal hardware/auth error
+ * WIFI-101: Incorrect Wi-Fi password (AUTH_FAILED)
+ * WIFI-102: Network not found (NO_SSID)
+ * WIFI-103: Wi-Fi connection timed out (WIFI_TIMEOUT)
+ * WIFI-104: Provisioning write failed
+ * DEV-501: Hardware or sensor fault reported by device
+ * DEV-502: Device firmware update required
+ * APP-500: Unexpected application error / crash
  */
-export function getBleErrorCode(error: any, context?: string): string {
+export function getShortErrorCode(error: any, context?: string): string {
   if (!error) return 'BLE-000';
 
   const serialized = logger.serializeError(error);
   const msg = (serialized.message || '').toLowerCase();
   const reason = (serialized.reason || '').toLowerCase();
+  const codeStr = String(serialized.code || '').toUpperCase();
 
-  if (msg.includes('bluetooth_disabled') || msg.includes('powered off') || msg.includes('bluetooth is turned off')) {
+  // Wi-Fi codes
+  if (
+    msg.includes('auth_failed') ||
+    msg.includes('password') ||
+    codeStr === 'AUTH_FAILED' ||
+    context === 'wifi_auth'
+  ) {
+    return 'WIFI-101';
+  }
+  if (
+    msg.includes('no_ssid') ||
+    msg.includes('network not found') ||
+    codeStr === 'NO_SSID' ||
+    context === 'wifi_ssid'
+  ) {
+    return 'WIFI-102';
+  }
+  if (
+    msg.includes('wifi_timeout') ||
+    (context === 'wifi' && msg.includes('timeout')) ||
+    codeStr === 'WIFI_TIMEOUT'
+  ) {
+    return 'WIFI-103';
+  }
+  if (context === 'provisioning') {
+    return 'WIFI-104';
+  }
+
+  // Device firmware / hardware codes
+  if (
+    msg.includes('firmware') ||
+    msg.includes('outdated_protocol') ||
+    codeStr === 'FW_UPDATE_NEEDED'
+  ) {
+    return 'DEV-502';
+  }
+  if (
+    context === 'device' ||
+    msg.includes('hardware error') ||
+    msg.includes('sensor') ||
+    codeStr === 'HARDWARE_ERROR'
+  ) {
+    return 'DEV-501';
+  }
+
+  // BLE codes
+  if (
+    msg.includes('bluetooth_disabled') ||
+    msg.includes('powered off') ||
+    msg.includes('bluetooth is turned off')
+  ) {
     return 'BLE-102';
   }
-  if (msg.includes('permission') || msg.includes('unauthorized') || serialized.errorCode === 1) {
+  if (
+    msg.includes('permission') ||
+    msg.includes('unauthorized') ||
+    serialized.errorCode === 1
+  ) {
     return 'BLE-103';
   }
-  if (msg.includes('not found') && (msg.includes('device') || context === 'scan')) {
+  if (
+    msg.includes('not found') &&
+    (msg.includes('device') || context === 'scan')
+  ) {
     return 'BLE-101';
   }
-  if (msg.includes('service not found') || msg.includes('service') && msg.includes('missing')) {
+  if (
+    msg.includes('service not found') ||
+    (msg.includes('service') && msg.includes('missing'))
+  ) {
     return 'BLE-203';
   }
-  if (msg.includes('characteristic not found') || msg.includes('characteristic')) {
+  if (
+    msg.includes('characteristic not found') ||
+    msg.includes('characteristic')
+  ) {
     return 'BLE-204';
   }
   if (context === 'write' || msg.includes('write')) {
@@ -350,28 +500,43 @@ export function getBleErrorCode(error: any, context?: string): string {
   if (context === 'monitor' || msg.includes('monitor') || msg.includes('notify')) {
     return 'BLE-401';
   }
-  if (context === 'device' || msg.includes('hardware error') || msg.includes('sensor')) {
-    return 'DEV-501';
-  }
-  if (msg.includes('disconnect') || reason.includes('disconnect') || serialized.errorCode === 2) {
+  if (
+    msg.includes('disconnect') ||
+    reason.includes('disconnect') ||
+    serialized.errorCode === 2
+  ) {
     return 'BLE-202';
   }
-  if (msg.includes('connection failed') || msg.includes('timed out') || context === 'connect') {
+  if (
+    msg.includes('connection failed') ||
+    msg.includes('timed out') ||
+    context === 'connect'
+  ) {
     return 'BLE-201';
+  }
+
+  // Application crash
+  if (context === 'crash' || msg.includes('crash') || msg.includes('render')) {
+    return 'APP-500';
   }
 
   return 'BLE-201';
 }
 
 /**
+ * Backwards-compatible alias for BLE error code detection.
+ */
+export const getBleErrorCode = getShortErrorCode;
+
+/**
  * Format a user-facing error message pairing a clear explanation with a short code.
  */
-export function formatUserBleError(
+export function formatUserError(
   error: any,
-  fallbackExplanation = 'Bluetooth operation failed',
+  fallbackExplanation = 'Operation failed',
   context?: string
 ): { message: string; code: string; display: string } {
-  const code = getBleErrorCode(error, context);
+  const code = getShortErrorCode(error, context);
   const serialized = logger.serializeError(error);
   let explanation = fallbackExplanation;
 
@@ -406,8 +571,26 @@ export function formatUserBleError(
     case 'BLE-401':
       explanation = 'Failed to subscribe to device notifications';
       break;
+    case 'WIFI-101':
+      explanation = 'Incorrect Wi-Fi password';
+      break;
+    case 'WIFI-102':
+      explanation = 'Wi-Fi network not found (must be 2.4 GHz)';
+      break;
+    case 'WIFI-103':
+      explanation = 'Wi-Fi connection timed out';
+      break;
+    case 'WIFI-104':
+      explanation = 'Failed to transfer Wi-Fi credentials to device';
+      break;
     case 'DEV-501':
       explanation = serialized.message || 'Device reported a hardware issue';
+      break;
+    case 'DEV-502':
+      explanation = 'Device firmware update needed';
+      break;
+    case 'APP-500':
+      explanation = 'An unexpected application error occurred';
       break;
     default:
       if (serialized.message && serialized.message.length < 60) {
@@ -420,3 +603,7 @@ export function formatUserBleError(
   return { message: explanation, code, display };
 }
 
+/**
+ * Backwards-compatible alias for BLE error formatter.
+ */
+export const formatUserBleError = formatUserError;

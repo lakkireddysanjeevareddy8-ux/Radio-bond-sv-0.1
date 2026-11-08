@@ -304,7 +304,9 @@ export function parseBleMessage(input: string | Uint8Array | any): ParsedBleMess
     return { kind: 'malformed', error: err?.message || 'Invalid JSON syntax', raw: jsonString };
   }
 
-  return categorizeParsedData(parsed);
+  const result = categorizeParsedData(parsed);
+  logger.debug('PROTOCOL', `Parsed BLE message: ${result.kind}`);
+  return result;
 }
 
 /**

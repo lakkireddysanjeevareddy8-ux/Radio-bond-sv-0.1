@@ -35,6 +35,7 @@ import { SafetySetupScreen } from './SafetySetupScreen';
 import { ManageTrustedContactsScreen } from './ManageTrustedContactsScreen';
 import { useEmergencyContactStore } from '../store/useEmergencyContactStore';
 import { EmergencyContactService } from '../services/EmergencyContactService';
+import { sentryService } from '../services/sentryService';
 import { APP_VERSION_STRING, APP_DETAILS } from '../utils/version';
 import {
   Pencil,
@@ -119,9 +120,11 @@ export const SettingsScreen: React.FC = () => {
   const [emergencySoundEnabled, setEmergencySoundEnabled] = useState(true);
   const [emergencyVibrationEnabled, setEmergencyVibrationEnabled] = useState(true);
   const [bypassStatus, setBypassStatus] = useState<BypassPermissionStatus | null>(null);
+  const [sentryOptIn, setSentryOptIn] = useState(false);
 
   useEffect(() => {
     QuietHoursService.checkBypassPermissions().then(setBypassStatus);
+    sentryService.isOptedIn().then(setSentryOptIn);
   }, []);
 
   // Emergency Escalation & App-Only Trusted Contact Settings
@@ -1163,6 +1166,21 @@ export const SettingsScreen: React.FC = () => {
             accessibilityLabel="Open diagnostic debug logs"
             style={{ marginBottom: spacing.md, paddingHorizontal: 0 }}
           />
+
+          <ToggleRow
+            label="Anonymous Crash Diagnostics (Sentry)"
+            value={sentryOptIn}
+            onToggle={async (val) => {
+              setSentryOptIn(val);
+              await sentryService.setOptIn(val);
+            }}
+            disabled={false}
+          />
+          <View style={[styles.modeInfoBox, { marginTop: 4, marginBottom: spacing.md }]}>
+            <Text style={styles.modeInfoSubtitle}>
+              Anonymously share crash reports to help resolve bugs. No credentials, tokens, or personal identifiers are ever transmitted.
+            </Text>
+          </View>
 
           <ToggleRow
             label="Demo Simulator Mode"

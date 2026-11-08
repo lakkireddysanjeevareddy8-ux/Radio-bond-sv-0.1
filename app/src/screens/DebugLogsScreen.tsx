@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
+import * as Clipboard from 'expo-clipboard';
 import {
   ArrowLeft,
   Copy,
@@ -27,9 +28,13 @@ import {
   Info,
   Smartphone,
   Bluetooth,
+  Cpu,
+  Activity,
+  Bug,
 } from 'lucide-react-native';
-import { logger, LogEntry, LogLevel } from '../utils/logger';
+import { logger, LogEntry, LogLevel, getShortErrorCode } from '../utils/logger';
 import { useConnectionStore } from '../store/useConnectionStore';
+import { useAppStore } from '../store/useAppStore';
 import { APP_VERSION_STRING, APP_DETAILS } from '../utils/version';
 import { colors, spacing, borderRadius } from '../utils/theme';
 
@@ -46,6 +51,31 @@ export const DebugLogsScreen: React.FC = () => {
 
   const connectionStatus = useConnectionStore((s) => s.status);
   const connectedDevice = useConnectionStore((s) => s.connectedDevice);
+  const deviceConfig = useAppStore((s) => s.deviceConfig);
+
+  // Derive phone model and OS info
+  const constants = (Platform as any)?.constants || {};
+  const phoneModel = useMemo(() => {
+    const raw =
+      constants.Model ||
+      constants.model ||
+      constants.Brand ||
+      (Platform.OS === 'ios' ? 'Apple Device' : 'Android/Web Device');
+    const brand = constants.Brand || constants.brand || constants.Manufacturer || '';
+    return brand && !raw.toLowerCase().includes(brand.toLowerCase()) ? `${brand} ${raw}` : raw;
+  }, [constants]);
+
+  const osVersion = useMemo(() => {
+    return `${Platform.OS.toUpperCase()} ${Platform.Version}`;
+  }, []);
+
+  const firmwareVersion = useMemo(() => {
+    return (
+      (connectedDevice as any)?.firmwareVersion ||
+      (deviceConfig as any)?.firmwareVersion ||
+      'v1.0.0 (proto 1)'
+    );
+  }, [connectedDevice, deviceConfig]);
 
   // Subscribe to live log emissions
   useEffect(() => {
@@ -55,14 +85,18 @@ export const DebugLogsScreen: React.FC = () => {
     return unsub;
   }, []);
 
-  // System metadata bundle
+  // System metadata bundle for export
   const systemMetadata = useMemo(() => {
     return {
       'App Version': `${APP_DETAILS.name} ${APP_VERSION_STRING}`,
-      'Platform': `${Platform.OS} (${Platform.Version})`,
-      'BLE State': `${connectionStatus.toUpperCase()} ${connectedDevice ? `(${connectedDevice.name} - ${connectedDevice.id})` : ''}`,
+      'Phone Model': phoneModel,
+      'OS Version': osVersion,
+      'Firmware Version': firmwareVersion,
+      'Connection State': `${connectionStatus.toUpperCase()} ${
+        connectedDevice ? `(${connectedDevice.name} - ${connectedDevice.id})` : ''
+      }`,
     };
-  }, [connectionStatus, connectedDevice]);
+  }, [phoneModel, osVersion, firmwareVersion, connectionStatus, connectedDevice]);
 
   // Unique tags for tag selector
   const availableTags = useMemo(() => {
@@ -76,12 +110,14 @@ export const DebugLogsScreen: React.FC = () => {
     let err = 0;
     let warn = 0;
     let info = 0;
+    let debug = 0;
     logs.forEach((l) => {
       if (l.level === 'error') err++;
       else if (l.level === 'warn') warn++;
+      else if (l.level === 'debug') debug++;
       else info++;
     });
-    return { all: logs.length, err, warn, info };
+    return { all: logs.length, err, warn, info, debug };
   }, [logs]);
 
   // Filtered logs list
@@ -107,12 +143,10 @@ export const DebugLogsScreen: React.FC = () => {
   const handleCopyAll = async () => {
     const text = logger.exportLogsAsText(systemMetadata);
     try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        setCopiedAll(true);
-        setTimeout(() => setCopiedAll(false), 2500);
-        return;
-      }
+      await Clipboard.setStringAsync(text);
+      setCopiedAll(true);
+      setTimeout(() => setCopiedAll(false), 2500);
+      return;
     } catch {}
 
     try {
@@ -162,12 +196,10 @@ export const DebugLogsScreen: React.FC = () => {
     }`;
 
     try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        setCopiedEntryId(entry.id);
-        setTimeout(() => setCopiedEntryId(null), 2000);
-        return;
-      }
+      await Clipboard.setStringAsync(text);
+      setCopiedEntryId(entry.id);
+      setTimeout(() => setCopiedEntryId(null), 2000);
+      return;
     } catch {}
 
     try {
@@ -194,38 +226,61 @@ export const DebugLogsScreen: React.FC = () => {
       badgeBg = '#FEF3C7';
       badgeText = '#D97706';
       IconComp = AlertTriangle;
+    } else if (item.level === 'debug') {
+      badgeBg = '#F1F5F9';
+      badgeText = '#64748B';
+      IconComp = Bug;
+    }
+
+    // Determine if this entry has a short error code (e.g. BLE-201, WIFI-101, APP-500)
+    let shortCode: string | null = null;
+    if (item.data?.code) {
+      shortCode = String(item.data.code);
+    } else if (item.level === 'error') {
+      shortCode = getShortErrorCode(item.data || item.message);
     }
 
     return (
       <TouchableOpacity
-        style={[styles.logCard, item.level === 'error' && styles.logCardError]}
+        style={styles.logCard}
         onPress={() => setExpandedId(isExpanded ? null : item.id)}
         activeOpacity={0.8}
       >
-        <View style={styles.logHeader}>
-          <View style={styles.logHeaderLeft}>
+        <View style={styles.logCardHeader}>
+          <View style={styles.logMetaLeft}>
             <View style={[styles.levelBadge, { backgroundColor: badgeBg }]}>
-              <IconComp size={12} color={badgeText} style={{ marginRight: 4 }} />
+              <IconComp size={11} color={badgeText} style={{ marginRight: 4 }} />
               <Text style={[styles.levelText, { color: badgeText }]}>
                 {item.level.toUpperCase()}
               </Text>
             </View>
+
             <View style={styles.tagBadge}>
               <Text style={styles.tagText}>{item.tag}</Text>
             </View>
+
+            {shortCode && (
+              <View style={styles.codeBadge}>
+                <Text style={styles.codeBadgeText}>{shortCode}</Text>
+              </View>
+            )}
           </View>
-          <Text style={styles.timeText}>{timeFormatted}</Text>
+
+          <Text style={styles.timestampText}>{timeFormatted}</Text>
         </View>
 
-        <Text style={styles.messageText}>{item.message}</Text>
+        <Text style={styles.messageText} numberOfLines={isExpanded ? undefined : 2}>
+          {item.message}
+        </Text>
 
         {isExpanded && item.data !== undefined && (
-          <View style={styles.expandedBox}>
-            <View style={styles.expandedHeader}>
-              <Text style={styles.expandedLabel}>Payload / Details:</Text>
+          <View style={styles.detailsPayloadWrap}>
+            <View style={styles.payloadHeaderRow}>
+              <Text style={styles.payloadHeaderTitle}>Payload / Trace</Text>
               <TouchableOpacity
-                onPress={() => handleCopyEntry(item)}
                 style={styles.copyEntryBtn}
+                onPress={() => handleCopyEntry(item)}
+                activeOpacity={0.7}
               >
                 {isCopied ? (
                   <Check size={14} color="#059669" />
@@ -275,7 +330,7 @@ export const DebugLogsScreen: React.FC = () => {
         <View style={{ flex: 1, marginLeft: 8 }}>
           <Text style={styles.screenTitle}>Debug Logs</Text>
           <Text style={styles.screenSubtitle}>
-            {filteredLogs.length} of {logs.length} events
+            {filteredLogs.length} of {logs.length} entries
           </Text>
         </View>
 
@@ -284,6 +339,7 @@ export const DebugLogsScreen: React.FC = () => {
             style={styles.actionIconBtn}
             onPress={handleCopyAll}
             activeOpacity={0.7}
+            accessibilityLabel="Copy all diagnostic logs"
           >
             {copiedAll ? <Check size={18} color="#059669" /> : <Copy size={18} color="#0F172A" />}
           </TouchableOpacity>
@@ -291,6 +347,7 @@ export const DebugLogsScreen: React.FC = () => {
             style={styles.actionIconBtn}
             onPress={handleShare}
             activeOpacity={0.7}
+            accessibilityLabel="Share diagnostic logs"
           >
             <Share2 size={18} color="#0F172A" />
           </TouchableOpacity>
@@ -298,24 +355,40 @@ export const DebugLogsScreen: React.FC = () => {
             style={[styles.actionIconBtn, { backgroundColor: '#FEE2E2' }]}
             onPress={handleClear}
             activeOpacity={0.7}
+            accessibilityLabel="Clear diagnostic logs"
           >
             <Trash2 size={18} color="#DC2626" />
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* System Diagnostics Info Strip */}
+      {/* System Diagnostics Info Header Strip */}
       <View style={styles.metaBanner}>
         <View style={styles.metaRow}>
           <Smartphone size={13} color="#475569" style={{ marginRight: 6 }} />
           <Text style={styles.metaText} numberOfLines={1}>
-            {APP_DETAILS.shortName} {APP_VERSION_STRING} • {Platform.OS} {Platform.Version}
+            <Text style={styles.metaLabel}>App: </Text>
+            {APP_DETAILS.name} {APP_VERSION_STRING}
+            <Text style={styles.metaLabel}> • Device: </Text>
+            {phoneModel}
           </Text>
         </View>
+
+        <View style={[styles.metaRow, { marginTop: 3 }]}>
+          <Cpu size={13} color="#475569" style={{ marginRight: 6 }} />
+          <Text style={styles.metaText} numberOfLines={1}>
+            <Text style={styles.metaLabel}>OS: </Text>
+            {osVersion}
+            <Text style={styles.metaLabel}> • Firmware: </Text>
+            {firmwareVersion}
+          </Text>
+        </View>
+
         <View style={[styles.metaRow, { marginTop: 3 }]}>
           <Bluetooth size={13} color="#2563EB" style={{ marginRight: 6 }} />
           <Text style={[styles.metaText, { color: '#1E40AF', fontWeight: '600' }]} numberOfLines={1}>
-            BLE: {connectionStatus.toUpperCase()} {connectedDevice ? `(${connectedDevice.name})` : ''}
+            <Text style={styles.metaLabel}>BLE State: </Text>
+            {connectionStatus.toUpperCase()} {connectedDevice ? `(${connectedDevice.name})` : ''}
           </Text>
         </View>
       </View>
@@ -369,6 +442,14 @@ export const DebugLogsScreen: React.FC = () => {
             Info ({counts.info})
           </Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.pill, levelFilter === 'debug' && styles.pillActive]}
+          onPress={() => setLevelFilter('debug')}
+        >
+          <Text style={[styles.pillText, levelFilter === 'debug' && styles.pillTextActive]}>
+            Debug ({counts.debug})
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {/* Tag Filter Pills */}
@@ -378,34 +459,34 @@ export const DebugLogsScreen: React.FC = () => {
             horizontal
             showsHorizontalScrollIndicator={false}
             data={availableTags}
-            keyExtractor={(item) => item}
-            contentContainerStyle={styles.tagListContent}
-            renderItem={({ item }) => (
+            keyExtractor={(tag) => tag}
+            renderItem={({ item: tag }) => (
               <TouchableOpacity
-                style={[styles.tagPill, selectedTag === item && styles.tagPillActive]}
-                onPress={() => setSelectedTag(item)}
+                style={[styles.tagPill, selectedTag === tag && styles.tagPillActive]}
+                onPress={() => setSelectedTag(tag)}
               >
-                <Text style={[styles.tagPillText, selectedTag === item && styles.tagPillTextActive]}>
-                  {item}
+                <Text style={[styles.tagPillText, selectedTag === tag && styles.tagPillTextActive]}>
+                  {tag}
                 </Text>
               </TouchableOpacity>
             )}
+            contentContainerStyle={{ paddingHorizontal: spacing.md }}
           />
         </View>
       )}
 
-      {/* Log Entries List */}
+      {/* Main Logs List */}
       <FlatList
         data={filteredLogs}
         keyExtractor={(item) => item.id}
         renderItem={renderLogItem}
-        contentContainerStyle={[styles.listContent, { paddingBottom: Math.max(insets.bottom, 24) }]}
+        contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 20 }]}
         ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Filter size={36} color="#CBD5E1" />
-            <Text style={styles.emptyTitle}>No logs matching filter</Text>
+          <View style={styles.emptyState}>
+            <Activity size={36} color="#94A3B8" style={{ marginBottom: 10 }} />
+            <Text style={styles.emptyTitle}>No logs match your filter</Text>
             <Text style={styles.emptySubtitle}>
-              Try clearing your search query or selecting "All" levels.
+              Try selecting "All" or clearing the search query to view diagnostic entries.
             </Text>
           </View>
         }
@@ -422,23 +503,23 @@ const styles = StyleSheet.create({
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: '#FFFFFF',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
+    backgroundColor: '#FFFFFF',
   },
   backBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#F1F5F9',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#F1F5F9',
   },
   screenTitle: {
     fontSize: 18,
-    fontWeight: '800',
+    fontWeight: '700',
     color: '#0F172A',
   },
   screenSubtitle: {
@@ -447,20 +528,21 @@ const styles = StyleSheet.create({
   },
   topActions: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
   },
   actionIconBtn: {
     width: 36,
     height: 36,
-    borderRadius: 18,
+    borderRadius: 8,
+    backgroundColor: '#F1F5F9',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#F1F5F9',
   },
   metaBanner: {
     backgroundColor: '#F1F5F9',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
   },
@@ -468,35 +550,37 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  metaText: {
-    fontSize: 11,
+  metaLabel: {
+    fontWeight: '600',
     color: '#475569',
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  metaText: {
+    fontSize: 12,
+    color: '#334155',
+    flex: 1,
   },
   searchWrap: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    marginHorizontal: 16,
-    marginTop: 10,
-    marginBottom: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    marginHorizontal: spacing.md,
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: Platform.OS === 'ios' ? 8 : 4,
     borderRadius: borderRadius.md,
     borderWidth: 1,
-    borderColor: '#CBD5E1',
+    borderColor: '#E2E8F0',
   },
   searchInput: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 14,
     color: '#0F172A',
-    padding: 0,
   },
   filterPillsRow: {
     flexDirection: 'row',
-    paddingHorizontal: 16,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
     gap: 6,
-    marginBottom: 8,
   },
   pill: {
     paddingHorizontal: 10,
@@ -504,7 +588,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#CBD5E1',
+    borderColor: '#E2E8F0',
   },
   pillActive: {
     backgroundColor: '#0F172A',
@@ -533,155 +617,161 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   tagScrollWrap: {
-    marginBottom: 8,
-  },
-  tagListContent: {
-    paddingHorizontal: 16,
-    gap: 6,
+    paddingTop: spacing.xs,
   },
   tagPill: {
-    paddingHorizontal: 9,
+    paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 10,
     backgroundColor: '#E2E8F0',
+    marginRight: 6,
   },
   tagPillActive: {
     backgroundColor: '#2563EB',
   },
   tagPillText: {
     fontSize: 11,
-    fontWeight: '600',
+    fontWeight: '500',
     color: '#475569',
   },
   tagPillTextActive: {
     color: '#FFFFFF',
   },
   listContent: {
-    paddingHorizontal: 16,
-    paddingTop: 4,
-    gap: 8,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
   },
   logCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: borderRadius.md,
-    padding: 12,
+    padding: spacing.md,
+    marginBottom: spacing.xs,
     borderWidth: 1,
     borderColor: '#E2E8F0',
   },
-  logCardError: {
-    borderColor: '#FCA5A5',
-    backgroundColor: '#FFFBFB',
-  },
-  logHeader: {
+  logCardHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 6,
   },
-  logHeaderLeft: {
+  logMetaLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    flexWrap: 'wrap',
   },
   levelBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 6,
     paddingVertical: 2,
-    borderRadius: 6,
+    borderRadius: 4,
   },
   levelText: {
     fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.3,
+    fontWeight: '700',
   },
   tagBadge: {
     backgroundColor: '#F1F5F9',
     paddingHorizontal: 6,
     paddingVertical: 2,
-    borderRadius: 6,
+    borderRadius: 4,
   },
   tagText: {
     fontSize: 10,
-    fontWeight: '700',
+    fontWeight: '600',
     color: '#475569',
   },
-  timeText: {
+  codeBadge: {
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  codeBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#1D4ED8',
+  },
+  timestampText: {
     fontSize: 11,
     color: '#94A3B8',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   messageText: {
     fontSize: 13,
-    color: '#0F172A',
-    fontWeight: '500',
+    color: '#1E293B',
     lineHeight: 18,
   },
-  expandedBox: {
+  detailsPayloadWrap: {
+    marginTop: spacing.sm,
     backgroundColor: '#0F172A',
     borderRadius: borderRadius.sm,
-    padding: 10,
-    marginTop: 8,
+    padding: spacing.sm,
   },
-  expandedHeader: {
+  payloadHeaderRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 4,
+    justifyContent: 'space-between',
+    marginBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#334155',
+    paddingBottom: 4,
   },
-  expandedLabel: {
+  payloadHeaderTitle: {
     fontSize: 11,
+    fontWeight: '600',
     color: '#94A3B8',
-    fontWeight: '700',
   },
   copyEntryBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingHorizontal: 6,
+    backgroundColor: '#1E293B',
+    paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 4,
-    backgroundColor: '#1E293B',
   },
   copyEntryText: {
     fontSize: 11,
-    color: '#CBD5E1',
-    fontWeight: '600',
+    color: '#94A3B8',
   },
   codeText: {
     fontSize: 11,
     color: '#E2E8F0',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    lineHeight: 16,
+    lineHeight: 15,
   },
   expandRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-end',
     marginTop: 4,
   },
   expandPrompt: {
     fontSize: 11,
     color: '#94A3B8',
-    fontStyle: 'italic',
+    marginRight: 4,
   },
-  emptyContainer: {
+  emptyState: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: 60,
-    paddingHorizontal: 24,
+    paddingVertical: 60,
+    paddingHorizontal: spacing.lg,
   },
   emptyTitle: {
     fontSize: 16,
-    fontWeight: '700',
-    color: '#64748B',
-    marginTop: 12,
+    fontWeight: '600',
+    color: '#475569',
+    marginBottom: 4,
   },
   emptySubtitle: {
     fontSize: 13,
     color: '#94A3B8',
     textAlign: 'center',
-    marginTop: 4,
+    lineHeight: 18,
   },
 });
-

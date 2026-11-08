@@ -3,6 +3,7 @@ import { Telemetry, EmergencyEvent, DeviceConfig, SafetyState, DeviceHealth } fr
 import { supabase } from './supabaseClient';
 import { useAppStore } from '../store/useAppStore';
 import { EmergencyPushService } from './EmergencyPushService';
+import { logger } from '../utils/logger';
 
 export type ConnectionStatus = 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING';
 
@@ -280,8 +281,8 @@ export class DeviceCommunicationService {
 
     // Deduplicate against push notifications that arrived first
     try {
-      const { EmergencyPushService } = require('./EmergencyPushService');
       if (EmergencyPushService.isEventAlreadyProcessed(eventId)) {
+        logger.info('EMERGENCY', `Skipping already-processed Realtime emergency event: ${eventId}`);
         console.log(`[DeviceCommunicationService] Skipping already-processed emergency event: ${eventId}`);
         return;
       }
@@ -322,6 +323,12 @@ export class DeviceCommunicationService {
       metadata: row.metadata || {},
     };
 
+    logger.info('EMERGENCY', `Supabase Realtime emergency event: ${eventId}`, {
+      eventId,
+      status: normalizedStatus,
+      severity: emergency.severity,
+      trigger: emergency.trigger,
+    });
     console.log(`[event] showing emergency UI: ${eventId}`);
     this.onEmergencyEvent?.(emergency);
 

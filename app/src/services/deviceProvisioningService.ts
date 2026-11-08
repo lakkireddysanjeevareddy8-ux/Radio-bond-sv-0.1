@@ -1,6 +1,7 @@
 import { ConnectedBleSession, BluetoothService } from './bluetoothService';
 import { useAppStore } from '../store/useAppStore';
 import { parseBleMessage, BleProtocol } from './protocol';
+import { logger } from '../utils/logger';
 
 export interface ProvisioningCredentials {
   ssid: string;
@@ -134,7 +135,7 @@ export class DeviceProvisioningService {
       ts: Date.now(),
     });
 
-    console.log('[Provisioning] Starting WSG-01 Wi-Fi provisioning:', {
+    logger.info('PROVISIONING', 'Starting WSG-01 Wi-Fi provisioning', {
       deviceId: session.device.id,
       deviceName: session.device.name,
       ssid: creds.ssid.trim(),
@@ -149,15 +150,15 @@ export class DeviceProvisioningService {
 
     try {
       if (session.provisionChar.writeValueWithResponse) {
-        console.log('[Provisioning] Writing PROV_WIFI via writeValueWithResponse to:', session.provisionChar.uuid);
+        logger.debug('PROVISIONING', `Writing PROV_WIFI via writeValueWithResponse to ${session.provisionChar.uuid}`);
         await session.provisionChar.writeValueWithResponse(encodedBytes);
       } else {
-        console.log('[Provisioning] Writing PROV_WIFI via writeValue to:', session.provisionChar.uuid);
+        logger.debug('PROVISIONING', `Writing PROV_WIFI via writeValue to ${session.provisionChar.uuid}`);
         await session.provisionChar.writeValue(encodedBytes);
       }
-      console.log('[Provisioning] PROV_WIFI write completed successfully');
+      logger.info('PROVISIONING', 'PROV_WIFI write completed successfully');
     } catch (writeErr: any) {
-      console.error('[Provisioning] PROV_WIFI write failed:', writeErr?.message || writeErr);
+      logger.error('PROVISIONING', 'PROV_WIFI write failed', logger.serializeError(writeErr));
       throw new Error(`Failed to write credentials to device: ${writeErr.message || 'GATT write rejected'}`);
     }
 
@@ -185,7 +186,11 @@ export class DeviceProvisioningService {
         assignedIp = resp.ip;
         if (typeof resp.rssi === 'number') assignedRssi = resp.rssi;
         if (resp.ssid) assignedSsid = resp.ssid;
-        console.log('[Provisioning] Hardware reported Wi-Fi connected via notification:', assignedIp);
+        logger.info('PROVISIONING', `Hardware reported Wi-Fi connected via notification: ${assignedIp}`, {
+          ip: assignedIp,
+          ssid: assignedSsid,
+          rssi: assignedRssi,
+        });
       } else if (status === 'AUTH_FAILED') {
         monitorError = 'Incorrect Wi-Fi password';
       } else if (status === 'NO_SSID' || status === 'SSID_NOT_FOUND') {

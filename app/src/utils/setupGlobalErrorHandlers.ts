@@ -1,4 +1,5 @@
 import { logger } from './logger';
+import { sentryService } from '../services/sentryService';
 
 declare const global: any;
 
@@ -15,9 +16,17 @@ export function setupGlobalErrorHandlers(): void {
       const originalHandler = errorUtils.getGlobalHandler();
       errorUtils.setGlobalHandler((error: any, isFatal?: boolean) => {
         logger.error('GLOBAL_ERROR', error?.message || 'Uncaught JS exception', {
+          code: 'APP-500',
           isFatal: Boolean(isFatal),
           ...logger.serializeError(error),
         });
+
+        // Forward to anonymous Sentry crash collection if user opted in
+        sentryService.captureException(error, {
+          isFatal: Boolean(isFatal),
+          handler: 'ErrorUtils',
+        });
+
         if (typeof originalHandler === 'function') {
           originalHandler(error, isFatal);
         }
@@ -38,6 +47,10 @@ export function setupGlobalErrorHandlers(): void {
           reason?.message || 'Unhandled Promise Rejection',
           logger.serializeError(reason)
         );
+
+        sentryService.captureException(reason, {
+          handler: 'window.unhandledrejection',
+        });
       });
     }
 
@@ -50,6 +63,11 @@ export function setupGlobalErrorHandlers(): void {
           reason?.message || 'Unhandled Promise Rejection',
           logger.serializeError(reason)
         );
+
+        sentryService.captureException(reason, {
+          handler: 'global.onunhandledrejection',
+        });
+
         if (typeof orig === 'function') orig(event);
       };
     }
@@ -57,4 +75,3 @@ export function setupGlobalErrorHandlers(): void {
     console.warn('[logger] Error attaching promise rejection handler:', e);
   }
 }
-

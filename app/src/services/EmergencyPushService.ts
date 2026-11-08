@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import { EmergencyEvent, EmergencyPushPayload } from '../types';
 import { EmergencySoundService } from './EmergencySoundService';
+import { logger } from '../utils/logger';
 
 /**
  * EmergencyPushService
@@ -68,6 +69,7 @@ class EmergencyPushServiceClass {
 
     // Deduplicate: If this event was already processed, avoid duplicate ringing/notifications
     if (this.processedEventIds.has(eventId)) {
+      logger.warn('EMERGENCY', `Ignoring duplicate emergency event: ${eventId}`);
       console.log(`[EmergencyPushService] Ignoring duplicate emergency event: ${eventId}`);
       return false; // Deduplicated
     }
@@ -129,6 +131,14 @@ class EmergencyPushServiceClass {
       locationShared: locationShared,
       metadata: { ownerName },
     };
+
+    logger.info('EMERGENCY', `Dispatching emergency alert: ${eventId} (${severity}, ${emergencyEvent.trigger})`, {
+      eventId,
+      deviceId,
+      severity,
+      trigger: emergencyEvent.trigger,
+      isTest,
+    });
 
     // 1. Dispatch through Android Native / Web Notification channel with sound & vibration
     EmergencySoundService.dispatchEmergencyNotification(emergencyEvent);

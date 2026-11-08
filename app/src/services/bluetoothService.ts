@@ -1259,11 +1259,13 @@ export class BluetoothService {
           const itemEventId = `emg_${session.device.id}_${itemTs || Date.now()}`;
 
           if (itemTs > 0 && itemTs <= this.lastHandledEmergencyMarker) {
+            logger.info('EMERGENCY', `Ignored historical log: timestamp ${itemTs} <= marker ${this.lastHandledEmergencyMarker}`);
             console.log(`[event] ignored (already handled / initial history) - timestamp ${itemTs} <= marker ${this.lastHandledEmergencyMarker}`);
             return;
           }
 
           if (EmergencyPushService.isEventAlreadyProcessed(itemEventId)) {
+            logger.info('EMERGENCY', `Ignored duplicate event: ${itemEventId}`);
             console.log(`[event] ignored (already handled / initial history) - event ID ${itemEventId} already processed`);
             return;
           }
@@ -1296,6 +1298,11 @@ export class BluetoothService {
             },
           };
 
+          logger.info('EMERGENCY', `BLE emergency event active: ${itemEventId}`, {
+            eventId: itemEventId,
+            deviceId: session.device.id,
+            trigger,
+          });
           console.log(`[event] showing emergency UI: ${itemEventId}`);
           EmergencyPushService.handleIncomingPush(emergencyEvent);
           useAppStore.getState().setActiveEmergency(emergencyEvent);
@@ -1342,6 +1349,7 @@ export class BluetoothService {
       );
 
       if (EmergencyPushService.isEventAlreadyProcessed(eventId)) {
+        logger.info('EMERGENCY', `Ignored duplicate single event: ${eventId}`);
         console.log(`[event] ignored (already handled / initial history) - event ID ${eventId} already processed`);
         return;
       }
@@ -1371,6 +1379,11 @@ export class BluetoothService {
         },
       };
 
+      logger.info('EMERGENCY', `BLE single emergency event active: ${eventId}`, {
+        eventId,
+        deviceId: devId,
+        trigger,
+      });
       console.log(`[event] showing emergency UI: ${emergencyEvent.eventId}`);
       EmergencyPushService.handleIncomingPush(emergencyEvent);
       useAppStore.getState().setActiveEmergency(emergencyEvent);
