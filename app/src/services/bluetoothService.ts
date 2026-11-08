@@ -7,6 +7,7 @@ import { useConnectionStore } from '../store/useConnectionStore';
 import { EmergencyPushService } from './EmergencyPushService';
 import { storage } from '../utils/storage';
 import { logger } from '../utils/logger';
+import { BleProtocol, parseBleMessage, BLE_UUIDS, BLE_ERROR_CODES } from './protocol';
 
 export interface DiscoveredBleDevice {
   id: string;
@@ -789,8 +790,7 @@ export class BluetoothService {
       logger.warn('BLE_CMD', 'writeEscalationConfig failed: no active session');
       return false;
     }
-    const payload = JSON.stringify({
-      cmd: 'SET_ESCALATION_CONFIG',
+    const payload = BleProtocol.formatSetEscalationConfig({
       t1: config.t1Seconds,
       repeat: config.repeatIntervalSec,
       volume: config.alarmVolume,
@@ -1012,10 +1012,7 @@ export class BluetoothService {
     console.log('[WSG-01] Command characteristic:', 'provisionChar');
     console.log('[WSG-01] Command characteristic UUID:', targetChar.uuid);
 
-    const payload = JSON.stringify({
-      cmd: 'TEST_EMERGENCY',
-      token,
-    });
+    const payload = BleProtocol.formatTestEmergency(token);
     const payloadBytes = new TextEncoder().encode(payload);
     console.log('[TEST DEBUG 9] payload byte length =', payloadBytes.length);
     console.log('[WSG-01] Payload:', payload);
@@ -1061,10 +1058,7 @@ export class BluetoothService {
       console.warn('[WSG-01] No active BLE session available for CANCEL_TEST');
       return false;
     }
-    const payload = JSON.stringify({
-      cmd: 'CANCEL_TEST',
-      token,
-    });
+    const payload = BleProtocol.formatCancelTest(token);
     try {
       const targetChar = targetSession.provisionChar;
       if (targetChar) {
@@ -1151,25 +1145,35 @@ export class BluetoothService {
       candidate = existingChunk + rawStr;
     }
 
-    let parsed: any = null;
-    try {
-      parsed = JSON.parse(candidate);
-      // Valid JSON received, clear the chunk buffer
-      this.incomingBufferByChar.delete(charKey);
-    } catch (parseErr: any) {
+    const msg = parseBleMessage(candidate);
+    if (msg.kind === 'malformed') {
       // If it looks like a partial fragment of a JSON object/array, buffer it for next chunk
       if ((candidate.startsWith('{') || candidate.startsWith('[')) && candidate.length < 4096) {
         this.incomingBufferByChar.set(charKey, candidate);
       } else {
         this.incomingBufferByChar.delete(charKey);
       }
-      logger.warn('BLE_NOTIF', `JSON parse error on ${source}: ${parseErr?.message}`, { candidate });
-      console.log(`[event] parse error ${parseErr?.message || parseErr} | raw: ${candidate}`);
+      logger.warn('BLE_NOTIF', `Malformed BLE payload on ${source}: ${msg.error}`, { candidate });
+      console.log(`[event] parse error ${msg.error} | raw: ${candidate}`);
       return;
     }
 
+    // Valid JSON received, clear the chunk buffer
+    this.incomingBufferByChar.delete(charKey);
+
+    const parsed = msg.raw;
     logger.info('BLE_NOTIF', `Parsed notification from ${source}`, parsed);
     console.log(`[event] parsed ${JSON.stringify(parsed)}`);
+
+    // Check for outdated protocol version
+    if (msg.kind === 'outdated_protocol') {
+      logger.error('DEVICE', `Device firmware update needed: protocol ${msg.protocol} < ${msg.minSupported}`);
+      useAppStore.getState().setDeviceError({
+        code: 'FW_UPDATE_NEEDED',
+        message: 'Device firmware update needed',
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     // Dispatch to registered notification listeners
     this.notificationListeners.forEach((listener) => {
@@ -1181,7 +1185,16 @@ export class BluetoothService {
     });
 
     // Device error reporting: check if device returned an error payload
-    if (!Array.isArray(parsed)) {
+    if (msg.kind === 'device_error') {
+      const errCode = String(msg.data.error || msg.data.code || 'DEV-501');
+      const errMsg = String(msg.data.message || 'Device reported error');
+      logger.error('DEVICE', `Device reported error: [${errCode}] ${errMsg}`, parsed);
+      useAppStore.getState().setDeviceError({
+        code: errCode,
+        message: errMsg,
+        timestamp: new Date().toISOString(),
+      });
+    } else if (!Array.isArray(parsed)) {
       const normType = String(parsed?.type || '').toUpperCase();
       const normStatus = String(parsed?.status || '').toUpperCase();
       if (normType === 'ERROR' || normStatus === 'ERROR' || Boolean(parsed?.error)) {

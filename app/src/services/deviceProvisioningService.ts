@@ -1,5 +1,6 @@
 import { ConnectedBleSession, BluetoothService } from './bluetoothService';
 import { useAppStore } from '../store/useAppStore';
+import { parseBleMessage, BleProtocol } from './protocol';
 
 export interface ProvisioningCredentials {
   ssid: string;
@@ -59,14 +60,12 @@ export class DeviceProvisioningService {
     try {
       const val = await session.statusChar.readValue();
       if (val && val.length > 0) {
-        const decoder = new TextDecoder('utf-8');
-        const rawStr = decoder.decode(val).trim();
-        if (rawStr.startsWith('{')) {
-          const parsed = JSON.parse(rawStr);
+        const msg = parseBleMessage(val);
+        if (msg.kind === 'wifi_status') {
+          const parsed = msg.data;
           if (
             parsed.status === 'CONNECTED' ||
-            parsed.state === 'WIFI_CONNECTED' ||
-            parsed.status === 'WIFI_CONNECTED'
+            parsed.state === 'WIFI_CONNECTED'
           ) {
             return 'CONNECTED';
           }
@@ -212,21 +211,18 @@ export class DeviceProvisioningService {
           try {
             const val = await session.statusChar.readValue();
             if (val && val.length > 0) {
-              const decoder = new TextDecoder('utf-8');
-              const rawStr = decoder.decode(val).trim();
-              if (rawStr.startsWith('{')) {
-                const resp = JSON.parse(rawStr);
+              const msg = parseBleMessage(val);
+              if (msg.kind === 'wifi_status') {
+                const resp = msg.data;
                 const status = String(resp.status || '').toUpperCase();
                 const state = String(resp.state || '').toUpperCase();
 
                 const isConnected =
                   status === 'CONNECTED' ||
-                  state === 'WIFI_CONNECTED' ||
-                  status === 'WIFI_CONNECTED';
+                  state === 'WIFI_CONNECTED';
 
                 if (isConnected && resp.ip && resp.ip !== '0.0.0.0') {
                   assignedIp = resp.ip;
-                  if (typeof resp.rssi === 'number') assignedRssi = resp.rssi;
                   if (resp.ssid) assignedSsid = resp.ssid;
                   console.log('[Provisioning] Hardware reported Wi-Fi connected via readValue:', assignedIp);
                   break;
@@ -237,7 +233,7 @@ export class DeviceProvisioningService {
                 } else if (status === 'WIFI_TIMEOUT' || status === 'TIMEOUT') {
                   throw new Error('Connection timed out');
                 } else if (status === 'FAILED' || state === 'WIFI_FAILED') {
-                  throw new Error(resp.error || 'Wi-Fi connection failed');
+                  throw new Error(status || 'Wi-Fi connection failed');
                 }
               }
             }

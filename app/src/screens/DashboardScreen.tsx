@@ -65,6 +65,7 @@ export const DashboardScreen: React.FC = () => {
     setTelemetry,
     hardwareMode,
     deviceHealth,
+    deviceError,
   } = useAppStore();
 
   const { devices, activeDeviceId, setActiveDeviceId, getActiveDevice } = useDeviceStore();
@@ -363,6 +364,23 @@ export const DashboardScreen: React.FC = () => {
         {/* TAB 1: OVERVIEW */}
         {activeTab === 'OVERVIEW' && (
           <View style={styles.tabContent}>
+            {/* Firmware Update Needed Banner */}
+            {deviceError?.code === 'FW_UPDATE_NEEDED' && (
+              <Card tone="warning" style={[styles.offlineCard, { marginBottom: spacing.md }]}>
+                <View style={styles.offlineHeader}>
+                  <View style={styles.offlineTitleWrap}>
+                    <AlertTriangle size={18} color={colors.warningText} style={{ marginRight: 8 }} />
+                    <Text style={styles.offlineTitle}>
+                      Device firmware update needed
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.offlineDesc}>
+                  The connected WSG-01 device is running an older protocol version. Please update the device firmware to ensure full compatibility.
+                </Text>
+              </Card>
+            )}
+
             {/* Big Status Hero */}
             <SafetyStatusCard status={safetyStatus} />
 

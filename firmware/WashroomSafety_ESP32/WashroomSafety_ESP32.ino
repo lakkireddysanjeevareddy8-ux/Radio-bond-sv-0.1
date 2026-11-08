@@ -44,6 +44,7 @@ const char* PRODUCT_NAME      = "Washroom Safety Gadget";
 const char* MODEL_NUMBER      = "WSG-01";
 const char* SENSOR_TYPE       = "LD2410C";
 const char* FIRMWARE_VERSION  = "v1.2.0-esp32";
+const int   PROTOCOL_VERSION  = 1;
 
 #define SERVICE_UUID           "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHAR_PROVISION_UUID    "beb5483e-36e1-4688-b7f5-ea07361b26a8"
@@ -589,6 +590,23 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
         preferences.end();
         Serial.println("[BLE] Pairing token updated and saved in NVS.");
       }
+    } else {
+      Serial.printf("[BLE] Unknown command: %s\n", cmd);
+      if (pStatusChar) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+        JsonDocument errResp;
+#else
+        StaticJsonDocument<256> errResp;
+#endif
+        errResp["status"]   = "ERROR";
+        errResp["error"]    = "UNKNOWN_CMD";
+        errResp["cmd"]      = cmd;
+        errResp["protocol"] = PROTOCOL_VERSION;
+        errResp["fw"]       = FIRMWARE_VERSION;
+        String errOut;
+        serializeJson(errResp, errOut);
+        notifyChar(pStatusChar, errOut);
+      }
     }
   }
 };
@@ -605,15 +623,17 @@ void sendWiFiConnectedStatus(const String& ssid, const String& ipStr) {
   StaticJsonDocument<256> resp;
 #endif
 
-  resp["type"]    = "status";
-  resp["status"]  = "CONNECTED";
-  resp["state"]   = "WIFI_CONNECTED";
-  resp["trigger"] = "wifi";
-  resp["source"]  = "device";
-  resp["is_test"] = false;
-  resp["ssid"]    = ssid;
-  resp["ip"]      = ipStr;
-  resp["model"]   = MODEL_NUMBER;
+  resp["type"]     = "status";
+  resp["status"]   = "CONNECTED";
+  resp["state"]    = "WIFI_CONNECTED";
+  resp["trigger"]  = "wifi";
+  resp["source"]   = "device";
+  resp["is_test"]  = false;
+  resp["ssid"]     = ssid;
+  resp["ip"]       = ipStr;
+  resp["model"]    = MODEL_NUMBER;
+  resp["protocol"] = PROTOCOL_VERSION;
+  resp["fw"]       = FIRMWARE_VERSION;
 
   String jsonOut;
   serializeJson(resp, jsonOut);
@@ -643,6 +663,8 @@ void reportCurrentStatus() {
   resp["source"]   = "device";
   resp["is_test"]  = false;
   resp["model"]    = MODEL_NUMBER;
+  resp["protocol"] = PROTOCOL_VERSION;
+  resp["fw"]       = FIRMWARE_VERSION;
 
   preferences.begin("wsg01", true);
   String savedSsid = preferences.getString("ssid", "");

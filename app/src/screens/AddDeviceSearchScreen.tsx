@@ -902,6 +902,19 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
         const normState = String(data.state || '').toUpperCase();
 
         if (
+          data.error === 'FW_UPDATE_NEEDED' ||
+          data.code === 'FW_UPDATE_NEEDED' ||
+          (typeof data.protocol === 'number' && data.protocol < 1)
+        ) {
+          logger.warn('WIFI_SETUP', 'Device protocol outdated');
+          clearAllWifiTimers();
+          setWifiStatus('FAILED');
+          setErrorMessage('Device firmware update needed');
+          setPhase('WIFI_FAILED');
+          return;
+        }
+
+        if (
           normStatus === 'CONNECTED' ||
           normState === 'WIFI_CONNECTED' ||
           normStatus === 'WIFI_CONNECTED'
