@@ -1268,10 +1268,9 @@ export class BluetoothService {
             return;
           }
 
-          // Mark and persist
+          // Mark and persist marker
           this.lastHandledEmergencyMarker = Math.max(this.lastHandledEmergencyMarker, itemTs);
           storage.setItem('wsg_last_handled_emergency_marker', String(this.lastHandledEmergencyMarker)).catch(() => {});
-          EmergencyPushService.markEventProcessed(itemEventId);
 
           const trigger = String(newest.trigger || 'ALARM');
           const isTestEmergency = trigger.includes('TEST');
@@ -1346,7 +1345,6 @@ export class BluetoothService {
         console.log(`[event] ignored (already handled / initial history) - event ID ${eventId} already processed`);
         return;
       }
-      EmergencyPushService.markEventProcessed(eventId);
 
       const trigger = isTestEmergency ? 'TEST' : (parsed.trigger || (parsed.state === 'EMERGENCY' ? 'VOICE' : 'OTHER'));
       const triggerSource = isTestEmergency ? 'device' : (parsed.source || 'manual_device_trigger');

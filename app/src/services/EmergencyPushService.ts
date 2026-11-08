@@ -40,6 +40,13 @@ class EmergencyPushServiceClass {
   }
 
   /**
+   * Resets processed events memory (used for testing and user session resets).
+   */
+  public clearProcessedEvents(): void {
+    this.processedEventIds.clear();
+  }
+
+  /**
    * Process incoming push payload (from FCM, Expo Push, Supabase Webhook, or local device bridge).
    * Validates type = EMERGENCY / WSG01_EMERGENCY, deduplicates by eventId, and triggers urgent notification flow.
    */
