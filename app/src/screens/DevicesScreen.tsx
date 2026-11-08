@@ -19,6 +19,7 @@ import { colors, typography, spacing, borderRadius } from '../utils/theme';
 import { useAppStore } from '../store/useAppStore';
 import { useDeviceStore } from '../store/useDeviceStore';
 import { useConnectionStore } from '../store/useConnectionStore';
+import { ConnectionManager } from '../services/ConnectionManager';
 import { DeviceOnboardingScreen } from './DeviceOnboardingScreen';
 import { BluetoothOffScreen } from './BluetoothOffScreen';
 import { AddDeviceSearchScreen } from './AddDeviceSearchScreen';
@@ -111,6 +112,7 @@ export const DevicesScreen: React.FC = () => {
     connectedDevice: connConnectedDevice,
     disconnect: connDisconnect,
     setConnected: connSetConnected,
+    connectionManagerState,
   } = useConnectionStore();
   const [showOnboarding, setShowOnboarding] = useState(false);
 
@@ -622,10 +624,33 @@ export const DevicesScreen: React.FC = () => {
     if (!selectedDevice) return;
     setPairingStep('CONNECTING');
 
+    const finalName = customDeviceName.trim() || selectedDevice.name;
+    const finalId = selectedDevice.deviceId;
+
     let batteryPct: number | undefined;
 
     // REAL GATT CONNECTION FOR BLE HARDWARE
-    if (selectedDevice.rawDevice) {
+    if (selectedDevice.rawDevice && !selectedDevice.isEarbuds) {
+      try {
+        await ConnectionManager.connect({
+          id: finalId,
+          name: finalName,
+          connectionType: 'BLE',
+          rawDevice: selectedDevice.rawDevice,
+          rssi: selectedDevice.rssi,
+        });
+      } catch (gattErr: any) {
+        console.error('Real GATT connection failed:', gattErr);
+        const userErr = formatUserBleError(gattErr, undefined, 'connect');
+        logger.error('BLE_CONN', `Physical Bluetooth Connection Failed: ${userErr.display}`, logger.serializeError(gattErr));
+        // CRITICAL: NEVER fake connection if GATT fails!
+        setScanErrorMessage(
+          `${userErr.display}. Verify device is in range and running BLE firmware.`
+        );
+        setPairingStep('NOT_FOUND');
+        return;
+      }
+    } else if (selectedDevice.rawDevice) {
       try {
         if (!selectedDevice.rawDevice.gatt) {
           throw new Error('Device does not expose a GATT service interface.');
@@ -667,9 +692,6 @@ export const DevicesScreen: React.FC = () => {
         console.warn('Audio device connect note:', audioErr);
       }
     }
-
-    const finalName = customDeviceName.trim() || selectedDevice.name;
-    const finalId = selectedDevice.deviceId;
 
     // Call connection store flow to establish single source of truth:
     // marks connected, registers in useDeviceStore, sets activeDeviceId, sets bluetoothStatus to CONNECTED
@@ -958,23 +980,45 @@ export const DevicesScreen: React.FC = () => {
           <View style={styles.deviceInfo}>
             <Text style={styles.deviceName}>{connConnectedDevice?.name || deviceConfig?.deviceName || 'No device'}</Text>
             <View style={styles.onlineRow}>
-              {connStatus === 'connecting' ? (
+              {connStatus === 'connecting' || connectionManagerState === 'RECONNECTING' ? (
                 <ActivityIndicator size="small" color={colors.primary} style={{ marginRight: 6 }} />
               ) : (
                 <View
                   style={[
                     styles.dot,
-                    { backgroundColor: connStatus === 'connected' ? colors.safe : colors.offline },
+                    {
+                      backgroundColor:
+                        connStatus === 'connected'
+                          ? colors.safe
+                          : connectionManagerState === 'FAILED'
+                          ? colors.emergency
+                          : colors.offline,
+                    },
                   ]}
                 />
               )}
               <Text
                 style={[
                   styles.onlineText,
-                  { color: connStatus === 'connected' ? colors.safe : colors.offline },
+                  {
+                    color:
+                      connStatus === 'connected'
+                        ? colors.safe
+                        : connectionManagerState === 'FAILED'
+                        ? colors.emergency
+                        : colors.offline,
+                  },
                 ]}
               >
-                {connStatus === 'connected' ? 'CONNECTED' : connStatus === 'connecting' ? 'CONNECTING...' : 'OFFLINE'}
+                {connStatus === 'connected'
+                  ? 'CONNECTED'
+                  : connectionManagerState === 'RECONNECTING'
+                  ? 'RECONNECTING...'
+                  : connStatus === 'connecting'
+                  ? 'CONNECTING...'
+                  : connectionManagerState === 'FAILED'
+                  ? 'FAILED'
+                  : 'OFFLINE'}
               </Text>
               <Text style={styles.modeBadge}>
                 {isSimulatorMode
@@ -985,8 +1029,8 @@ export const DevicesScreen: React.FC = () => {
               </Text>
             </View>
 
-            {/* Disconnect Button when connected */}
-            {connStatus === 'connected' && (
+            {/* Disconnect Button when connected / Retry button when failed */}
+            {connStatus === 'connected' ? (
               <TouchableOpacity
                 style={{
                   marginTop: 8,
@@ -1006,7 +1050,27 @@ export const DevicesScreen: React.FC = () => {
                 <X size={13} color="#DC2626" />
                 <Text style={{ fontSize: 11, fontWeight: '700', color: '#DC2626' }}>Disconnect</Text>
               </TouchableOpacity>
-            )}
+            ) : connectionManagerState === 'FAILED' || connStatus === 'error' ? (
+              <TouchableOpacity
+                style={{
+                  marginTop: 8,
+                  backgroundColor: '#E0F2FE',
+                  paddingHorizontal: 10,
+                  paddingVertical: 5,
+                  borderRadius: borderRadius.md,
+                  alignSelf: 'flex-start',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
+                onPress={() => ConnectionManager.retry()}
+                accessibilityRole="button"
+                accessibilityLabel="Retry connection"
+              >
+                <RefreshCw size={13} color="#0284C7" />
+                <Text style={{ fontSize: 11, fontWeight: '700', color: '#0284C7' }}>Retry Connection</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         </View>
 

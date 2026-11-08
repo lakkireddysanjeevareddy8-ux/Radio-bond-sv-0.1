@@ -700,7 +700,12 @@ class NativeBluetoothServiceClass {
             } else {
               logger.info('BLE_CONN', `onDisconnected callback triggered cleanly for ${devId}`);
             }
-            useConnectionStore.getState().setDisconnected(error?.message || 'Native BLE disconnected');
+            try {
+              const { ConnectionManager } = require('./ConnectionManager');
+              ConnectionManager.handleBleDisconnect(devId, error?.message || 'Native BLE disconnected');
+            } catch (err) {
+              console.warn('[NativeBLE] handleBleDisconnect call note:', err);
+            }
           });
         } catch (e) {
           logger.warn('BLE_CONN', `onDisconnected listener registration failed for ${rawDevice.id}`, logger.serializeError(e));
@@ -841,7 +846,10 @@ class NativeBluetoothServiceClass {
     const devIdentifier = session?.device?.name || session?.device?.id || 'unknown';
     logger.info('BLE_CONN', `Disconnecting active native session for ${devIdentifier}`);
     console.log('[NativeBLE] Disconnecting active session for:', devIdentifier);
-    useConnectionStore.getState().setDisconnected('NativeBluetoothService disconnect called');
+    try {
+      const { ConnectionManager } = require('./ConnectionManager');
+      ConnectionManager.disconnect('NativeBluetoothService disconnect called');
+    } catch {}
     if (session?.server) {
       try {
         logger.info('BLE_CONN', `Calling cancelConnection on server ${session.server.id}`);

@@ -49,6 +49,7 @@ import { DeviceProvisioningService } from '../services/deviceProvisioningService
 import { useDeviceStore } from '../store/useDeviceStore';
 import { useAppStore } from '../store/useAppStore';
 import { useConnectionStore } from '../store/useConnectionStore';
+import { ConnectionManager } from '../services/ConnectionManager';
 import { logger, formatUserBleError } from '../utils/logger';
 import { PermissionPrimerModal } from '../components/PermissionPrimerModal';
 import { PermissionService } from '../services/PermissionService';
@@ -797,23 +798,20 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     const assignedIp = ip || assignedIpAddress || '192.168.1.100';
 
     setAssignedIpAddress(assignedIp);
-    setBluetoothStatus('CONNECTED');
     setWifiStatus('CONNECTED');
 
     const isCloudOk = await DeviceProvisioningService.checkCloudConnectivity();
     setCloudStatus(isCloudOk ? 'CONNECTED' : 'DISCONNECTED');
 
-    useConnectionStore.getState().setConnected({
+    ConnectionManager.updateConnectedMeta({
       id: finalId,
       name: finalName,
-      connectionType: connectedSession ? 'BLE' : 'WIFI',
       ipAddress: assignedIp,
       model: targetDevice?.product?.model || 'WSG-01',
       room: 'Master Washroom',
       rssi: typeof rssi === 'number' ? rssi : 0,
-      rawDevice: connectedSession?.server,
       ssid,
-    }, 'handleFinishWifiConnected');
+    });
 
     setIsSimulatorMode(false);
 
@@ -1064,19 +1062,9 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     setErrorMessage('');
 
     try {
-      const session = await BluetoothService.connectGatt(device);
+      const session = await ConnectionManager.connect(device);
       setConnectedSession(session);
       setTargetDevice(device);
-      setBluetoothStatus('CONNECTED');
-
-      useConnectionStore.getState().setConnected({
-        id: device.id,
-        name: device.name,
-        connectionType: 'BLE',
-        rawDevice: session.server,
-        model: device.product?.model || 'WSG-01',
-      }, 'handleConnectDevice BLE success');
-
       setIsConnecting(false);
       setPhase('WIFI_SETUP');
     } catch (err: any) {
@@ -1131,9 +1119,6 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
       const ip = result.ipAddress;
       setAssignedIpAddress(ip);
 
-      // Bluetooth is Connected (Test 1)
-      setBluetoothStatus('CONNECTED');
-
       // Wi-Fi is Connected (Test 1)
       setWifiStatus('CONNECTED');
 
@@ -1141,17 +1126,15 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
       const isCloudOk = await DeviceProvisioningService.checkCloudConnectivity();
       setCloudStatus(isCloudOk ? 'CONNECTED' : 'DISCONNECTED');
 
-      useConnectionStore.getState().setConnected({
+      ConnectionManager.updateConnectedMeta({
         id: finalId,
         name: finalName,
-        connectionType: connectedSession ? 'BLE' : 'WIFI',
         ipAddress: ip,
         model: targetDevice?.product?.model || 'WSG-01',
         room: 'Master Washroom',
         rssi: typeof result.rssi === 'number' ? result.rssi : 0,
-        rawDevice: connectedSession?.server,
         ssid: wifiSsid.trim(),
-      }, 'handleProvisionWifi success');
+      });
 
       setIsSimulatorMode(false);
 
@@ -1226,17 +1209,15 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
             if (info && info.deviceId && info.deviceId !== 'WSG-000001') {
               console.log('[Wi-Fi] Learned real hardware device ID from /api/device/info:', info.deviceId);
               const realId = info.deviceId;
-              useConnectionStore.getState().setConnected({
+              ConnectionManager.updateConnectedMeta({
                 id: realId,
                 name: finalName,
-                connectionType: connectedSession ? 'BLE' : 'WIFI',
                 ipAddress: ip,
                 model: info.model || 'WSG-01',
                 room: 'Master Washroom',
                 rssi: realRssi,
-                rawDevice: connectedSession?.server,
                 ssid: wifiSsid.trim(),
-              }, 'handleProvisionWifi learned real device ID');
+              });
               addOrUpdateDevice({
                 deviceId: realId,
                 name: finalName,
@@ -1288,20 +1269,18 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     const finalName = targetDevice?.name || 'Washroom Safety Gadget';
     const finalId = targetDevice?.id || 'wsg-01';
 
-    setBluetoothStatus('CONNECTED');
     setWifiStatus('DISCONNECTED');
     setCloudStatus('DISCONNECTED');
     setIsOnline(true);
     setIsSimulatorMode(false);
 
-    useConnectionStore.getState().setConnected({
+    ConnectionManager.updateConnectedMeta({
       id: finalId,
       name: finalName,
       connectionType: 'BLE',
-      rawDevice: connectedSession?.server,
       model: targetDevice?.product?.model || 'WSG-01',
       room: 'Master Washroom',
-    }, 'handleSkipWifi BLE retained');
+    });
 
     addOrUpdateDevice({
       deviceId: finalId,
@@ -2022,7 +2001,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
                 <TouchableOpacity
                   style={[styles.skipWifiBtn, { marginTop: 10, borderColor: '#CBD5E1', borderWidth: 1 }]}
                   onPress={async () => {
-                    await useConnectionStore.getState().disconnect();
+                    await ConnectionManager.disconnect('user requested from AddDeviceSearchScreen');
                     setAlreadyConnectedDevice(null);
                     setPhase('BLUETOOTH_STANDBY');
                   }}

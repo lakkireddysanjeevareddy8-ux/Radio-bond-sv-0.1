@@ -727,7 +727,10 @@ export class BluetoothService {
         raw.addEventListener('gattserverdisconnected', () => {
           console.log('[conn] Web GATT disconnected event');
           this.activeSession = null;
-          useConnectionStore.getState().setDisconnected('Web GATT disconnected');
+          try {
+            const { ConnectionManager } = require('./ConnectionManager');
+            ConnectionManager.handleBleDisconnect(discovered.id, 'Web GATT disconnected');
+          } catch {}
         }, { once: true });
       } catch (e) {
         console.warn('[conn] Could not attach gattserverdisconnected:', e);
@@ -1570,7 +1573,10 @@ export class BluetoothService {
       this.activeSession = null;
     }
 
-    useConnectionStore.getState().setDisconnected('BluetoothService.disconnect called');
+    try {
+      const { ConnectionManager } = require('./ConnectionManager');
+      ConnectionManager.disconnect('BluetoothService.disconnect called');
+    } catch {}
 
     if (session.isNative) {
       NativeBluetoothService.disconnect(session as any);

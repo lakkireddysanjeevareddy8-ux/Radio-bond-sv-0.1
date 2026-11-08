@@ -21,6 +21,7 @@ import { Esp32Service } from '../services/esp32Service';
 import { useDeviceStore } from '../store/useDeviceStore';
 import { useAppStore } from '../store/useAppStore';
 import { useConnectionStore } from '../store/useConnectionStore';
+import { ConnectionManager } from '../services/ConnectionManager';
 import {
   ArrowLeft,
   ArrowRight,
@@ -234,16 +235,8 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
     setErrorMessage('');
 
     try {
-      const session = await BluetoothService.connectGatt(discoveredDevice);
+      const session = await ConnectionManager.connect(discoveredDevice);
       setBleSession(session);
-
-      useConnectionStore.getState().setConnected({
-        id: discoveredDevice.id,
-        name: discoveredDevice.name,
-        connectionType: 'BLE',
-        rawDevice: session.server,
-        model: discoveredDevice.product?.model || 'WSG-01',
-      }, 'DeviceOnboardingScreen BLE connect success');
 
       // Transition to Wi-Fi Setup
       setCurrentStep('WIFI_SETUP');
@@ -516,18 +509,16 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
         firmwareVersion: info.firmware,
       });
 
-      useConnectionStore.getState().setConnected({
+      ConnectionManager.updateConnectedMeta({
         id: newSavedDevice.deviceId,
         name: newSavedDevice.name,
-        connectionType: bleSession ? 'BLE' : 'WIFI',
         ipAddress: ip,
         model: newSavedDevice.model,
         room: newSavedDevice.room,
         rssi: -52,
         firmwareVersion: info.firmware,
-        rawDevice: bleSession?.server,
         ssid: selectedNetwork?.ssid,
-      }, 'DeviceOnboardingScreen setup complete');
+      });
 
       setIsSimulatorMode(false);
 

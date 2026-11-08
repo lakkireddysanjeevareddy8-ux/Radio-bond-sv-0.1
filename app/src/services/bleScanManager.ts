@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import { BluetoothService, DiscoveredBleDevice } from './bluetoothService';
 import { NativeBluetoothService, DiscoveredNativeDevice } from './nativeBluetoothService';
+import { ConnectionManager } from './ConnectionManager';
 
 export interface ScanOptions {
   onDeviceFound: (device: DiscoveredBleDevice) => void;
@@ -109,6 +110,11 @@ export class BleScanManager {
   }
 
   private static notifyScanningListeners(scanning: boolean): void {
+    try {
+      ConnectionManager.setScanning(scanning);
+    } catch (e) {
+      console.warn('[scan] setScanning error:', e);
+    }
     this.scanListeners.forEach((fn) => {
       try {
         fn(scanning);

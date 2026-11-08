@@ -36,8 +36,8 @@ interface AppState {
   // Connection
   isOnline: boolean;
   setIsOnline: (isOnline: boolean) => void;
-  bluetoothStatus: 'CONNECTED' | 'DISCONNECTED';
-  setBluetoothStatus: (status: 'CONNECTED' | 'DISCONNECTED') => void;
+  bluetoothStatus: 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'RECONNECTING' | 'FAILED' | 'BLUETOOTH_OFF';
+  setBluetoothStatus: (status: 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'RECONNECTING' | 'FAILED' | 'BLUETOOTH_OFF') => void;
   wifiStatus: 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'FAILED';
   setWifiStatus: (status: 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'FAILED') => void;
   cloudStatus: 'CONNECTED' | 'DISCONNECTED';

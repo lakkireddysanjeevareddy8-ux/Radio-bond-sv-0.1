@@ -45,7 +45,9 @@ import {
   X,
   AlertTriangle,
   Lock,
+  RefreshCw,
 } from 'lucide-react-native';
+import { ConnectionManager } from '../services/ConnectionManager';
 
 export const DashboardScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
@@ -71,6 +73,7 @@ export const DashboardScreen: React.FC = () => {
 
   const {
     status: connStatus,
+    connectionManagerState,
     connectedDevice,
     disconnect: disconnectDevice,
   } = useConnectionStore();
@@ -226,12 +229,49 @@ export const DashboardScreen: React.FC = () => {
 
         {/* Status Badges: Bluetooth and Wi-Fi */}
         <View style={styles.statusBadgesContainer}>
-          <Pill
-            tone={isBleConnected ? 'safe' : 'offline'}
-            icon={<Bluetooth size={12} color={isBleConnected ? colors.safeText : colors.offlineText} />}
-            label={isBleConnected ? 'Bluetooth: Connected' : 'Bluetooth: Disconnected'}
-            size="sm"
-          />
+          {connectionManagerState === 'RECONNECTING' ? (
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={() => ConnectionManager.retry()}
+              accessibilityRole="button"
+              accessibilityLabel="Reconnecting Bluetooth, tap to retry"
+            >
+              <Pill
+                tone="warning"
+                icon={<ActivityIndicator size="small" color={colors.warningText} style={{ transform: [{ scale: 0.6 }] }} />}
+                label="Bluetooth: Reconnecting..."
+                size="sm"
+              />
+            </TouchableOpacity>
+          ) : connectionManagerState === 'FAILED' ? (
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={() => ConnectionManager.retry()}
+              accessibilityRole="button"
+              accessibilityLabel="Bluetooth connection failed, tap to retry"
+            >
+              <Pill
+                tone="offline"
+                icon={<RefreshCw size={12} color={colors.offlineText} />}
+                label="Bluetooth: Failed (Retry)"
+                size="sm"
+              />
+            </TouchableOpacity>
+          ) : connectionManagerState === 'BLUETOOTH_OFF' ? (
+            <Pill
+              tone="offline"
+              icon={<BluetoothOff size={12} color={colors.offlineText} />}
+              label="Bluetooth: Off"
+              size="sm"
+            />
+          ) : (
+            <Pill
+              tone={isBleConnected ? 'safe' : 'offline'}
+              icon={<Bluetooth size={12} color={isBleConnected ? colors.safeText : colors.offlineText} />}
+              label={isBleConnected ? 'Bluetooth: Connected' : 'Bluetooth: Disconnected'}
+              size="sm"
+            />
+          )}
           <TouchableOpacity
             activeOpacity={isWifiConnected ? 1 : 0.7}
             onPress={() => {
@@ -350,16 +390,26 @@ export const DashboardScreen: React.FC = () => {
                   We cannot communicate with the washroom unit right now over the network, but its
                   built-in millimeter-wave radar sensor and local siren remain completely active.
                 </Text>
-                {activeDevice?.ipAddress && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    loading={isReconnecting}
-                    title={isReconnecting ? 'Reconnecting...' : 'Try again'}
-                    onPress={handleManualReconnect}
-                    style={{ alignSelf: 'flex-start', marginTop: spacing.xs }}
-                  />
-                )}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={isReconnecting || connectionManagerState === 'RECONNECTING'}
+                  title={
+                    isReconnecting || connectionManagerState === 'RECONNECTING'
+                      ? 'Reconnecting...'
+                      : 'Try again'
+                  }
+                  onPress={async () => {
+                    if (activeDevice?.ipAddress) {
+                      await handleManualReconnect();
+                    } else {
+                      try {
+                        await ConnectionManager.retry();
+                      } catch {}
+                    }
+                  }}
+                  style={{ alignSelf: 'flex-start', marginTop: spacing.xs }}
+                />
               </Card>
             )}
 
