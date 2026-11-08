@@ -1,0 +1,81 @@
+# Supabase CLI temp files
+supabase/.temp/
+.DS_Store
+
+# Environment files
+.env
+.env*.local
+.env.*
+!.env.example
+
+# extra excludes for EAS upload
+dist/
+app/dist/
+**/dist/
+android/build/
+android/.gradle/
+android/app/build/
+**/.expo/
+*.apk
+*.aab
+*.mp4
+*.mov
+*.zip
+firmware/
+docs/
+
+node_modules/
+**/node_modules/
+.git/
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env
+.env*.local
+.env.*
+!.env.example
+
+# typescript
+*.tsbuildinfo
+
+# generated native folders
+/ios
+/android
+
+installed-wsg/
+app/installed-wsg/
+installed-wsg.apk
+installed-wsg.zip
+node_modules/
+**/node_modules/
+.git/

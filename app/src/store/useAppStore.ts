@@ -55,6 +55,10 @@ interface AppState {
   voicePrompt: string | null;
   setVoicePrompt: (prompt: string | null) => void;
 
+  // Device Error Banner
+  deviceError: { code: string; message: string; timestamp: string } | null;
+  setDeviceError: (error: { code: string; message: string; timestamp: string } | null) => void;
+
   // Mode (Legacy compatibility, kept in sync with hardwareMode)
   isSimulatorMode: boolean;
   setIsSimulatorMode: (isSimulator: boolean) => void;
@@ -279,6 +283,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Voice feedback
   voicePrompt: null,
   setVoicePrompt: (voicePrompt) => set({ voicePrompt }),
+
+  // Device Error Banner
+  deviceError: null,
+  setDeviceError: (deviceError) => set({ deviceError }),
 
   // Simulator mode toggle (syncs with hardwareMode)
   isSimulatorMode: initialHardwareMode === 'DEMO_SIMULATOR',

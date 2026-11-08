@@ -4,6 +4,7 @@ import { useAppStore } from './useAppStore';
 import { useDeviceStore, SavedDevice } from './useDeviceStore';
 import { BluetoothService } from '../services/bluetoothService';
 import { deviceService } from '../services/DeviceCommunicationService';
+import { logger, formatUserBleError } from '../utils/logger';
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -17,6 +18,7 @@ export interface ConnectedDeviceInfo {
   batteryLevel?: number;
   firmwareVersion?: string;
   ipAddress?: string;
+  ssid?: string;
   rawDevice?: any;
   isEarbuds?: boolean;
 }
@@ -28,10 +30,10 @@ interface ConnectionState {
   lastConnectedDeviceId: string | null;
 
   // Actions
-  setConnecting: (device: Partial<ConnectedDeviceInfo> & { id: string; name: string }) => void;
-  setConnected: (device: ConnectedDeviceInfo) => void;
+  setConnecting: (device: Partial<ConnectedDeviceInfo> & { id: string; name: string }, reason?: string) => void;
+  setConnected: (device: ConnectedDeviceInfo, reason?: string) => void;
   setDisconnected: (reason?: string) => void;
-  setError: (error: string) => void;
+  setError: (error: string | any, reason?: string) => void;
   connect: (device: ConnectedDeviceInfo) => Promise<void>;
   disconnect: () => Promise<void>;
   reconnect: (preferredId?: string) => Promise<void>;
@@ -47,7 +49,9 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   lastError: null,
   lastConnectedDeviceId: null,
 
-  setConnecting: (device) => {
+  setConnecting: (device, reason = 'initiating connection') => {
+    logger.info('CONN_STORE', `Connection status: connecting ("${device.name}" - ${device.id}) (reason: ${reason})`, device);
+    console.log(`[conn] status -> connecting (reason: ${reason})`);
     console.log(`[conn] connecting: "${device.name}" (${device.id})`);
     set({
       status: 'connecting',
@@ -61,12 +65,15 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     });
   },
 
-  setConnected: (device) => {
+  setConnected: (device, reason = 'connection established') => {
+    logger.info('CONN_STORE', `Connection status: connected ("${device.name}" - ${device.id}) via ${device.connectionType} (reason: ${reason})`, device);
+    console.log(`[conn] status -> connected (reason: ${reason})`);
     console.log(`[conn] connected: "${device.name}" (${device.id}) via ${device.connectionType}`);
 
     // 0. Single location: Ensure BLE characteristic discovery & monitoring is started, or Wi-Fi Realtime subscribed
     if (device.connectionType === 'BLE') {
       BluetoothService.ensureSessionAndMonitoring(device).catch((err) => {
+        logger.warn('CONN_STORE', `ensureSessionAndMonitoring note for ${device.id}`, logger.serializeError(err));
         console.warn('[conn] ensureSessionAndMonitoring note:', err);
       });
     } else if (device.connectionType === 'WIFI') {
@@ -100,31 +107,41 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     useDeviceStore.getState().addOrUpdateDevice(saved);
     useDeviceStore.getState().setActiveDeviceId(device.id);
 
-    // 3. Attach Web GATT disconnect listener if available
+    // 3. Attach Web GATT disconnect listener if available (guarded against duplicates)
     if (device.rawDevice && typeof device.rawDevice.addEventListener === 'function') {
-      try {
-        device.rawDevice.addEventListener(
-          'gattserverdisconnected',
-          () => {
-            console.log(`[conn] disconnected: Web GATT disconnect event fired for "${device.name}"`);
-            get().setDisconnected('Web GATT server disconnected');
-          },
-          { once: true }
-        );
-      } catch (e) {
-        console.warn('[conn] Could not attach gattserverdisconnected listener:', e);
+      if (!device.rawDevice._gattDisconnectedAttached) {
+        device.rawDevice._gattDisconnectedAttached = true;
+        try {
+          device.rawDevice.addEventListener(
+            'gattserverdisconnected',
+            () => {
+              logger.warn('CONN_STORE', `Web GATT disconnect event fired for "${device.name}"`);
+              console.log(`[conn] disconnected: Web GATT disconnect event fired for "${device.name}"`);
+              get().setDisconnected('Web GATT server disconnected');
+            },
+            { once: true }
+          );
+        } catch (e) {
+          logger.warn('CONN_STORE', 'Could not attach gattserverdisconnected listener', logger.serializeError(e));
+          console.warn('[conn] Could not attach gattserverdisconnected listener:', e);
+        }
       }
     }
 
-    // 4. Attach Native BLE disconnect listener if available
+    // 4. Attach Native BLE disconnect listener if available (guarded against duplicates)
     if (device.rawDevice && typeof device.rawDevice.onDisconnected === 'function') {
-      try {
-        device.rawDevice.onDisconnected(() => {
-          console.log(`[conn] disconnected: Native BLE disconnect event fired for "${device.name}"`);
-          get().setDisconnected('Native BLE device disconnected');
-        });
-      } catch (e) {
-        console.warn('[conn] Could not attach native onDisconnected listener:', e);
+      if (!device.rawDevice._onDisconnectedAttached) {
+        device.rawDevice._onDisconnectedAttached = true;
+        try {
+          device.rawDevice.onDisconnected(() => {
+            logger.warn('CONN_STORE', `Native BLE disconnect event fired for "${device.name}"`);
+            console.log(`[conn] disconnected: Native BLE disconnect event fired for "${device.name}"`);
+            get().setDisconnected('Native BLE device disconnected');
+          });
+        } catch (e) {
+          logger.warn('CONN_STORE', 'Could not attach native onDisconnected listener', logger.serializeError(e));
+          console.warn('[conn] Could not attach native onDisconnected listener:', e);
+        }
       }
     }
 
@@ -148,6 +165,12 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
   setDisconnected: (reason = 'Disconnected') => {
     const currentDevice = get().connectedDevice;
+    logger.warn('CONN_STORE', `Connection status: disconnected (${reason})`, {
+      deviceId: currentDevice?.id,
+      deviceName: currentDevice?.name,
+      connectionType: currentDevice?.connectionType,
+    });
+    console.log(`[conn] status -> disconnected (reason: ${reason})`);
     console.log(`[conn] disconnected: ${reason} (Device: ${currentDevice?.name || 'none'} ID: ${currentDevice?.id || 'none'})`);
     console.log('[conn drop diagnostic]', {
       timestamp: new Date().toISOString(),
@@ -180,32 +203,40 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     });
   },
 
-  setError: (error) => {
-    console.log(`[conn] error: ${error}`);
+  setError: (error, reason = 'Connection error') => {
+    const formatted = typeof error === 'string'
+      ? formatUserBleError(error, error, 'connect')
+      : formatUserBleError(error, undefined, 'connect');
+    logger.error('CONN_STORE', `Connection status: error - ${formatted.display} (reason: ${reason})`, logger.serializeError(error));
+    console.log(`[conn] status -> error (reason: ${reason})`);
+    console.log(`[conn] error: ${formatted.display}`);
     useAppStore.getState().setIsOnline(false);
     set({
       status: 'error',
-      lastError: error,
+      lastError: formatted.display,
     });
   },
 
   connect: async (device) => {
-    get().setConnecting(device);
+    logger.info('CONN_STORE', `connect called for ${device.name} (${device.id})`);
+    get().setConnecting(device, 'connect() initiated');
     try {
       if (device.rawDevice?.gatt) {
         if (!device.rawDevice.gatt.connected) {
           await device.rawDevice.gatt.connect();
         }
       }
-      get().setConnected(device);
+      get().setConnected(device, 'connect() GATT link verified');
     } catch (err: any) {
-      get().setError(err?.message || 'Failed to establish connection');
+      logger.error('CONN_STORE', `connect failed for ${device.id}`, logger.serializeError(err));
+      get().setError(err?.message || 'Failed to establish connection', 'connect() exception');
       throw err;
     }
   },
 
   disconnect: async () => {
     const current = get().connectedDevice;
+    logger.info('CONN_STORE', `disconnect requested for "${current?.name || 'current device'}"`);
     console.log(`[conn] disconnect requested for: "${current?.name || 'current device'}"`);
 
     if (current?.rawDevice?.gatt) {
@@ -214,15 +245,18 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
           current.rawDevice.gatt.disconnect();
         }
       } catch (e) {
+        logger.warn('CONN_STORE', 'GATT disconnect error', logger.serializeError(e));
         console.warn('[conn] GATT disconnect error:', e);
       }
     }
 
     if (current?.rawDevice && typeof current.rawDevice.cancelConnection === 'function') {
       try {
+        logger.info('CONN_STORE', `Calling cancelConnection on native BLE device ${current.id}`);
         console.log('[conn] Calling cancelConnection on native BLE device:', current.id);
         await current.rawDevice.cancelConnection();
       } catch (e) {
+        logger.warn('CONN_STORE', 'Native cancelConnection note', logger.serializeError(e));
         console.warn('[conn] Native cancelConnection note:', e);
       }
     }
@@ -233,10 +267,12 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   reconnect: async (preferredId?: string) => {
     const id = preferredId || get().lastConnectedDeviceId || get().connectedDevice?.id;
     if (!id) {
+      logger.warn('CONN_STORE', 'reconnect aborted: No known device ID');
       console.warn('[conn] reconnect aborted: No known device ID');
       return;
     }
 
+    logger.info('CONN_STORE', `reconnect attempt for device: ${id}`);
     console.log(`[conn] Reconnect attempt for device: ${id}`);
     get().setConnecting({ id, name: get().connectedDevice?.name || 'WSG-01 Device' });
 
@@ -245,6 +281,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       const isStillConnected = await NativeBluetoothService.isDeviceConnected(id);
 
       if (isStillConnected) {
+        logger.info('CONN_STORE', `Native BLE link is already active for ${id}. Refreshing session...`);
         console.log('[conn] Native BLE link is already active. Refreshing session and re-attaching event monitors...');
         const session = await BluetoothService.ensureActiveSession();
         if (session) {
@@ -259,11 +296,13 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       }
 
       // If false, cancel connection if hanging, wait 500ms, then connect cleanly
+      logger.info('CONN_STORE', `Calling cancelDeviceConnection for ${id} before reconnect`);
       console.log('[conn] Link not active. Calling cancelConnection, pausing 500ms before reconnect...');
       try {
         const mgr = NativeBluetoothService.getManager();
         await mgr.cancelDeviceConnection(id);
       } catch (cancelErr) {
+        logger.warn('CONN_STORE', 'cancelDeviceConnection cleanup note', logger.serializeError(cancelErr));
         console.warn('[conn] cancelDeviceConnection cleanup note:', cancelErr);
       }
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -278,6 +317,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
         });
       }
     } catch (err: any) {
+      logger.error('CONN_STORE', `Reconnect failed for ${id}`, logger.serializeError(err));
       console.error('[conn] Reconnect failed:', err?.message || err);
       get().setError(err?.message || 'Reconnect failed');
       throw err;

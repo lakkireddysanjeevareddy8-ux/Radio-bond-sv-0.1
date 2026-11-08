@@ -63,6 +63,7 @@ import {
   LogOut,
   FlaskConical,
   Wrench,
+  Terminal,
 } from 'lucide-react-native';
 import { QuietHoursService, BypassPermissionStatus } from '../services/QuietHoursService';
 
@@ -1148,6 +1149,18 @@ export const SettingsScreen: React.FC = () => {
             showChevron={true}
             onPress={() => navigation.navigate('Demo')}
             accessibilityLabel="Open demo and testing screen"
+            style={{ marginBottom: spacing.md, paddingHorizontal: 0 }}
+          />
+
+          {/* Diagnostic Debug Logs Navigation Row */}
+          <ListRow
+            title="Debug logs & diagnostics"
+            subtitle="View real-time BLE GATT events, errors, and system telemetry"
+            leftIcon={<Terminal size={18} color={colors.primaryDark} />}
+            leftBadgeTone="primary"
+            showChevron={true}
+            onPress={() => navigation.navigate('DebugLogs')}
+            accessibilityLabel="Open diagnostic debug logs"
             style={{ marginBottom: spacing.md, paddingHorizontal: 0 }}
           />
 

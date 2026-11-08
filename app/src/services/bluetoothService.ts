@@ -6,6 +6,7 @@ import { useAppStore } from '../store/useAppStore';
 import { useConnectionStore } from '../store/useConnectionStore';
 import { EmergencyPushService } from './EmergencyPushService';
 import { storage } from '../utils/storage';
+import { logger } from '../utils/logger';
 
 export interface DiscoveredBleDevice {
   id: string;
@@ -89,10 +90,58 @@ export class BluetoothService {
   private static activeStatusMonitorCleanup: (() => void) | null = null;
   private static activeMonitoredSessionId: string | null = null;
   private static emergencyListeners: Set<(event: EmergencyEvent) => void> = new Set();
+  private static notificationListeners: Set<(notification: any, source: 'event' | 'status') => void> = new Set();
   private static lastHandledEmergencyMarker: number = 0;
   private static isInitialBufferBaseline: boolean = true;
   private static incomingBufferByChar: Map<string, string> = new Map();
   private static markerInitialized: boolean = false;
+
+  /**
+   * Registers a listener for all incoming parsed BLE notifications (Event and Status).
+   */
+  public static addNotificationListener(
+    listener: (notification: any, source: 'event' | 'status') => void
+  ): () => void {
+    this.notificationListeners.add(listener);
+    return () => {
+      this.notificationListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Sends a JSON command to the WSG-01 device over BLE provisionChar (COMMAND characteristic).
+   * Masks any sensitive credentials (passwords) from logs.
+   */
+  public static async sendCommand(
+    session: ConnectedBleSession | null | undefined,
+    cmdObj: Record<string, any>
+  ): Promise<boolean> {
+    const targetSession = session || this.activeSession;
+    if (!targetSession?.provisionChar) {
+      logger.warn('BLE_CMD', `Cannot send command ${cmdObj.cmd}: provisionChar not found`);
+      return false;
+    }
+
+    const payload = JSON.stringify(cmdObj);
+    const sanitized = { ...cmdObj };
+    if ('pass' in sanitized) sanitized.pass = '***';
+    if ('password' in sanitized) sanitized.password = '***';
+    logger.info('BLE_CMD', `Writing command to ${targetSession.device.id}: ${cmdObj.cmd}`, sanitized);
+
+    try {
+      const char = targetSession.provisionChar;
+      if (typeof char.writeValueWithResponse === 'function') {
+        await char.writeValueWithResponse(payload);
+      } else {
+        await char.writeValue(payload);
+      }
+      logger.info('BLE_CMD', `Command ${cmdObj.cmd} sent successfully`);
+      return true;
+    } catch (err: any) {
+      logger.error('BLE_CMD', `Failed to send command ${cmdObj.cmd}`, logger.serializeError(err));
+      throw err;
+    }
+  }
 
   /**
    * Returns the currently active connected BLE session, if any.
@@ -532,6 +581,11 @@ export class BluetoothService {
   public static async connectGatt(
     discovered: DiscoveredBleDevice
   ): Promise<ConnectedBleSession> {
+    logger.info('BLE_CONN', `connectGatt initiated for ${discovered.name || discovered.id} (${discovered.id})`, {
+      id: discovered.id,
+      name: discovered.name,
+      isNative: discovered.isNative,
+    });
     // 1. Native Mobile GATT connection
     if (discovered.isNative || Platform.OS === 'android' || Platform.OS === 'ios') {
       const nativeSession = await NativeBluetoothService.connectGatt(
@@ -550,6 +604,7 @@ export class BluetoothService {
         isNative: true,
       };
       this.activeSession = session;
+      logger.info('BLE_CONN', `Native GATT session created for ${discovered.id}`);
       this.startDeviceEventMonitoring(session);
       return session;
     }
@@ -727,13 +782,17 @@ export class BluetoothService {
     session: ConnectedBleSession | null,
     config: EscalationConfig
   ): Promise<boolean> {
-    if (!session) return false;
+    if (!session) {
+      logger.warn('BLE_CMD', 'writeEscalationConfig failed: no active session');
+      return false;
+    }
     const payload = JSON.stringify({
       cmd: 'SET_ESCALATION_CONFIG',
       t1: config.t1Seconds,
       repeat: config.repeatIntervalSec,
       volume: config.alarmVolume,
     });
+    logger.info('BLE_CMD', `Writing escalation config to ${session.device.id}`, config);
 
     try {
       if (session.configChar) {
@@ -742,6 +801,7 @@ export class BluetoothService {
         } else {
           await session.configChar.writeValue(payload);
         }
+        logger.info('BLE_CMD', 'writeEscalationConfig succeeded via configChar');
         return true;
       } else if (session.provisionChar) {
         if (session.provisionChar.writeValueWithResponse) {
@@ -749,9 +809,11 @@ export class BluetoothService {
         } else {
           await session.provisionChar.writeValue(payload);
         }
+        logger.info('BLE_CMD', 'writeEscalationConfig succeeded via provisionChar');
         return true;
       }
     } catch (err) {
+      logger.error('BLE_CMD', 'Failed to write escalation config', logger.serializeError(err));
       console.error('[BLE] Failed to write escalation config:', err);
     }
     return false;
@@ -763,17 +825,23 @@ export class BluetoothService {
   public static async readEscalationConfig(
     session: ConnectedBleSession | null
   ): Promise<EscalationConfig | null> {
-    if (!session?.configChar) return null;
+    if (!session?.configChar) {
+      logger.warn('BLE_CMD', 'readEscalationConfig failed: configChar not found');
+      return null;
+    }
     try {
+      logger.info('BLE_CMD', `Reading escalation config from ${session.device.id}`);
       const bytes: Uint8Array = await session.configChar.readValue();
       const text = new TextDecoder().decode(bytes);
       const data = JSON.parse(text);
+      logger.info('BLE_CMD', 'readEscalationConfig succeeded', data);
       return {
         t1Seconds: Number(data.t1 || 300),
         repeatIntervalSec: Number(data.repeat || 15),
         alarmVolume: Number(data.volume || 80),
       };
     } catch (e) {
+      logger.error('BLE_CMD', 'Could not read escalation config over BLE', logger.serializeError(e));
       console.warn('[BLE] Could not read escalation config over BLE:', e);
     }
     return null;
@@ -950,6 +1018,11 @@ export class BluetoothService {
     console.log('[WSG-01] Payload:', payload);
     console.log('[WSG-01] Sending TEST_EMERGENCY...');
 
+    logger.info('BLE_CMD', `Sending TEST_EMERGENCY to ${targetSession.device.id}`, {
+      deviceId: targetSession.device.id,
+      payload,
+    });
+
     try {
       if (typeof targetChar.writeValueWithResponse === 'function') {
         console.log('[TEST DEBUG 8] write method = writeValueWithResponse');
@@ -960,9 +1033,11 @@ export class BluetoothService {
         console.log('[WSG-01] BLE WRITE (writeValue)');
         await targetChar.writeValue(payload);
       }
+      logger.info('BLE_CMD', `TEST_EMERGENCY write successful for ${targetSession.device.id}`);
       console.log('[WSG-01] BLE WRITE SUCCESS');
       return true;
     } catch (e: any) {
+      logger.error('BLE_CMD', `TEST_EMERGENCY write failed for ${targetSession.device.id}`, logger.serializeError(e));
       console.error('[WSG-01] BLE WRITE FAILED');
       console.error('[WSG-01] Error:', e?.message || e);
       throw e;
@@ -1085,11 +1160,38 @@ export class BluetoothService {
       } else {
         this.incomingBufferByChar.delete(charKey);
       }
+      logger.warn('BLE_NOTIF', `JSON parse error on ${source}: ${parseErr?.message}`, { candidate });
       console.log(`[event] parse error ${parseErr?.message || parseErr} | raw: ${candidate}`);
       return;
     }
 
+    logger.info('BLE_NOTIF', `Parsed notification from ${source}`, parsed);
     console.log(`[event] parsed ${JSON.stringify(parsed)}`);
+
+    // Dispatch to registered notification listeners
+    this.notificationListeners.forEach((listener) => {
+      try {
+        listener(parsed, source);
+      } catch (lErr) {
+        console.warn('[BLE] Notification listener callback error:', lErr);
+      }
+    });
+
+    // Device error reporting: check if device returned an error payload
+    if (!Array.isArray(parsed)) {
+      const normType = String(parsed?.type || '').toUpperCase();
+      const normStatus = String(parsed?.status || '').toUpperCase();
+      if (normType === 'ERROR' || normStatus === 'ERROR' || Boolean(parsed?.error)) {
+        const errCode = String(parsed.code || parsed.error || 'DEV-501');
+        const errMsg = String(parsed.message || parsed.error || 'Device reported error');
+        logger.error('DEVICE', `Device reported error: [${errCode}] ${errMsg}`, parsed);
+        useAppStore.getState().setDeviceError({
+          code: errCode,
+          message: errMsg,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
 
     // Update real hardware ID if present in status / heartbeat
     const reportedDevId = parsed?.device_id || parsed?.deviceId;
@@ -1289,6 +1391,7 @@ export class BluetoothService {
   ): (() => void) | null {
     const targetSession = session || this.activeSession;
     if (!targetSession) {
+      logger.warn('BLE_MONITOR', 'Cannot start event monitoring: No active BLE session');
       console.warn('[WSG BLE EVENT] Cannot start event monitoring: No active BLE session');
       return null;
     }
@@ -1302,6 +1405,7 @@ export class BluetoothService {
 
     const sessionId = targetSession.device.id + '_' + (targetSession.connectedAt ? targetSession.connectedAt.getTime() : '0');
     if (this.activeMonitoredSessionId === sessionId && this.activeEventMonitorCleanup) {
+      logger.info('BLE_MONITOR', `Event monitoring already active for session ${sessionId}`);
       console.log('[WSG BLE EVENT] Event monitoring already active for session:', sessionId);
       return () => {
         if (onEmergency) this.emergencyListeners.delete(onEmergency);
@@ -1312,6 +1416,7 @@ export class BluetoothService {
     this.stopDeviceEventMonitoring();
     this.activeMonitoredSessionId = sessionId;
 
+    logger.info('BLE_MONITOR', `Starting event and status monitors for ${targetSession.device.id}`);
     console.log('[WSG BLE EVENT] Starting event and status characteristic monitors for device:', targetSession.device.id);
 
     // 1. Subscribe to Event Characteristic (beb5483e-36e1-4688-b7f5-ea07361b26aa)
@@ -1321,11 +1426,14 @@ export class BluetoothService {
           this.handleIncomingBleNotification(targetSession, data, 'event');
         });
         this.activeEventMonitorCleanup = unsubEvent;
+        logger.info('BLE_MONITOR', `Subscribed to Event Characteristic (${targetSession.eventLogChar.uuid})`);
         console.log(`[event] subscribed ${targetSession.eventLogChar.uuid}`);
       } catch (err) {
+        logger.error('BLE_MONITOR', 'Failed to monitor Event Characteristic', logger.serializeError(err));
         console.error('[WSG BLE EVENT] Failed to monitor Event Characteristic:', err);
       }
     } else {
+      logger.warn('BLE_MONITOR', 'Event Characteristic not available on session for monitoring');
       console.warn('[WSG BLE EVENT] Event Characteristic not available on session for monitoring');
     }
 
@@ -1336,8 +1444,10 @@ export class BluetoothService {
           this.handleIncomingBleNotification(targetSession, data, 'status');
         });
         this.activeStatusMonitorCleanup = unsubStatus;
+        logger.info('BLE_MONITOR', `Subscribed to Status Characteristic (${targetSession.statusChar.uuid})`);
         console.log(`[event] subscribed ${targetSession.statusChar.uuid}`);
       } catch (err) {
+        logger.error('BLE_MONITOR', 'Failed to monitor Status Characteristic', logger.serializeError(err));
         console.error('[WSG BLE EVENT] Failed to monitor Status Characteristic:', err);
       }
     }
@@ -1413,18 +1523,23 @@ export class BluetoothService {
    * Stop active BLE event and status monitoring and clean up subscriptions.
    */
   public static stopDeviceEventMonitoring(): void {
+    logger.info('BLE_MONITOR', 'stopDeviceEventMonitoring called');
     if (this.activeEventMonitorCleanup) {
       try {
         this.activeEventMonitorCleanup();
         console.log('[WSG BLE EVENT] Cleaned up Event Characteristic monitor');
-      } catch { }
+      } catch (cleanupErr) {
+        logger.warn('BLE_MONITOR', 'Error cleaning up Event Characteristic monitor', logger.serializeError(cleanupErr));
+      }
       this.activeEventMonitorCleanup = null;
     }
     if (this.activeStatusMonitorCleanup) {
       try {
         this.activeStatusMonitorCleanup();
         console.log('[WSG BLE EVENT] Cleaned up Status Characteristic monitor');
-      } catch { }
+      } catch (cleanupErr) {
+        logger.warn('BLE_MONITOR', 'Error cleaning up Status Characteristic monitor', logger.serializeError(cleanupErr));
+      }
       this.activeStatusMonitorCleanup = null;
     }
     this.activeMonitoredSessionId = null;
@@ -1446,6 +1561,7 @@ export class BluetoothService {
    */
   public static disconnect(session: ConnectedBleSession | null): void {
     if (!session) return;
+    logger.info('BLE_CONN', `BluetoothService.disconnect called for ${session.device?.name || session.device?.id}`);
 
     this.stopDeviceEventMonitoring();
     this.emergencyListeners.clear();

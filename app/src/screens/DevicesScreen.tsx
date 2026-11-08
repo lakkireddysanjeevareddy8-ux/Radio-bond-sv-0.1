@@ -25,6 +25,7 @@ import { AddDeviceSearchScreen } from './AddDeviceSearchScreen';
 import { BluetoothService } from '../services/bluetoothService';
 import { DeviceProvisioningService } from '../services/deviceProvisioningService';
 import { supabase } from '../services/supabaseClient';
+import { logger, formatUserBleError } from '../utils/logger';
 import {
   Wifi,
   WifiOff,
@@ -645,9 +646,11 @@ export const DevicesScreen: React.FC = () => {
         }
       } catch (gattErr: any) {
         console.error('Real GATT connection failed:', gattErr);
+        const userErr = formatUserBleError(gattErr, undefined, 'connect');
+        logger.error('BLE_CONN', `Physical Bluetooth Connection Failed: ${userErr.display}`, logger.serializeError(gattErr));
         // CRITICAL: NEVER fake connection if GATT fails!
         setScanErrorMessage(
-          `Physical Bluetooth Connection Failed: Could not connect to "${selectedDevice.name}". Error: ${gattErr.message || 'Connection refused'}. Verify device is in range and running BLE firmware.`
+          `${userErr.display}. Verify device is in range and running BLE firmware.`
         );
         setPairingStep('NOT_FOUND');
         return;

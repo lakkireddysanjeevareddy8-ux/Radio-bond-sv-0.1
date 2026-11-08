@@ -237,6 +237,14 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
       const session = await BluetoothService.connectGatt(discoveredDevice);
       setBleSession(session);
 
+      useConnectionStore.getState().setConnected({
+        id: discoveredDevice.id,
+        name: discoveredDevice.name,
+        connectionType: 'BLE',
+        rawDevice: session.server,
+        model: discoveredDevice.product?.model || 'WSG-01',
+      }, 'DeviceOnboardingScreen BLE connect success');
+
       // Transition to Wi-Fi Setup
       setCurrentStep('WIFI_SETUP');
       loadWifiNetworks(session);
@@ -505,13 +513,15 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
       useConnectionStore.getState().setConnected({
         id: newSavedDevice.deviceId,
         name: newSavedDevice.name,
-        connectionType: 'WIFI',
+        connectionType: bleSession ? 'BLE' : 'WIFI',
         ipAddress: ip,
         model: newSavedDevice.model,
         room: newSavedDevice.room,
         rssi: -52,
         firmwareVersion: info.firmware,
-      });
+        rawDevice: bleSession?.server,
+        ssid: selectedNetwork?.ssid,
+      }, 'DeviceOnboardingScreen setup complete');
 
       setIsSimulatorMode(false);
 

@@ -175,8 +175,10 @@ export class DeviceCommunicationService {
       // If BLE connection is active, NEVER flip status to DISCONNECTED based on Supabase telemetry timeout
       try {
         const { useConnectionStore } = require('../store/useConnectionStore');
+        const { BluetoothService } = require('./bluetoothService');
         const conn = useConnectionStore.getState();
-        if (conn.status === 'connected' && conn.connectedDevice?.connectionType === 'BLE') {
+        const bleSession = BluetoothService.getActiveSession();
+        if ((conn.status === 'connected' && conn.connectedDevice?.connectionType === 'BLE') || bleSession) {
           return;
         }
       } catch {}
@@ -194,8 +196,10 @@ export class DeviceCommunicationService {
         if (!this.offlineNotificationDispatched) {
           try {
             const { useConnectionStore } = require('../store/useConnectionStore');
+            const { BluetoothService } = require('./bluetoothService');
             const conn = useConnectionStore.getState();
-            if (conn.status === 'connected') {
+            const bleSession = BluetoothService.getActiveSession();
+            if (conn.status === 'connected' || bleSession) {
               return;
             }
           } catch {}

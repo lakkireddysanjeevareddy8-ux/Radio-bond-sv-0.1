@@ -38,6 +38,7 @@ import {
   Cloud,
   ShieldCheck,
   Bluetooth,
+  Lock,
 } from 'lucide-react-native';
 import { colors, spacing } from '../utils/theme';
 import { BluetoothService, DiscoveredBleDevice, ConnectedBleSession } from '../services/bluetoothService';
@@ -48,6 +49,7 @@ import { DeviceProvisioningService } from '../services/deviceProvisioningService
 import { useDeviceStore } from '../store/useDeviceStore';
 import { useAppStore } from '../store/useAppStore';
 import { useConnectionStore } from '../store/useConnectionStore';
+import { logger, formatUserBleError } from '../utils/logger';
 import { PermissionPrimerModal } from '../components/PermissionPrimerModal';
 import { PermissionService } from '../services/PermissionService';
 import { EmergencyPushService } from '../services/EmergencyPushService';
@@ -101,11 +103,29 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
   const [alreadyConnectedDevice, setAlreadyConnectedDevice] = useState<{ id: string; name: string } | null>(null);
   const [connectedSession, setConnectedSession] = useState<ConnectedBleSession | null>(null);
   const [targetDevice, setTargetDevice] = useState<DiscoveredBleDevice | null>(null);
-  const [wifiSsid, setWifiSsid] = useState<string>('Home_2.4G');
+  const [wifiSsid, setWifiSsid] = useState<string>('');
   const [wifiPass, setWifiPass] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [provisionStatusText, setProvisionStatusText] = useState<string>('Sending Wi-Fi configuration...');
   const [assignedIpAddress, setAssignedIpAddress] = useState<string>('');
+
+  // Improved Wi-Fi configuration state
+  const [wifiSubState, setWifiSubState] = useState<'CHECKING_STATUS' | 'ALREADY_CONNECTED' | 'RECONNECTING' | 'FORM'>('CHECKING_STATUS');
+  const [wifiNetworks, setWifiNetworks] = useState<{ ssid: string; rssi: number; sec: number }[]>([]);
+  const [isScanningWifi, setIsScanningWifi] = useState<boolean>(false);
+  const [wifiScanTimedOut, setWifiScanTimedOut] = useState<boolean>(false);
+  const [selectedNetworkSec, setSelectedNetworkSec] = useState<number>(1);
+  const [isManualSsid, setIsManualSsid] = useState<boolean>(false);
+  const [savedSsid, setSavedSsid] = useState<string>('');
+  const [connectedSsid, setConnectedSsid] = useState<string>('');
+  const [reconnectSecondsElapsed, setReconnectSecondsElapsed] = useState<number>(0);
+
+  // Wi-Fi Step Timers
+  const statusCheckTimeoutRef = useRef<any>(null);
+  const reconnectIntervalRef = useRef<any>(null);
+  const reconnectTimeoutRef = useRef<any>(null);
+  const autoAdvanceTimerRef = useRef<any>(null);
+  const wifiScanTimeoutRef = useRef<any>(null);
 
   const [isScanningActive, setIsScanningActive] = useState<boolean>(BleScanManager.getIsScanning());
   const [cooldownSeconds, setCooldownSeconds] = useState<number>(BleScanManager.getCooldownSeconds());
@@ -380,7 +400,9 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
         ) {
           setPhase('BLUETOOTH_STANDBY');
         } else {
-          setErrorMessage(scanErr.message || 'Scanning encountered an issue.');
+          const userErr = formatUserBleError(scanErr, undefined, 'scan');
+          logger.warn('BLE_SCAN', `Scan error encountered: ${userErr.display}`, logger.serializeError(scanErr));
+          setErrorMessage(userErr.display);
           setPhase('BLUETOOTH_STANDBY');
         }
       },
@@ -655,6 +677,385 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     }
   };
 
+  // Wi-Fi Configuration Helpers & Effects
+  const clearAllWifiTimers = () => {
+    if (statusCheckTimeoutRef.current) {
+      clearTimeout(statusCheckTimeoutRef.current);
+      statusCheckTimeoutRef.current = null;
+    }
+    if (reconnectIntervalRef.current) {
+      clearInterval(reconnectIntervalRef.current);
+      reconnectIntervalRef.current = null;
+    }
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    if (autoAdvanceTimerRef.current) {
+      clearTimeout(autoAdvanceTimerRef.current);
+      autoAdvanceTimerRef.current = null;
+    }
+    if (wifiScanTimeoutRef.current) {
+      clearTimeout(wifiScanTimeoutRef.current);
+      wifiScanTimeoutRef.current = null;
+    }
+  };
+
+  const getWifiSignalIcon = (rssi: number) => {
+    if (rssi >= -60) return <Wifi size={18} color="#059669" />;
+    if (rssi >= -75) return <Wifi size={18} color="#D97706" />;
+    return <Wifi size={18} color="#94A3B8" />;
+  };
+
+  const handleStartWifiScan = async () => {
+    if (wifiScanTimeoutRef.current) {
+      clearTimeout(wifiScanTimeoutRef.current);
+      wifiScanTimeoutRef.current = null;
+    }
+    setIsScanningWifi(true);
+    setWifiScanTimedOut(false);
+
+    if (connectedSession) {
+      try {
+        logger.info('WIFI_SETUP', 'Triggering SCAN_WIFI');
+        await BluetoothService.sendCommand(connectedSession, { cmd: 'SCAN_WIFI' });
+      } catch (err) {
+        logger.warn('WIFI_SETUP', 'SCAN_WIFI send error', logger.serializeError(err));
+        setIsScanningWifi(false);
+      }
+    }
+
+    // 10-second scan timeout (Requirement 6)
+    wifiScanTimeoutRef.current = setTimeout(() => {
+      logger.warn('WIFI_SETUP', 'SCAN_WIFI 10-second timeout reached');
+      setIsScanningWifi(false);
+      setWifiScanTimedOut(true);
+    }, 10000);
+  };
+
+  const startReconnectPolling = (savedNetwork: string) => {
+    clearAllWifiTimers();
+    let elapsed = 0;
+    setReconnectSecondsElapsed(0);
+
+    const interval = setInterval(() => {
+      elapsed += 3;
+      setReconnectSecondsElapsed(elapsed);
+      if (connectedSession) {
+        BluetoothService.sendCommand(connectedSession, { cmd: 'GET_STATUS' }).catch(() => {});
+      }
+    }, 3000);
+    reconnectIntervalRef.current = interval;
+
+    const timeout = setTimeout(() => {
+      if (reconnectIntervalRef.current) {
+        clearInterval(reconnectIntervalRef.current);
+        reconnectIntervalRef.current = null;
+      }
+      logger.info('WIFI_SETUP', `Reconnecting to "${savedNetwork}" timed out after 20s, falling back to form`);
+      setWifiSsid(savedNetwork);
+      setErrorMessage(`Saved network "${savedNetwork}" could not be reached.`);
+      setWifiSubState('FORM');
+      handleStartWifiScan();
+    }, 20000);
+    reconnectTimeoutRef.current = timeout;
+  };
+
+  const handleUseDifferentNetwork = async () => {
+    logger.info('WIFI_SETUP', 'User tapped "Use a different network" -> sending FORGET_WIFI');
+    clearAllWifiTimers();
+
+    if (connectedSession) {
+      try {
+        await BluetoothService.sendCommand(connectedSession, { cmd: 'FORGET_WIFI' });
+      } catch (err) {
+        logger.warn('WIFI_SETUP', 'FORGET_WIFI send error', logger.serializeError(err));
+      }
+    }
+
+    setSavedSsid('');
+    setConnectedSsid('');
+    setWifiSsid('');
+    setWifiPass('');
+    setWifiSubState('FORM');
+    handleStartWifiScan();
+  };
+
+  const handleSelectNetwork = (net: { ssid: string; rssi: number; sec: number }) => {
+    setWifiSsid(net.ssid);
+    setSelectedNetworkSec(net.sec);
+    setIsManualSsid(false);
+    setErrorMessage('');
+    if (net.sec === 0) {
+      setWifiPass('');
+    }
+  };
+
+  const handleFinishWifiConnected = async (ssid: string, ip?: string, rssi?: number) => {
+    const finalName = targetDevice?.name || 'Washroom Safety Gadget';
+    const finalId = targetDevice?.id || 'wsg-01';
+    const assignedIp = ip || assignedIpAddress || '192.168.1.100';
+
+    setAssignedIpAddress(assignedIp);
+    setBluetoothStatus('CONNECTED');
+    setWifiStatus('CONNECTED');
+
+    const isCloudOk = await DeviceProvisioningService.checkCloudConnectivity();
+    setCloudStatus(isCloudOk ? 'CONNECTED' : 'DISCONNECTED');
+
+    useConnectionStore.getState().setConnected({
+      id: finalId,
+      name: finalName,
+      connectionType: connectedSession ? 'BLE' : 'WIFI',
+      ipAddress: assignedIp,
+      model: targetDevice?.product?.model || 'WSG-01',
+      room: 'Master Washroom',
+      rssi: typeof rssi === 'number' ? rssi : 0,
+      rawDevice: connectedSession?.server,
+      ssid,
+    }, 'handleFinishWifiConnected');
+
+    setIsSimulatorMode(false);
+
+    addOrUpdateDevice({
+      deviceId: finalId,
+      name: finalName,
+      model: targetDevice?.product?.model || 'WSG-01',
+      room: 'Master Washroom',
+      ipAddress: assignedIp,
+      isOnline: true,
+      lastSeen: new Date().toISOString(),
+      firmwareVersion: 'v1.2.0-esp32',
+      sensor: 'LD2410C 24GHz mmWave',
+      connectionType: 'WIFI',
+    });
+
+    setActiveDeviceId(finalId);
+    EmergencyPushService.registerForPushNotifications(finalId).catch(() => {});
+
+    if (deviceConfig) {
+      setDeviceConfig({
+        ...deviceConfig,
+        deviceName: finalName,
+        deviceId: finalId,
+      });
+    }
+
+    playSuccessChime();
+    setPhase('SUCCESS');
+    primeNotificationPermissionIfNeeded();
+  };
+
+  // Wi-Fi step initialization effect: sends GET_STATUS and waits up to 3s
+  useEffect(() => {
+    if (phase !== 'WIFI_SETUP' || !connectedSession) {
+      return;
+    }
+
+    clearAllWifiTimers();
+    setWifiSubState('CHECKING_STATUS');
+    setErrorMessage('');
+    setWifiScanTimedOut(false);
+    setWifiNetworks([]);
+
+    let isActive = true;
+
+    logger.info('WIFI_SETUP', 'Entering Wi-Fi step, querying GET_STATUS');
+    BluetoothService.sendCommand(connectedSession, { cmd: 'GET_STATUS' }).catch((err) => {
+      logger.warn('WIFI_SETUP', 'Initial GET_STATUS error', logger.serializeError(err));
+    });
+
+    // 1. Wait up to 3 seconds for initial status response
+    statusCheckTimeoutRef.current = setTimeout(() => {
+      if (!isActive) return;
+      setWifiSubState((curr) => {
+        if (curr === 'CHECKING_STATUS') {
+          logger.info('WIFI_SETUP', 'GET_STATUS 3s timeout with no reply, showing form');
+          handleStartWifiScan();
+          return 'FORM';
+        }
+        return curr;
+      });
+    }, 3000);
+
+    return () => {
+      isActive = false;
+      clearAllWifiTimers();
+    };
+  }, [phase, connectedSession]);
+
+  // Wi-Fi step BLE notification listener
+  useEffect(() => {
+    if (phase !== 'WIFI_SETUP' && phase !== 'PROVISIONING' && phase !== 'WIFI_FAILED') {
+      return;
+    }
+
+    const unsub = BluetoothService.addNotificationListener((data) => {
+      if (!data) return;
+
+      // 1. Handle WIFI_STATUS
+      if (
+        data.type === 'WIFI_STATUS' ||
+        data.type === 'STATUS' ||
+        data.cmd === 'STATUS' ||
+        data.type === 'status'
+      ) {
+        const normStatus = String(data.status || '').toUpperCase();
+        const normState = String(data.state || '').toUpperCase();
+
+        if (
+          normStatus === 'CONNECTED' ||
+          normState === 'WIFI_CONNECTED' ||
+          normStatus === 'WIFI_CONNECTED'
+        ) {
+          logger.info('WIFI_SETUP', 'Device reported Wi-Fi CONNECTED', {
+            ssid: data.ssid,
+            ip: data.ip,
+            rssi: data.rssi,
+          });
+
+          clearAllWifiTimers();
+          const activeSsid = data.ssid || wifiSsid || 'Wi-Fi Network';
+          setConnectedSsid(activeSsid);
+          if (data.ip && data.ip !== '0.0.0.0') {
+            setAssignedIpAddress(data.ip);
+          }
+          setWifiSubState('ALREADY_CONNECTED');
+
+          // Auto-continue to next onboarding step after 2.5s
+          autoAdvanceTimerRef.current = setTimeout(() => {
+            handleFinishWifiConnected(activeSsid, data.ip, data.rssi);
+          }, 2500);
+          return;
+        }
+
+        if (normStatus === 'AUTH_FAILED') {
+          logger.warn('WIFI_SETUP', 'Device reported AUTH_FAILED');
+          clearAllWifiTimers();
+          setWifiStatus('FAILED');
+          setErrorMessage('Wi-Fi connection failed: Incorrect Wi-Fi password.');
+          setPhase('WIFI_FAILED');
+          return;
+        }
+
+        if (normStatus === 'NO_SSID' || normStatus === 'SSID_NOT_FOUND') {
+          logger.warn('WIFI_SETUP', 'Device reported NO_SSID');
+          clearAllWifiTimers();
+          setWifiStatus('FAILED');
+          setErrorMessage('Wi-Fi connection failed: Network not found (make sure it is 2.4 GHz).');
+          setPhase('WIFI_FAILED');
+          return;
+        }
+
+        if (normStatus === 'WIFI_TIMEOUT' || normStatus === 'TIMEOUT') {
+          logger.warn('WIFI_SETUP', 'Device reported WIFI_TIMEOUT');
+          clearAllWifiTimers();
+          setWifiStatus('FAILED');
+          setErrorMessage('Wi-Fi connection timed out.');
+          setPhase('WIFI_FAILED');
+          return;
+        }
+
+        if (normStatus === 'FAILED' || normState === 'WIFI_FAILED') {
+          logger.warn('WIFI_SETUP', 'Device reported FAILED/WIFI_FAILED');
+          clearAllWifiTimers();
+          setWifiStatus('FAILED');
+          setErrorMessage('Wi-Fi connection failed.');
+          setPhase('WIFI_FAILED');
+          return;
+        }
+
+        if (normStatus === 'DISCONNECTED' || normState === 'WIFI_DISCONNECTED') {
+          const savedNet = data.saved ? String(data.saved).trim() : '';
+          if (savedNet.length > 0 && wifiSubState === 'CHECKING_STATUS') {
+            logger.info('WIFI_SETUP', `Saved network "${savedNet}" found, starting reconnect polling`);
+            if (statusCheckTimeoutRef.current) {
+              clearTimeout(statusCheckTimeoutRef.current);
+              statusCheckTimeoutRef.current = null;
+            }
+            setSavedSsid(savedNet);
+            setWifiSubState('RECONNECTING');
+            startReconnectPolling(savedNet);
+            return;
+          } else if (wifiSubState === 'CHECKING_STATUS') {
+            logger.info('WIFI_SETUP', 'Device DISCONNECTED with no saved network, showing form');
+            if (statusCheckTimeoutRef.current) {
+              clearTimeout(statusCheckTimeoutRef.current);
+              statusCheckTimeoutRef.current = null;
+            }
+            setWifiSubState('FORM');
+            handleStartWifiScan();
+            return;
+          }
+        }
+      }
+
+      // 2. Handle WIFI_SCAN
+      if (data.type === 'WIFI_SCAN' || data.type === 'wifi_scan') {
+        const scanStatus = String(data.status || '').toUpperCase();
+        if (scanStatus === 'SCANNING') {
+          setIsScanningWifi(true);
+          setWifiScanTimedOut(false);
+        } else if (scanStatus === 'DONE') {
+          logger.info('WIFI_SETUP', `Wi-Fi scan completed, found ${data.count || 0} networks`);
+          setIsScanningWifi(false);
+          if (wifiScanTimeoutRef.current) {
+            clearTimeout(wifiScanTimeoutRef.current);
+            wifiScanTimeoutRef.current = null;
+          }
+        }
+      }
+
+      // 3. Handle WIFI_NET
+      if (data.type === 'WIFI_NET' || data.type === 'wifi_net') {
+        const netSsid = data.ssid ? String(data.ssid).trim() : '';
+        if (netSsid.length > 0) {
+          const rssi = typeof data.rssi === 'number' ? data.rssi : -70;
+          const sec = typeof data.sec === 'number' ? data.sec : 1;
+          setWifiNetworks((prev) => {
+            const idx = prev.findIndex((n) => n.ssid === netSsid);
+            let updated: { ssid: string; rssi: number; sec: number }[];
+            if (idx >= 0) {
+              const existing = prev[idx];
+              updated = [...prev];
+              updated[idx] = {
+                ssid: netSsid,
+                rssi: Math.max(existing.rssi, rssi),
+                sec: data.sec !== undefined ? sec : existing.sec,
+              };
+            } else {
+              updated = [...prev, { ssid: netSsid, rssi, sec }];
+            }
+            return updated.sort((a, b) => b.rssi - a.rssi);
+          });
+        }
+      }
+    });
+
+    return () => {
+      unsub();
+    };
+  }, [phase, wifiSubState, wifiSsid, connectedSession]);
+
+  // BLE disconnect during Wi-Fi setup step (Requirement 6)
+  useEffect(() => {
+    const unsub = useConnectionStore.subscribe((state) => {
+      if (
+        state.status === 'disconnected' &&
+        (phase === 'WIFI_SETUP' || phase === 'PROVISIONING' || phase === 'WIFI_FAILED')
+      ) {
+        logger.warn('BLE_CONN', 'Device disconnected during Wi-Fi setup');
+        clearAllWifiTimers();
+        setConnectedSession(null);
+        setErrorMessage('Device disconnected. Please make sure the WSG-01 is turned on and nearby.');
+        setPhase('BLUETOOTH_STANDBY');
+      }
+    });
+    return () => {
+      unsub();
+    };
+  }, [phase]);
+
   // Step 1: Connect BLE GATT -> on success, transition to WIFI_SETUP
   const handleConnectDevice = async (device: DiscoveredBleDevice) => {
     await BleScanManager.stopScan('connecting');
@@ -667,11 +1068,22 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
       setConnectedSession(session);
       setTargetDevice(device);
       setBluetoothStatus('CONNECTED');
+
+      useConnectionStore.getState().setConnected({
+        id: device.id,
+        name: device.name,
+        connectionType: 'BLE',
+        rawDevice: session.server,
+        model: device.product?.model || 'WSG-01',
+      }, 'handleConnectDevice BLE success');
+
       setIsConnecting(false);
       setPhase('WIFI_SETUP');
     } catch (err: any) {
       setIsConnecting(false);
-      setErrorMessage(`Connection Failed: ${err.message || 'Device refused connection'}. Make sure it is in pairing mode.`);
+      const userErr = formatUserBleError(err, undefined, 'connect');
+      logger.error('BLE_CONN', `handleConnectDevice failed: ${userErr.display}`, logger.serializeError(err));
+      setErrorMessage(`${userErr.display}. Make sure the device is nearby and powered on.`);
     }
   };
 
@@ -732,12 +1144,14 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
       useConnectionStore.getState().setConnected({
         id: finalId,
         name: finalName,
-        connectionType: 'WIFI',
+        connectionType: connectedSession ? 'BLE' : 'WIFI',
         ipAddress: ip,
         model: targetDevice?.product?.model || 'WSG-01',
         room: 'Master Washroom',
         rssi: typeof result.rssi === 'number' ? result.rssi : 0,
-      });
+        rawDevice: connectedSession?.server,
+        ssid: wifiSsid.trim(),
+      }, 'handleProvisionWifi success');
 
       setIsSimulatorMode(false);
 
@@ -815,12 +1229,14 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
               useConnectionStore.getState().setConnected({
                 id: realId,
                 name: finalName,
-                connectionType: 'WIFI',
+                connectionType: connectedSession ? 'BLE' : 'WIFI',
                 ipAddress: ip,
                 model: info.model || 'WSG-01',
                 room: 'Master Washroom',
                 rssi: realRssi,
-              });
+                rawDevice: connectedSession?.server,
+                ssid: wifiSsid.trim(),
+              }, 'handleProvisionWifi learned real device ID');
               addOrUpdateDevice({
                 deviceId: realId,
                 name: finalName,
@@ -854,8 +1270,8 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
       let friendlyMsg = err.message || 'Wi-Fi connection failed.\nPlease check the network name and password.';
       if (err.message && (err.message.includes('AUTH_FAILED') || err.message.toLowerCase().includes('password'))) {
         friendlyMsg = 'Wi-Fi connection failed: Incorrect Wi-Fi password.';
-      } else if (err.message && (err.message.includes('SSID_NOT_FOUND') || err.message.includes('not found'))) {
-        friendlyMsg = `Wi-Fi connection failed: Network "${wifiSsid}" not found in range.`;
+      } else if (err.message && (err.message.includes('SSID_NOT_FOUND') || err.message.includes('NO_SSID') || err.message.includes('not found'))) {
+        friendlyMsg = `Wi-Fi connection failed: Network "${wifiSsid}" not found (make sure it is 2.4 GHz).`;
       } else if (err.message && (err.message.includes('timed out') || err.message.includes('TIMEOUT'))) {
         friendlyMsg = `Wi-Fi connection timed out: ESP32 could not connect to "${wifiSsid}". Ensure the router operates on 2.4GHz and credentials are correct.`;
       }
@@ -863,6 +1279,7 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
       setCloudStatus('DISCONNECTED');
       setErrorMessage(friendlyMsg);
       setPhase('WIFI_FAILED');
+      // Keep BLE connection alive - do NOT disconnect or reset useConnectionStore
     }
   };
 
@@ -876,6 +1293,15 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
     setCloudStatus('DISCONNECTED');
     setIsOnline(true);
     setIsSimulatorMode(false);
+
+    useConnectionStore.getState().setConnected({
+      id: finalId,
+      name: finalName,
+      connectionType: 'BLE',
+      rawDevice: connectedSession?.server,
+      model: targetDevice?.product?.model || 'WSG-01',
+      room: 'Master Washroom',
+    }, 'handleSkipWifi BLE retained');
 
     addOrUpdateDevice({
       deviceId: finalId,
@@ -1041,111 +1467,262 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
 
           {/* Wi-Fi Configuration Card */}
           <View style={styles.wifiCard}>
-            <View style={styles.wifiCardHeader}>
-              <View style={styles.wifiIconWrap}>
-                <Wifi size={24} color="#0F172A" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.wifiCardTitle}>Configure Wi-Fi</Text>
-                <Text style={styles.wifiCardSubtitle}>
-                  Enter your 2.4GHz Wi-Fi credentials to connect the gadget to the internet.
+            {wifiSubState === 'CHECKING_STATUS' ? (
+              <View style={styles.wifiCheckingCard}>
+                <ActivityIndicator size="large" color="#0F172A" style={{ marginBottom: 16 }} />
+                <Text style={styles.wifiCheckingTitle}>Checking Device Wi-Fi</Text>
+                <Text style={styles.wifiCheckingSubtitle}>
+                  Querying current connection status from WSG-01...
                 </Text>
               </View>
-            </View>
-
-            {/* Error Message if failed */}
-            {errorMessage ? (
-              <View style={styles.wifiErrorBox}>
-                <AlertTriangle size={18} color="#B91C1C" />
-                <Text style={styles.wifiErrorText}>{errorMessage}</Text>
+            ) : wifiSubState === 'ALREADY_CONNECTED' ? (
+              <View style={styles.wifiConnectedCard}>
+                <View style={styles.wifiConnectedIconCircle}>
+                  <CheckCircle size={36} color="#FFFFFF" />
+                </View>
+                <Text style={styles.wifiConnectedTitle}>Wi-Fi Connected</Text>
+                <Text style={styles.wifiConnectedSubtitle}>
+                  Wi-Fi connected: {connectedSsid || wifiSsid || 'Home Network'}
+                </Text>
+                {assignedIpAddress ? (
+                  <View style={styles.ipBadge}>
+                    <Text style={styles.ipBadgeText}>IP: {assignedIpAddress}</Text>
+                  </View>
+                ) : null}
+                <Text style={styles.wifiAutoAdvanceText}>
+                  Continuing to next onboarding step...
+                </Text>
+                <TouchableOpacity
+                  style={styles.useDifferentNetBtn}
+                  onPress={handleUseDifferentNetwork}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.useDifferentNetBtnText}>Use a different network</Text>
+                </TouchableOpacity>
               </View>
-            ) : null}
+            ) : wifiSubState === 'RECONNECTING' ? (
+              <View style={styles.wifiReconnectingCard}>
+                <ActivityIndicator size="large" color="#2563EB" style={{ marginBottom: 16 }} />
+                <Text style={styles.wifiReconnectingTitle}>Reconnecting to {savedSsid}...</Text>
+                <Text style={styles.wifiReconnectingSubtitle}>
+                  Attempting to reconnect to saved network ({reconnectSecondsElapsed}s / 20s)
+                </Text>
+                <TouchableOpacity
+                  style={[styles.useDifferentNetBtn, { marginTop: 20 }]}
+                  onPress={handleUseDifferentNetwork}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.useDifferentNetBtnText}>Use a different network</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <>
+                <View style={styles.wifiCardHeader}>
+                  <View style={styles.wifiIconWrap}>
+                    <Wifi size={24} color="#0F172A" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.wifiCardTitle}>Configure Wi-Fi</Text>
+                    <Text style={styles.wifiCardSubtitle}>
+                      Select your 2.4GHz Wi-Fi network and enter credentials to connect the gadget to the internet.
+                    </Text>
+                  </View>
+                </View>
 
-            {/* Wi-Fi SSID input */}
-            <Text style={styles.wifiFieldLabel}>Wi-Fi Network / SSID</Text>
-            <TextInput
-              style={styles.wifiInput}
-              value={wifiSsid}
-              onChangeText={setWifiSsid}
-              placeholder="e.g. MyHome_2.4G"
-              placeholderTextColor="#94A3B8"
-              autoCapitalize="none"
-              autoCorrect={false}
-              editable={phase !== 'PROVISIONING'}
-            />
+                {/* Error Message if failed or saved network unreachable */}
+                {errorMessage ? (
+                  <View style={styles.wifiErrorBox}>
+                    <AlertTriangle size={18} color="#B91C1C" />
+                    <Text style={styles.wifiErrorText}>{errorMessage}</Text>
+                  </View>
+                ) : null}
 
-            {/* Password input */}
-            <Text style={[styles.wifiFieldLabel, { marginTop: 14 }]}>Password</Text>
-            <View style={styles.passwordInputContainer}>
-              <TextInput
-                style={styles.passwordInput}
-                value={wifiPass}
-                onChangeText={setWifiPass}
-                placeholder="Wi-Fi Password"
-                placeholderTextColor="#94A3B8"
-                secureTextEntry={!showPassword}
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={phase !== 'PROVISIONING'}
-              />
-              <TouchableOpacity
-                style={styles.eyeButton}
-                onPress={() => setShowPassword(!showPassword)}
-                activeOpacity={0.7}
-              >
-                {showPassword ? (
-                  <EyeOff size={20} color="#64748B" />
-                ) : (
-                  <Eye size={20} color="#64748B" />
+                {/* Available Networks List Section */}
+                <View style={styles.networkListContainer}>
+                  <View style={styles.networkListHeader}>
+                    <Text style={styles.wifiFieldLabel}>
+                      AVAILABLE 2.4GHz NETWORKS {wifiNetworks.length > 0 ? `(${wifiNetworks.length})` : ''}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.refreshIconBtn}
+                      onPress={handleStartWifiScan}
+                      disabled={isScanningWifi || phase === 'PROVISIONING'}
+                      activeOpacity={0.7}
+                    >
+                      {isScanningWifi ? (
+                        <ActivityIndicator size="small" color="#0F172A" />
+                      ) : (
+                        <RefreshCw size={16} color="#475569" />
+                      )}
+                    </TouchableOpacity>
+                  </View>
+
+                  {isScanningWifi && wifiNetworks.length === 0 ? (
+                    <View style={styles.networkScanningBox}>
+                      <ActivityIndicator size="small" color="#0F172A" />
+                      <Text style={styles.networkScanningText}>Scanning nearby Wi-Fi networks...</Text>
+                    </View>
+                  ) : wifiNetworks.length === 0 ? (
+                    <View style={styles.networkEmptyBox}>
+                      <Text style={styles.networkEmptyText}>
+                        {wifiScanTimedOut ? 'Scan timed out. No networks detected.' : 'No networks found nearby.'}
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.rescanBtn}
+                        onPress={handleStartWifiScan}
+                        disabled={isScanningWifi || phase === 'PROVISIONING'}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.rescanBtnText}>Rescan Networks</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <ScrollView style={{ maxHeight: 220 }} nestedScrollEnabled showsVerticalScrollIndicator>
+                      {wifiNetworks.map((net) => {
+                        const isSelected = wifiSsid === net.ssid && !isManualSsid;
+                        return (
+                          <TouchableOpacity
+                            key={net.ssid}
+                            style={[styles.networkItem, isSelected && styles.networkItemSelected]}
+                            onPress={() => handleSelectNetwork(net)}
+                            disabled={phase === 'PROVISIONING'}
+                            activeOpacity={0.7}
+                          >
+                            {getWifiSignalIcon(net.rssi)}
+                            <Text
+                              style={[
+                                styles.networkSsid,
+                                isSelected && { color: '#0F172A', fontWeight: '800' },
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {net.ssid}
+                            </Text>
+                            <Text style={styles.networkRssi}>{net.rssi} dBm</Text>
+                            {net.sec === 1 && <Lock size={14} color="#64748B" style={{ marginLeft: 6 }} />}
+                            {isSelected && <Check size={18} color="#059669" style={{ marginLeft: 6 }} />}
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </ScrollView>
+                  )}
+                </View>
+
+                {/* Option to toggle manual network entry */}
+                <TouchableOpacity
+                  style={styles.manualEntryLink}
+                  onPress={() => {
+                    setIsManualSsid(!isManualSsid);
+                    setSelectedNetworkSec(1);
+                    setErrorMessage('');
+                  }}
+                  disabled={phase === 'PROVISIONING'}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.manualEntryLinkText}>
+                    {isManualSsid ? '← Pick from scanned networks' : '+ Enter network manually (for hidden networks)'}
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Free-text SSID input when in manual mode */}
+                {isManualSsid && (
+                  <View style={{ marginBottom: 14 }}>
+                    <Text style={styles.wifiFieldLabel}>Network Name / SSID</Text>
+                    <TextInput
+                      style={styles.wifiInput}
+                      value={wifiSsid}
+                      onChangeText={setWifiSsid}
+                      placeholder="Enter network name"
+                      placeholderTextColor="#94A3B8"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      editable={phase !== 'PROVISIONING'}
+                    />
+                  </View>
                 )}
-              </TouchableOpacity>
-            </View>
 
-            {/* Optional Show Password Toggle Text */}
-            <TouchableOpacity
-              style={styles.showPasswordRow}
-              onPress={() => setShowPassword(!showPassword)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.showPasswordText}>
-                {showPassword ? 'Hide password' : 'Show password'}
-              </Text>
-            </TouchableOpacity>
+                {/* Password field or Open Network indicator */}
+                {selectedNetworkSec === 0 && !isManualSsid ? (
+                  <View style={styles.openNetworkBadge}>
+                    <Check size={16} color="#059669" />
+                    <Text style={styles.openNetworkBadgeText}>Open network (No password required)</Text>
+                  </View>
+                ) : (
+                  <>
+                    <Text style={[styles.wifiFieldLabel, { marginTop: 4 }]}>Password</Text>
+                    <View style={styles.passwordInputContainer}>
+                      <TextInput
+                        style={styles.passwordInput}
+                        value={wifiPass}
+                        onChangeText={setWifiPass}
+                        placeholder="Wi-Fi Password"
+                        placeholderTextColor="#94A3B8"
+                        secureTextEntry={!showPassword}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        editable={phase !== 'PROVISIONING'}
+                      />
+                      <TouchableOpacity
+                        style={styles.eyeButton}
+                        onPress={() => setShowPassword(!showPassword)}
+                        activeOpacity={0.7}
+                      >
+                        {showPassword ? (
+                          <EyeOff size={20} color="#64748B" />
+                        ) : (
+                          <Eye size={20} color="#64748B" />
+                        )}
+                      </TouchableOpacity>
+                    </View>
 
-            {/* Provisioning Progress Status Box */}
-            {phase === 'PROVISIONING' ? (
-              <View style={styles.provisionProgressBox}>
-                <ActivityIndicator size="small" color="#0F172A" style={{ marginRight: 10 }} />
-                <Text style={styles.provisionProgressText}>{provisionStatusText}</Text>
-              </View>
-            ) : null}
+                    <TouchableOpacity
+                      style={styles.showPasswordRow}
+                      onPress={() => setShowPassword(!showPassword)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.showPasswordText}>
+                        {showPassword ? 'Hide password' : 'Show password'}
+                      </Text>
+                    </TouchableOpacity>
+                  </>
+                )}
 
-            {/* Primary Action Button: Connect WSG-01 */}
-            <TouchableOpacity
-              style={[
-                styles.connectWifiBtn,
-                phase === 'PROVISIONING' && { opacity: 0.6 },
-              ]}
-              onPress={handleProvisionWifi}
-              disabled={phase === 'PROVISIONING'}
-              activeOpacity={0.85}
-            >
-              {phase === 'PROVISIONING' ? (
-                <Text style={styles.connectWifiBtnText}>Connecting WSG-01...</Text>
-              ) : (
-                <Text style={styles.connectWifiBtnText}>Connect WSG-01</Text>
-              )}
-            </TouchableOpacity>
+                {/* Provisioning Progress Status Box */}
+                {phase === 'PROVISIONING' ? (
+                  <View style={styles.provisionProgressBox}>
+                    <ActivityIndicator size="small" color="#0F172A" style={{ marginRight: 10 }} />
+                    <Text style={styles.provisionProgressText}>{provisionStatusText}</Text>
+                  </View>
+                ) : null}
 
-            {/* Secondary Option: Skip Wi-Fi */}
-            {phase !== 'PROVISIONING' && (
-              <TouchableOpacity
-                style={styles.skipWifiBtn}
-                onPress={handleSkipWifi}
-                activeOpacity={0.75}
-              >
-                <Text style={styles.skipWifiBtnText}>Skip Wi-Fi (Bluetooth Only)</Text>
-              </TouchableOpacity>
+                {/* Primary Action Button: Connect WSG-01 */}
+                <TouchableOpacity
+                  style={[
+                    styles.connectWifiBtn,
+                    (phase === 'PROVISIONING' || !wifiSsid.trim()) && { opacity: 0.6 },
+                  ]}
+                  onPress={handleProvisionWifi}
+                  disabled={phase === 'PROVISIONING' || !wifiSsid.trim()}
+                  activeOpacity={0.85}
+                >
+                  {phase === 'PROVISIONING' ? (
+                    <Text style={styles.connectWifiBtnText}>Connecting WSG-01...</Text>
+                  ) : (
+                    <Text style={styles.connectWifiBtnText}>Connect WSG-01</Text>
+                  )}
+                </TouchableOpacity>
+
+                {/* Secondary Option: Skip Wi-Fi */}
+                {phase !== 'PROVISIONING' && (
+                  <TouchableOpacity
+                    style={styles.skipWifiBtn}
+                    onPress={handleSkipWifi}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={styles.skipWifiBtnText}>Skip Wi-Fi (Bluetooth Only)</Text>
+                  </TouchableOpacity>
+                )}
+              </>
             )}
           </View>
         </ScrollView>
@@ -2288,5 +2865,200 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '800',
+  },
+
+  // Improved Wi-Fi configuration styles
+  networkListContainer: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    padding: 10,
+    marginBottom: 10,
+  },
+  networkListHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+    marginBottom: 6,
+  },
+  refreshIconBtn: {
+    padding: 6,
+    borderRadius: 8,
+  },
+  networkScanningBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 18,
+    gap: 8,
+  },
+  networkScanningText: {
+    fontSize: 13,
+    color: '#64748B',
+  },
+  networkEmptyBox: {
+    alignItems: 'center',
+    paddingVertical: 16,
+  },
+  networkEmptyText: {
+    fontSize: 13,
+    color: '#64748B',
+    marginBottom: 8,
+  },
+  rescanBtn: {
+    backgroundColor: '#0F172A',
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  rescanBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  networkItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  networkItemSelected: {
+    borderColor: '#0F172A',
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1.5,
+  },
+  networkSsid: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1E293B',
+    marginLeft: 10,
+  },
+  networkRssi: {
+    fontSize: 11,
+    color: '#64748B',
+    marginLeft: 6,
+  },
+  manualEntryLink: {
+    alignSelf: 'flex-start',
+    marginBottom: 14,
+    paddingVertical: 2,
+  },
+  manualEntryLinkText: {
+    fontSize: 13,
+    color: '#2563EB',
+    fontWeight: '600',
+  },
+  openNetworkBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ECFDF5',
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+    borderRadius: 10,
+    padding: 12,
+    gap: 8,
+    marginBottom: 16,
+  },
+  openNetworkBadgeText: {
+    fontSize: 13,
+    color: '#065F46',
+    fontWeight: '600',
+  },
+  wifiCheckingCard: {
+    alignItems: 'center',
+    paddingVertical: 32,
+  },
+  wifiCheckingTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#0F172A',
+    marginBottom: 6,
+  },
+  wifiCheckingSubtitle: {
+    fontSize: 13,
+    color: '#64748B',
+    textAlign: 'center',
+  },
+  wifiConnectedCard: {
+    alignItems: 'center',
+    paddingVertical: 24,
+  },
+  wifiConnectedIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#10B981',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  wifiConnectedTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#0F172A',
+    marginBottom: 6,
+  },
+  wifiConnectedSubtitle: {
+    fontSize: 14,
+    color: '#475569',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  wifiAutoAdvanceText: {
+    fontSize: 12,
+    color: '#64748B',
+    fontStyle: 'italic',
+    marginTop: 8,
+    marginBottom: 16,
+  },
+  wifiReconnectingCard: {
+    alignItems: 'center',
+    paddingVertical: 28,
+  },
+  wifiReconnectingTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#0F172A',
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  wifiReconnectingSubtitle: {
+    fontSize: 13,
+    color: '#64748B',
+    textAlign: 'center',
+  },
+  useDifferentNetBtn: {
+    borderRadius: 9999,
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  useDifferentNetBtnText: {
+    color: '#334155',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  ipBadge: {
+    backgroundColor: '#F1F5F9',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    marginTop: 4,
+  },
+  ipBadgeText: {
+    fontSize: 12,
+    color: '#475569',
+    fontWeight: '600',
   },
 });

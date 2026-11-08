@@ -136,6 +136,7 @@ const unsigned long WIFI_CONNECT_TIMEOUT_MS = 25000; // 25s timeout for router D
 
 // Credentials queue
 bool pendingWiFiTrigger = false;
+bool isWiFiScanning = false;
 String activeSsid = "";
 String activePass = "";
 String customDeviceName = "";
@@ -431,6 +432,49 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
       }
     } else if (strcmp(cmd, "GET_STATUS") == 0 || strcmp(cmd, "GET_WIFI_STATUS") == 0) {
       reportCurrentStatus();
+    } else if (strcmp(cmd, "SCAN_WIFI") == 0) {
+      Serial.println("[BLE] SCAN_WIFI command received -> starting async scan");
+      if (pStatusChar) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+        JsonDocument resp;
+#else
+        StaticJsonDocument<256> resp;
+#endif
+        resp["type"] = "wifi_scan";
+        resp["status"] = "SCANNING";
+        String jsonOut;
+        serializeJson(resp, jsonOut);
+        notifyChar(pStatusChar, jsonOut);
+      }
+      WiFi.scanNetworks(true /* async */, false /* show_hidden */);
+      isWiFiScanning = true;
+    } else if (strcmp(cmd, "FORGET_WIFI") == 0) {
+      Serial.println("[BLE] FORGET_WIFI command received");
+      preferences.begin("wsg01", false);
+      preferences.remove("ssid");
+      preferences.remove("pass");
+      preferences.end();
+      activeSsid = "";
+      activePass = "";
+      WiFi.disconnect(false, true /* erase */);
+      wifiConnState = WIFI_DISCONNECTED;
+      if (pStatusChar) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+        JsonDocument resp;
+#else
+        StaticJsonDocument<256> resp;
+#endif
+        resp["type"]    = "status";
+        resp["status"]  = "DISCONNECTED";
+        resp["state"]   = "WIFI_DISCONNECTED";
+        resp["trigger"] = "forget";
+        resp["source"]  = "device";
+        resp["saved"]   = "";
+        String jsonOut;
+        serializeJson(resp, jsonOut);
+        notifyChar(pStatusChar, jsonOut);
+        Serial.printf("[BLE] Sent FORGET_WIFI confirmation: %s\n", jsonOut.c_str());
+      }
     } else if (strcmp(cmd, "DISCONNECT_WIFI") == 0) {
       WiFi.disconnect(true);
       wifiConnState = WIFI_FAILED;
@@ -599,6 +643,11 @@ void reportCurrentStatus() {
   resp["source"]   = "device";
   resp["is_test"]  = false;
   resp["model"]    = MODEL_NUMBER;
+
+  preferences.begin("wsg01", true);
+  String savedSsid = preferences.getString("ssid", "");
+  preferences.end();
+  resp["saved"] = savedSsid;
 
   if (wifiConnState == WIFI_CONNECTING || wifiConnState == WIFI_AWAITING_DHCP) {
     resp["status"] = "CONNECTING";
@@ -813,6 +862,89 @@ void processWiFiStateMachine() {
     }
     return;
   }
+}
+
+// ============================================================================
+// NON-BLOCKING WI-FI SCAN
+// ============================================================================
+void processWiFiScan() {
+  if (!isWiFiScanning) return;
+
+  int scanResult = WiFi.scanComplete();
+  if (scanResult == WIFI_SCAN_RUNNING) {
+    return; // Scan still in progress
+  }
+
+  isWiFiScanning = false;
+
+  if (scanResult < 0) {
+    Serial.printf("[WiFi Scan] Scan completed with error code: %d\n", scanResult);
+    if (pStatusChar) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+      JsonDocument resp;
+#else
+      StaticJsonDocument<256> resp;
+#endif
+      resp["type"]   = "wifi_scan";
+      resp["status"] = "DONE";
+      resp["count"]  = 0;
+      String jsonOut;
+      serializeJson(resp, jsonOut);
+      notifyChar(pStatusChar, jsonOut);
+    }
+    WiFi.scanDelete();
+    return;
+  }
+
+  int totalFound = scanResult;
+  Serial.printf("[WiFi Scan] Discovered %d networks\n", totalFound);
+
+  int emitted = 0;
+  for (int i = 0; i < totalFound && emitted < 12; i++) {
+    String netSsid = WiFi.SSID(i);
+    netSsid.trim();
+    if (netSsid.length() == 0) continue;
+
+    int32_t netRssi = WiFi.RSSI(i);
+    wifi_auth_mode_t authMode = WiFi.encryptionType(i);
+    int sec = (authMode == WIFI_AUTH_OPEN) ? 0 : 1;
+
+    if (pStatusChar) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+      JsonDocument doc;
+#else
+      StaticJsonDocument<256> doc;
+#endif
+      doc["type"] = "wifi_net";
+      doc["ssid"] = netSsid;
+      doc["rssi"] = netRssi;
+      doc["sec"]  = sec;
+
+      String jsonOut;
+      serializeJson(doc, jsonOut);
+      notifyChar(pStatusChar, jsonOut);
+      delay(50); // Space notifications by 40-80 ms so the BLE stack doesn't drop them
+    }
+    emitted++;
+  }
+
+  if (pStatusChar) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+    JsonDocument doneDoc;
+#else
+    StaticJsonDocument<256> doneDoc;
+#endif
+    doneDoc["type"]   = "wifi_scan";
+    doneDoc["status"] = "DONE";
+    doneDoc["count"]  = emitted;
+
+    String doneOut;
+    serializeJson(doneDoc, doneOut);
+    notifyChar(pStatusChar, doneOut);
+    Serial.printf("[WiFi Scan] Emitted %d networks, sent DONE\n", emitted);
+  }
+
+  WiFi.scanDelete();
 }
 
 // ============================================================================
@@ -1297,6 +1429,9 @@ void loop() {
     pendingWiFiTrigger = false;
     initiateWiFiConnection(activeSsid, activePass);
   }
+
+  // 1b. Process Non-blocking Wi-Fi Scan
+  processWiFiScan();
 
   // 2. Drive Non-blocking Wi-Fi State Machine
   processWiFiStateMachine();

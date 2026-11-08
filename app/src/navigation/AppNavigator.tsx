@@ -13,6 +13,7 @@ import { EventsScreen } from '../screens/EventsScreen';
 import { ContactsScreen } from '../screens/ContactsScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
 import { DemoScreen } from '../screens/DemoScreen';
+import { DebugLogsScreen } from '../screens/DebugLogsScreen';
 import { SafetySetupScreen } from '../screens/SafetySetupScreen';
 import { colors } from '../utils/theme';
 
@@ -161,6 +162,15 @@ export const AppNavigator = () => {
                 headerShown: true,
                 title: 'Demo & testing',
                 headerTitle: 'Demo & testing',
+              }}
+            />
+            <Stack.Screen
+              name="DebugLogs"
+              component={DebugLogsScreen}
+              options={{
+                headerShown: false,
+                title: 'Debug Logs',
+                headerTitle: 'Debug Logs',
               }}
             />
           </>

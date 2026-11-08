@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import { ConnectedBleSession } from './bluetoothService';
+import { ConnectedBleSession, BluetoothService } from './bluetoothService';
 
 export interface DiscoveredWifiNetwork {
   ssid: string;
@@ -190,45 +190,60 @@ export class WifiService {
     const rawMap = new Map<string, DiscoveredWifiNetwork>();
 
     // 1. Physical Hardware Scan via ESP32 BLE (Commercial IoT Standard)
-    if (bleSession && bleSession.provisionChar) {
+    if (bleSession && (bleSession.provisionChar || BluetoothService.getActiveSession()?.provisionChar)) {
       try {
         if (abortSignal?.aborted) return [];
 
-        const scanCmd = JSON.stringify({ action: 'SCAN_WIFI' });
-        const encoder = new TextEncoder();
-        await bleSession.provisionChar.writeValue(encoder.encode(scanCmd));
+        const targetSession = bleSession || BluetoothService.getActiveSession();
+        await new Promise<void>((resolve) => {
+          let timeoutId: any = null;
 
-        // Wait for ESP32 to scan 2.4GHz Wi-Fi channels (takes ~1.5 - 2s on hardware)
-        await new Promise((r) => setTimeout(r, 1800));
-        if (abortSignal?.aborted) return [];
-
-        if (bleSession.statusChar) {
-          const val = await bleSession.statusChar.readValue();
-          const decoder = new TextDecoder('utf-8');
-          const resText = decoder.decode(val);
-          const parsed = JSON.parse(resText);
-
-          if (Array.isArray(parsed.networks)) {
-            for (const n of parsed.networks) {
-              const ssid = (n.ssid || n.name || '').trim();
-              if (ssid && ssid.length > 0) {
-                const rssi = typeof n.rssi === 'number' ? n.rssi : -65;
-                const sec = n.security === 'WPA3' ? 'WPA3' : n.auth === 0 ? 'OPEN' : 'WPA2';
-
+          const unsub = BluetoothService.addNotificationListener((data) => {
+            if (!data) return;
+            if (data.type === 'wifi_net' || data.type === 'WIFI_NET') {
+              const ssid = (data.ssid || '').trim();
+              if (ssid) {
+                const rssi = typeof data.rssi === 'number' ? data.rssi : -65;
+                const sec = data.sec === 0 || data.security === 'OPEN' ? 'OPEN' : 'WPA2';
                 if (!rawMap.has(ssid) || (rawMap.get(ssid)?.rssi ?? -100) < rssi) {
                   rawMap.set(ssid, {
                     ssid,
-                    bssid: n.bssid,
+                    bssid: data.bssid,
                     rssi,
                     signalLevel: this.calculateSignalLevel(rssi),
                     security: sec,
-                    channel: n.channel,
+                    channel: data.channel,
                   });
                 }
               }
+            } else if (
+              (data.type === 'wifi_scan' || data.type === 'WIFI_SCAN') &&
+              (data.status === 'DONE' || data.status === 'done')
+            ) {
+              if (timeoutId) clearTimeout(timeoutId);
+              unsub();
+              resolve();
             }
-          }
-        }
+          });
+
+          abortSignal?.addEventListener('abort', () => {
+            if (timeoutId) clearTimeout(timeoutId);
+            unsub();
+            resolve();
+          });
+
+          timeoutId = setTimeout(() => {
+            unsub();
+            resolve();
+          }, 10000);
+
+          BluetoothService.sendCommand(targetSession, { cmd: 'SCAN_WIFI' }).catch((err) => {
+            console.warn('[WiFiService] Failed to send SCAN_WIFI command:', err);
+            if (timeoutId) clearTimeout(timeoutId);
+            unsub();
+            resolve();
+          });
+        });
       } catch (scanErr) {
         console.warn('Physical BLE Wi-Fi scan query note:', scanErr);
       }

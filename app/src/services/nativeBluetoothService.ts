@@ -2,6 +2,7 @@ import { Platform, PermissionsAndroid, Linking } from 'react-native';
 import { BleManager, Device, State, Characteristic, BleError } from 'react-native-ble-plx';
 import { ProductDefinition, PRODUCT_CATALOG } from './productCatalog';
 import { useConnectionStore } from '../store/useConnectionStore';
+import { logger } from '../utils/logger';
 
 // Base64 helper utilities (pure JS for Hermes / React Native compatibility)
 const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
@@ -168,20 +169,29 @@ class NativeBluetoothServiceClass {
         state = await mgr.state();
       }
 
+      let res: 'on' | 'off' | 'unauthorized' | 'unsupported' | 'unknown' = 'off';
       switch (state) {
         case State.PoweredOn:
-          return 'on';
+          res = 'on';
+          break;
         case State.PoweredOff:
         case State.Resetting:
-          return 'off';
+          res = 'off';
+          break;
         case State.Unauthorized:
-          return 'unauthorized';
+          res = 'unauthorized';
+          break;
         case State.Unsupported:
-          return 'unsupported';
+          res = 'unsupported';
+          break;
         default:
-          return 'off';
+          res = 'off';
+          break;
       }
+      logger.info('BLE_RADIO', `Native BLE adapter state queried: ${res} (raw: ${state})`);
+      return res;
     } catch (err) {
+      logger.error('BLE_RADIO', 'Error querying native BLE state', logger.serializeError(err));
       console.warn('[NativeBLE] Error checking state:', err);
       return 'off';
     }
@@ -215,15 +225,19 @@ class NativeBluetoothServiceClass {
             mapped = 'off';
             break;
         }
+        logger.info('BLE_RADIO', `Native BLE onStateChange transition: ${mapped} (raw: ${state})`);
         listener(mapped);
       }, true);
 
       return () => {
         try {
           subscription.remove();
-        } catch {}
+        } catch (unsubErr) {
+          logger.warn('BLE_RADIO', 'Error removing onStateChange subscription', logger.serializeError(unsubErr));
+        }
       };
     } catch (err) {
+      logger.error('BLE_RADIO', 'onStateChange setup error', logger.serializeError(err));
       console.warn('[NativeBLE] onStateChange setup error:', err);
       return () => {};
     }
@@ -294,11 +308,18 @@ class NativeBluetoothServiceClass {
     const targetServiceUuids = options?.serviceUuids || null;
     const prefix = (options?.targetNamePrefix || 'WSG-01').toLowerCase();
 
+    logger.info('BLE_SCAN', `Native startDeviceScan started`, {
+      targetServiceUuids,
+      targetNamePrefix: options?.targetNamePrefix,
+      timeoutMs: options?.timeoutMs,
+    });
+
     mgr.startDeviceScan(
       targetServiceUuids,
       { allowDuplicates: false },
       (error: BleError | null, device: Device | null) => {
         if (error) {
+          logger.error('BLE_SCAN', `Native BLE scan error callback: ${error.message}`, logger.serializeError(error));
           console.warn('[NativeBLE] Scan error:', error);
           this.isScanning = false;
           onError(new Error(error.message || 'BLE_SCAN_ERROR'));
@@ -320,6 +341,14 @@ class NativeBluetoothServiceClass {
 
           const matchedProduct: ProductDefinition =
             PRODUCT_CATALOG.find((p) => p.id === 'wsg-01') || PRODUCT_CATALOG[0];
+
+          logger.info('BLE_SCAN', `Discovered BLE device: ${devName || 'Unnamed'} (${device.id}) RSSI: ${device.rssi}`, {
+            id: device.id,
+            name: devName,
+            rssi: device.rssi,
+            serviceUUIDs: device.serviceUUIDs,
+            isTargetProduct,
+          });
 
           // Associate discovered native device
           const nativeDevice: DiscoveredNativeDevice = {
@@ -346,6 +375,7 @@ class NativeBluetoothServiceClass {
     if (options?.timeoutMs && options.timeoutMs > 0) {
       setTimeout(() => {
         if (this.isScanning) {
+          logger.info('BLE_SCAN', `Scan timeout of ${options.timeoutMs}ms elapsed, auto-stopping`);
           this.stopScan();
         }
       }, options.timeoutMs);
@@ -357,9 +387,11 @@ class NativeBluetoothServiceClass {
    */
   public stopScan(): void {
     if (this.manager && this.isScanning) {
+      logger.info('BLE_SCAN', 'stopDeviceScan invoked');
       try {
         this.manager.stopDeviceScan();
       } catch (e) {
+        logger.warn('BLE_SCAN', 'stopDeviceScan note', logger.serializeError(e));
         console.warn('[NativeBLE] Stop scan note:', e);
       }
       this.isScanning = false;
@@ -381,14 +413,18 @@ class NativeBluetoothServiceClass {
     // Request MTU 247 right after connecting and before discovering services/characteristics
     if (Platform.OS === 'android') {
       try {
+        logger.info('BLE_MTU', `Requesting MTU 247 for device: ${connectedDevice.id}`);
         await connectedDevice.requestMTU(247);
+        logger.info('BLE_MTU', `Negotiated MTU 247 for device: ${connectedDevice.id}`);
         console.log('[NativeBLE] Negotiated MTU 247 for device:', connectedDevice.id);
       } catch (mtuErr) {
+        logger.warn('BLE_MTU', `MTU negotiation failed/unsupported for device: ${connectedDevice.id}`, logger.serializeError(mtuErr));
         console.warn('[NativeBLE] MTU negotiation note:', mtuErr);
       }
     }
 
     // 1. Discover all services and characteristics
+    logger.info('BLE_GATT', `Starting discoverAllServicesAndCharacteristics on device: ${connectedDevice.id}`);
     const deviceWithServices = await connectedDevice.discoverAllServicesAndCharacteristics();
 
     // 2. Locate WSG-01 primary service
@@ -408,11 +444,19 @@ class NativeBluetoothServiceClass {
       }
     }
 
+    logger.info('BLE_GATT', `Discovered ${services.length} services on ${connectedDevice.id}`, {
+      services: services.map((s) => s.uuid),
+      targetServiceUuid,
+      matched: Boolean(matchedService),
+    });
+
     // Strictly verify WSG-01 primary service UUID - NEVER fall back to generic services
     if (!matchedService) {
-      throw new Error(
+      const err = new Error(
         `WSG-01 Service Not Found: Device does not expose the required safety service (${targetServiceUuid}).`
       );
+      logger.error('BLE_GATT', err.message, { deviceID: connectedDevice.id, targetServiceUuid });
+      throw err;
     }
 
     // 3. Discover characteristics for WSG-01 service
@@ -436,11 +480,27 @@ class NativeBluetoothServiceClass {
       }
     }
 
+    logger.info('BLE_GATT', `Characteristics discovery completed for ${targetServiceUuid}`, {
+      foundCharacteristics: characteristics.map((c: any) => ({
+        uuid: c.uuid,
+        writableWithResponse: c.isWritableWithResponse,
+        writableWithoutResponse: c.isWritableWithoutResponse,
+        readable: c.isReadable,
+        notifiable: c.isNotifiable,
+      })),
+      matchedProvision: Boolean(rawProvChar),
+      matchedStatus: Boolean(rawStatusChar),
+      matchedEventLog: Boolean(rawEventLogChar),
+      matchedConfig: Boolean(rawConfigChar),
+    });
+
     // Strictly verify WSG-01 provisioning characteristic - NEVER fall back to unrelated characteristics
     if (!rawProvChar) {
-      throw new Error(
+      const err = new Error(
         `WSG-01 Characteristic Not Found: Required provisioning characteristic (${targetProvUuid}) was not found.`
       );
+      logger.error('BLE_GATT', err.message, { deviceID: connectedDevice.id, targetProvUuid });
+      throw err;
     }
     console.log(
       '[NativeBLE] WSG-01 Provisioning Characteristic matched:',
@@ -465,28 +525,19 @@ class NativeBluetoothServiceClass {
         const b64 = bytesToBase64(bytes);
         const dataStr = typeof data === 'string' ? data : new TextDecoder().decode(bytes);
 
-        console.log('[TEST DEBUG 10] native write started (writeWithResponse)');
-        console.log('[BLE WRITE DEBUG] deviceId =', char.deviceID);
-        console.log('[BLE WRITE DEBUG] serviceUUID =', char.serviceUUID);
-        console.log('[BLE WRITE DEBUG] characteristicUUID =', char.uuid);
-        console.log('[BLE WRITE DEBUG] method actually called = writeWithResponse');
-        console.log('[NativeBLE] WRITE WITH RESPONSE', 'UUID:', char.uuid, 'DATA:', dataStr);
-        console.log('[NativeBLE WRITE DIAGNOSTIC]', {
+        logger.info('BLE_WRITE', `writeWithResponse start on ${char.uuid} (${bytes.length} bytes)`, {
           deviceID: char.deviceID,
           serviceUUID: char.serviceUUID,
           characteristicUUID: char.uuid,
-          isWritableWithResponse: char.isWritableWithResponse,
-          isWritableWithoutResponse: char.isWritableWithoutResponse,
-          writeMode: 'writeWithResponse',
+          data: dataStr,
           payloadByteLength: bytes.length,
         });
 
         try {
           await char.writeWithResponse(b64);
-          console.log('[TEST DEBUG 11] native write SUCCESS (writeWithResponse)');
-          console.log('[NativeBLE] WRITE SUCCESS', char.uuid);
+          logger.info('BLE_WRITE', `writeWithResponse SUCCESS on ${char.uuid}`);
         } catch (error: any) {
-          console.error('[TEST DEBUG 11] native write FAILED (writeWithResponse):', error?.message || error);
+          logger.error('BLE_WRITE', `writeWithResponse FAILED on ${char.uuid}`, logger.serializeError(error));
           console.error('[NativeBLE] WRITE FAILED', char.uuid, error);
           throw error;
         }
@@ -497,28 +548,19 @@ class NativeBluetoothServiceClass {
         const b64 = bytesToBase64(bytes);
         const dataStr = typeof data === 'string' ? data : new TextDecoder().decode(bytes);
 
-        console.log('[TEST DEBUG 10] native write started (writeWithoutResponse)');
-        console.log('[BLE WRITE DEBUG] deviceId =', char.deviceID);
-        console.log('[BLE WRITE DEBUG] serviceUUID =', char.serviceUUID);
-        console.log('[BLE WRITE DEBUG] characteristicUUID =', char.uuid);
-        console.log('[BLE WRITE DEBUG] method actually called = writeWithoutResponse');
-        console.log('[NativeBLE] WRITE WITHOUT RESPONSE', 'UUID:', char.uuid, 'DATA:', dataStr);
-        console.log('[NativeBLE WRITE DIAGNOSTIC]', {
+        logger.info('BLE_WRITE', `writeWithoutResponse start on ${char.uuid} (${bytes.length} bytes)`, {
           deviceID: char.deviceID,
           serviceUUID: char.serviceUUID,
           characteristicUUID: char.uuid,
-          isWritableWithResponse: char.isWritableWithResponse,
-          isWritableWithoutResponse: char.isWritableWithoutResponse,
-          writeMode: 'writeWithoutResponse',
+          data: dataStr,
           payloadByteLength: bytes.length,
         });
 
         try {
           await char.writeWithoutResponse(b64);
-          console.log('[TEST DEBUG 11] native write SUCCESS (writeWithoutResponse)');
-          console.log('[NativeBLE] WRITE SUCCESS', char.uuid);
+          logger.info('BLE_WRITE', `writeWithoutResponse SUCCESS on ${char.uuid}`);
         } catch (error: any) {
-          console.error('[TEST DEBUG 11] native write FAILED (writeWithoutResponse):', error?.message || error);
+          logger.error('BLE_WRITE', `writeWithoutResponse FAILED on ${char.uuid}`, logger.serializeError(error));
           console.error('[NativeBLE] WRITE FAILED', char.uuid, error);
           throw error;
         }
@@ -527,8 +569,6 @@ class NativeBluetoothServiceClass {
       return {
         uuid: char.uuid,
         writeValue: async (data: Uint8Array | string) => {
-          // If the characteristic supports writeWithResponse (or doesn't support writeWithoutResponse),
-          // writeWithResponse MUST be used to ensure the GATT server executes the onWrite callback.
           if (char.isWritableWithResponse || !char.isWritableWithoutResponse) {
             return performWriteWithResponse(data);
           }
@@ -536,37 +576,51 @@ class NativeBluetoothServiceClass {
         },
         writeValueWithResponse: performWriteWithResponse,
         readValue: async () => {
-          console.log('[NativeBLE] READ VALUE ATTEMPT:', char.uuid);
+          logger.info('BLE_READ', `readValue start on ${char.uuid}`);
           try {
             const readChar = await char.read();
             const val = readChar.value || '';
             const bytes = base64ToBytes(val);
-            console.log('[NativeBLE] READ VALUE SUCCESS:', char.uuid, `(${bytes.length} bytes)`);
+            let decoded = '';
+            try { decoded = new TextDecoder().decode(bytes); } catch {}
+            logger.info('BLE_READ', `readValue SUCCESS on ${char.uuid} (${bytes.length} bytes)`, {
+              base64: val,
+              decodedText: decoded,
+              byteLength: bytes.length,
+            });
             return bytes;
           } catch (readErr: any) {
+            logger.error('BLE_READ', `readValue FAILED on ${char.uuid}`, logger.serializeError(readErr));
             console.error('[NativeBLE] READ VALUE FAILED:', char.uuid, readErr?.message || readErr);
             throw readErr;
           }
         },
         monitor: (listener: (data: Uint8Array) => void) => {
-          console.log(`[event] subscribed ${char.uuid}`);
+          logger.info('BLE_MONITOR', `Subscribed to monitor on ${char.uuid}`);
           const sub = char.monitor((err, c) => {
             if (err) {
+              logger.error('BLE_MONITOR', `Monitor callback error for ${char.uuid}`, logger.serializeError(err));
               console.warn(`[event] monitor callback error for ${char.uuid}:`, err);
               return;
             }
             if (c && c.value != null && c.value !== '') {
-              console.log(`[event] raw received ${c.value}`);
               const rawBytes = base64ToBytes(c.value);
+              let decoded = '';
+              try { decoded = new TextDecoder().decode(rawBytes); } catch {}
+              logger.info('BLE_MONITOR', `Notification received on ${char.uuid} (${rawBytes.length} bytes)`, {
+                rawBase64: c.value,
+                decodedText: decoded,
+                byteLength: rawBytes.length,
+              });
               listener(rawBytes);
             }
           });
           return () => {
-            console.log('[NativeBLE] Unsubscribed from characteristic monitor:', char.uuid);
+            logger.info('BLE_MONITOR', `Unsubscribed from monitor on ${char.uuid}`);
             try {
               sub.remove();
             } catch (remErr) {
-              console.warn('[NativeBLE] Error removing monitor subscription:', remErr);
+              logger.warn('BLE_MONITOR', `Error removing monitor for ${char.uuid}`, logger.serializeError(remErr));
             }
           };
         },
@@ -595,6 +649,17 @@ class NativeBluetoothServiceClass {
     };
   }
 
+  public async cancelDeviceConnection(deviceId: string): Promise<void> {
+    logger.info('BLE_CONN', `Calling cancelDeviceConnection for ${deviceId}`);
+    try {
+      const mgr = this.getManager();
+      await mgr.cancelDeviceConnection(deviceId);
+      logger.info('BLE_CONN', `cancelDeviceConnection succeeded for ${deviceId}`);
+    } catch (e: any) {
+      logger.warn('BLE_CONN', `cancelDeviceConnection note for ${deviceId}`, logger.serializeError(e));
+    }
+  }
+
   public async connectGatt(
     discovered: DiscoveredNativeDevice,
     product: ProductDefinition
@@ -603,34 +668,49 @@ class NativeBluetoothServiceClass {
 
     const rawDevice: Device = discovered.rawDevice;
     if (!rawDevice) {
+      logger.error('BLE_CONN', `connectGatt failed: rawDevice missing for ${discovered.id}`);
       throw new Error('DEVICE_NOT_FOUND');
     }
 
     try {
       // 1. Establish native BLE connection with MTU 247
+      logger.info('BLE_CONN', `Initiating GATT connection to ${discovered.name || discovered.id} (${rawDevice.id})`, {
+        id: rawDevice.id,
+        name: discovered.name,
+      });
       console.log('[NativeBLE] Connecting to GATT on device:', rawDevice.id);
       const connectedDevice = await rawDevice.connect({
         autoConnect: false,
         timeout: 10000,
         requestMTU: 247,
       });
+      logger.info('BLE_CONN', `GATT link established for ${rawDevice.id}`);
 
       // Stop scan immediately on success
       this.stopScan();
 
       if (typeof connectedDevice.onDisconnected === 'function') {
         try {
+          (connectedDevice as any)._onDisconnectedAttached = true;
           connectedDevice.onDisconnected((error, dev) => {
-            console.log('[conn] Native BLE disconnected event fired for device:', dev?.id || rawDevice.id, 'Error:', error?.message);
+            const devId = dev?.id || rawDevice.id;
+            console.log('[conn] Native BLE disconnected event fired for device:', devId, 'Error:', error?.message);
+            if (error) {
+              logger.warn('BLE_CONN', `onDisconnected callback triggered for ${devId}`, logger.serializeError(error));
+            } else {
+              logger.info('BLE_CONN', `onDisconnected callback triggered cleanly for ${devId}`);
+            }
             useConnectionStore.getState().setDisconnected(error?.message || 'Native BLE disconnected');
           });
         } catch (e) {
+          logger.warn('BLE_CONN', `onDisconnected listener registration failed for ${rawDevice.id}`, logger.serializeError(e));
           console.warn('[NativeBLE] onDisconnected attachment error:', e);
         }
       }
 
       return await this.buildSessionFromConnectedDevice(connectedDevice, product, discovered);
     } catch (err: any) {
+      logger.error('BLE_CONN', `GATT connection error for ${rawDevice.id}`, logger.serializeError(err));
       console.warn('[NativeBLE] GATT connection error:', err);
       throw new Error(err.message || 'CONNECTION_FAILED');
     }
@@ -644,6 +724,7 @@ class NativeBluetoothServiceClass {
     product: ProductDefinition = PRODUCT_CATALOG[0],
     timeoutMs: number = 7000
   ): Promise<ConnectedNativeSession> {
+    logger.info('BLE_CONN', `reconnectOrScan starting (preferred: ${preferredDeviceId || 'none'}, timeout: ${timeoutMs}ms)`);
     const mgr = this.getManager();
 
     // 1. Check if preferred device is already connected or attempt direct connect
@@ -651,6 +732,7 @@ class NativeBluetoothServiceClass {
       try {
         const isConn = await mgr.isDeviceConnected(preferredDeviceId);
         if (isConn) {
+          logger.info('BLE_CONN', `Preferred device ${preferredDeviceId} is already connected, retrieving session`);
           console.log('[NativeBLE] Device already connected, discovering services:', preferredDeviceId);
           this.stopScan();
           const devList = await mgr.devices([preferredDeviceId]);
@@ -659,10 +741,12 @@ class NativeBluetoothServiceClass {
           }
         }
       } catch (connCheckErr) {
+        logger.warn('BLE_CONN', `isDeviceConnected check exception for ${preferredDeviceId}`, logger.serializeError(connCheckErr));
         console.warn('[NativeBLE] isDeviceConnected check note:', connCheckErr);
       }
 
       try {
+        logger.info('BLE_CONN', `Attempting direct connect to device ID ${preferredDeviceId}`);
         console.log('[NativeBLE] Attempting direct connect to device ID:', preferredDeviceId);
         const directDev = await mgr.connectToDevice(preferredDeviceId, {
           autoConnect: false,
@@ -670,9 +754,11 @@ class NativeBluetoothServiceClass {
           requestMTU: 247,
         });
         this.stopScan();
+        logger.info('BLE_CONN', `Direct connect succeeded for ${preferredDeviceId}`);
         console.log('[NativeBLE] Direct connect succeeded:', preferredDeviceId);
         return await this.buildSessionFromConnectedDevice(directDev, product);
       } catch (directErr) {
+        logger.warn('BLE_CONN', `Direct connect to ${preferredDeviceId} failed, falling back to scan`, logger.serializeError(directErr));
         console.log('[NativeBLE] Direct connect by ID timed out/failed, falling back to fast scan...', directErr);
       }
     }
@@ -687,6 +773,7 @@ class NativeBluetoothServiceClass {
         if (!isResolved) {
           isResolved = true;
           this.stopScan();
+          logger.warn('BLE_CONN', `Targeted scan timed out after ${timeoutMs}ms`);
           reject(new Error('BLE_NOT_CONNECTED: WSG-01 device not found nearby. Please ensure the device is powered on.'));
         }
       }, timeoutMs);
@@ -698,12 +785,14 @@ class NativeBluetoothServiceClass {
         this.stopScan();
 
         try {
+          logger.info('BLE_CONN', `Targeted scan found candidate ${device.name || 'WSG-01'} (${device.id}), connecting...`);
           console.log('[NativeBLE] Targeted scan found WSG-01:', device.name, device.id);
           const connected = await device.connect({ autoConnect: false, timeout: 6000, requestMTU: 247 });
           this.stopScan();
           const session = await this.buildSessionFromConnectedDevice(connected, product);
           resolve(session);
         } catch (connErr: any) {
+          logger.error('BLE_CONN', `Targeted scan connection failed for ${device.id}`, logger.serializeError(connErr));
           reject(new Error(`BLE_NOT_CONNECTED: Found ${device.name || 'WSG-01'} but connection failed: ${connErr.message || connErr}`));
         }
       };
@@ -711,12 +800,14 @@ class NativeBluetoothServiceClass {
       const hasPerm = await this.requestPermissions();
       if (!hasPerm) {
         clearTimeout(scanTimer);
+        logger.error('BLE_CONN', 'Targeted scan aborted: permissions denied');
         reject(new Error('PERMISSION_DENIED: Bluetooth permissions not granted.'));
         return;
       }
 
       this.stopScan();
       this.isScanning = true;
+      logger.info('BLE_SCAN', `Starting targeted scan for WSG-01 (${product.bleServiceUuid})`);
 
       mgr.startDeviceScan(
         [product.bleServiceUuid],
@@ -727,6 +818,7 @@ class NativeBluetoothServiceClass {
               isResolved = true;
               clearTimeout(scanTimer);
               this.stopScan();
+              logger.error('BLE_SCAN', 'Targeted scan error', logger.serializeError(error));
               reject(new Error(`BLE_SCAN_ERROR: ${error.message}`));
             }
             return;
@@ -746,13 +838,18 @@ class NativeBluetoothServiceClass {
    * Disconnect an active native session.
    */
   public async disconnect(session: ConnectedNativeSession | null): Promise<void> {
-    console.log('[NativeBLE] Disconnecting active session for:', session?.device?.name || session?.device?.id);
+    const devIdentifier = session?.device?.name || session?.device?.id || 'unknown';
+    logger.info('BLE_CONN', `Disconnecting active native session for ${devIdentifier}`);
+    console.log('[NativeBLE] Disconnecting active session for:', devIdentifier);
     useConnectionStore.getState().setDisconnected('NativeBluetoothService disconnect called');
     if (session?.server) {
       try {
+        logger.info('BLE_CONN', `Calling cancelConnection on server ${session.server.id}`);
         console.log('[NativeBLE] Calling cancelConnection on device:', session.server.id);
         await session.server.cancelConnection();
+        logger.info('BLE_CONN', `cancelConnection completed for ${session.server.id}`);
       } catch (e) {
+        logger.warn('BLE_CONN', `cancelConnection note on ${session?.server?.id}`, logger.serializeError(e));
         console.warn('[NativeBLE] Disconnect note:', e);
       }
     }

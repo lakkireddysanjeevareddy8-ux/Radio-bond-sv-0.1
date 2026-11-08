@@ -31,6 +31,8 @@ import {
   Shield,
   Wifi,
   WifiOff,
+  Bluetooth,
+  BluetoothOff,
   User,
   Activity,
   Clock,
@@ -52,6 +54,8 @@ export const DashboardScreen: React.FC = () => {
     deviceConfig,
     telemetry,
     isOnline,
+    bluetoothStatus,
+    wifiStatus,
     activeEmergency,
     setActiveEmergency,
     voicePrompt,
@@ -136,7 +140,17 @@ export const DashboardScreen: React.FC = () => {
     }
   };
 
-  const isDeviceConnected = connStatus === 'connected';
+  const isBleConnected =
+    (connStatus === 'connected' && connectedDevice?.connectionType === 'BLE') ||
+    bluetoothStatus === 'CONNECTED';
+  const isWifiConnected =
+    wifiStatus === 'CONNECTED' ||
+    Boolean(connectedDevice?.connectionType === 'WIFI' && connStatus === 'connected');
+  const activeSsid = connectedDevice?.ssid || activeDevice?.ssid;
+  const hasFreshTelemetry = Boolean(
+    telemetry?.timestamp && Date.now() - new Date(telemetry.timestamp).getTime() < 30000
+  );
+  const isDeviceConnected = isBleConnected || (isWifiConnected && (isOnline || hasFreshTelemetry));
 
   let safetyStatus:
     | 'SAFE'
@@ -148,7 +162,7 @@ export const DashboardScreen: React.FC = () => {
     | 'EMERGENCY'
     | 'OFFLINE' = 'SAFE';
 
-  if (!isDeviceConnected || telemetry?.state === 'DEVICE_OFFLINE') {
+  if (!isDeviceConnected && !isBleConnected) {
     safetyStatus = 'OFFLINE';
   } else if (
     telemetry?.state === 'ALARM' ||
@@ -186,9 +200,10 @@ export const DashboardScreen: React.FC = () => {
         <TouchableOpacity
           style={styles.devicePickerBtn}
           onPress={() => setShowDeviceDropdown(true)}
+          onLongPress={() => navigation.navigate('DebugLogs')}
           activeOpacity={0.7}
           accessibilityRole="button"
-          accessibilityLabel={`Switch device, currently selected ${currentDisplayName}`}
+          accessibilityLabel={`Switch device, currently selected ${currentDisplayName}. Long press for debug logs.`}
         >
           <View style={styles.devicePickerLeft}>
             <View style={styles.deviceNameRow}>
@@ -209,27 +224,42 @@ export const DashboardScreen: React.FC = () => {
           </View>
         </TouchableOpacity>
 
-        {/* Online / Offline Pill */}
-        <Pill
-          tone={isDeviceConnected ? 'safe' : connStatus === 'connecting' ? 'warning' : 'offline'}
-          icon={
-            isDeviceConnected ? (
-              <Wifi size={13} color={colors.safeText} />
-            ) : connStatus === 'connecting' ? (
-              <ActivityIndicator size="small" color={colors.warningText} style={{ transform: [{ scale: 0.6 }] }} />
-            ) : (
-              <WifiOff size={13} color={colors.offlineText} />
-            )
-          }
-          label={
-            isDeviceConnected
-              ? 'Connected'
-              : connStatus === 'connecting'
-              ? 'Connecting...'
-              : 'Offline'
-          }
-          size="md"
-        />
+        {/* Status Badges: Bluetooth and Wi-Fi */}
+        <View style={styles.statusBadgesContainer}>
+          <Pill
+            tone={isBleConnected ? 'safe' : 'offline'}
+            icon={<Bluetooth size={12} color={isBleConnected ? colors.safeText : colors.offlineText} />}
+            label={isBleConnected ? 'Bluetooth: Connected' : 'Bluetooth: Disconnected'}
+            size="sm"
+          />
+          <TouchableOpacity
+            activeOpacity={isWifiConnected ? 1 : 0.7}
+            onPress={() => {
+              if (!isWifiConnected) {
+                navigation.navigate('Devices');
+              }
+            }}
+            accessibilityRole={isWifiConnected ? 'text' : 'button'}
+            accessibilityLabel={isWifiConnected ? 'Wi-Fi Connected' : 'Wi-Fi Not connected, tap to set up'}
+          >
+            <Pill
+              tone={isWifiConnected ? 'safe' : 'warning'}
+              icon={
+                isWifiConnected ? (
+                  <Wifi size={12} color={colors.safeText} />
+                ) : (
+                  <WifiOff size={12} color={colors.warningText} />
+                )
+              }
+              label={
+                isWifiConnected
+                  ? `Wi-Fi: Connected${activeSsid ? ` (${activeSsid})` : ''}`
+                  : 'Wi-Fi: Not connected - tap to set up'
+              }
+              size="sm"
+            />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView
@@ -305,8 +335,8 @@ export const DashboardScreen: React.FC = () => {
               health={deviceHealth}
             />
 
-            {/* Offline Friendly Card */}
-            {!isDeviceConnected && (
+            {/* Offline Friendly Card: NEVER shown when BLE is connected */}
+            {!isDeviceConnected && !isBleConnected && (
               <Card tone="warning" style={styles.offlineCard}>
                 <View style={styles.offlineHeader}>
                   <View style={styles.offlineTitleWrap}>
@@ -590,6 +620,12 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
+  },
+  statusBadgesContainer: {
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    gap: 4,
+    marginLeft: spacing.sm,
   },
   devicePickerBtn: {
     flex: 1,

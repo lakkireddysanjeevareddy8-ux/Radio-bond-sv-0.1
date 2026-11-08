@@ -170,39 +170,33 @@ export class DeviceProvisioningService {
     let assignedSsid: string | undefined;
     const maxPollAttempts = 20; // 20 attempts * 1200ms = 24 seconds for router DHCP
 
-    // Optional notification listener if supported
-    let unsubscribeMonitor: (() => void) | undefined;
+    // Notification listener via BluetoothService helper
     let monitorError: string | null = null;
-    if (typeof session.statusChar?.monitor === 'function') {
-      try {
-        unsubscribeMonitor = session.statusChar.monitor((data: Uint8Array) => {
-          try {
-            const decoder = new TextDecoder('utf-8');
-            const respStr = decoder.decode(data).trim();
-            if (respStr.startsWith('{')) {
-              const resp = JSON.parse(respStr);
-              const isConnected =
-                resp.status === 'CONNECTED' ||
-                resp.state === 'WIFI_CONNECTED' ||
-                resp.status === 'WIFI_CONNECTED';
+    const unsubscribeNotifications = BluetoothService.addNotificationListener((resp) => {
+      if (!resp) return;
+      const status = String(resp.status || '').toUpperCase();
+      const state = String(resp.state || '').toUpperCase();
 
-              if (isConnected && resp.ip && resp.ip !== '0.0.0.0') {
-                assignedIp = resp.ip;
-                if (typeof resp.rssi === 'number') assignedRssi = resp.rssi;
-                if (resp.ssid) assignedSsid = resp.ssid;
-                console.log('[Provisioning] Hardware reported Wi-Fi connected via notification:', assignedIp);
-              } else if (resp.status === 'AUTH_FAILED') {
-                monitorError = 'Wi-Fi connection failed: Incorrect Wi-Fi password or authentication rejected.';
-              } else if (resp.status === 'SSID_NOT_FOUND' || resp.status === 'NO_SSID') {
-                monitorError = `Wi-Fi connection failed: Network "${creds.ssid}" not found in range.`;
-              } else if (resp.status === 'TIMEOUT' || resp.status === 'WIFI_TIMEOUT') {
-                monitorError = `Wi-Fi connection timed out: ESP32 could not connect to "${creds.ssid}".`;
-              }
-            }
-          } catch {}
-        });
-      } catch {}
-    }
+      const isConnected =
+        status === 'CONNECTED' ||
+        state === 'WIFI_CONNECTED' ||
+        status === 'WIFI_CONNECTED';
+
+      if (isConnected && resp.ip && resp.ip !== '0.0.0.0') {
+        assignedIp = resp.ip;
+        if (typeof resp.rssi === 'number') assignedRssi = resp.rssi;
+        if (resp.ssid) assignedSsid = resp.ssid;
+        console.log('[Provisioning] Hardware reported Wi-Fi connected via notification:', assignedIp);
+      } else if (status === 'AUTH_FAILED') {
+        monitorError = 'Incorrect Wi-Fi password';
+      } else if (status === 'NO_SSID' || status === 'SSID_NOT_FOUND') {
+        monitorError = 'Network not found (make sure it is 2.4 GHz)';
+      } else if (status === 'WIFI_TIMEOUT' || status === 'TIMEOUT') {
+        monitorError = 'Connection timed out';
+      } else if (status === 'FAILED' || state === 'WIFI_FAILED') {
+        monitorError = resp.error || 'Wi-Fi connection failed';
+      }
+    });
 
     try {
       for (let i = 0; i < maxPollAttempts; i++) {
@@ -212,7 +206,9 @@ export class DeviceProvisioningService {
         await new Promise((r) => setTimeout(r, 1200));
         onProgress?.('OBTAINING_IP', `Awaiting DHCP IP address assignment (${i + 1}/${maxPollAttempts})...`);
 
-        if (session.statusChar) {
+        if (monitorError) throw new Error(monitorError);
+
+        if (session.statusChar && typeof session.statusChar.readValue === 'function') {
           try {
             const val = await session.statusChar.readValue();
             if (val && val.length > 0) {
@@ -220,11 +216,13 @@ export class DeviceProvisioningService {
               const rawStr = decoder.decode(val).trim();
               if (rawStr.startsWith('{')) {
                 const resp = JSON.parse(rawStr);
+                const status = String(resp.status || '').toUpperCase();
+                const state = String(resp.state || '').toUpperCase();
 
                 const isConnected =
-                  resp.status === 'CONNECTED' ||
-                  resp.state === 'WIFI_CONNECTED' ||
-                  resp.status === 'WIFI_CONNECTED';
+                  status === 'CONNECTED' ||
+                  state === 'WIFI_CONNECTED' ||
+                  status === 'WIFI_CONNECTED';
 
                 if (isConnected && resp.ip && resp.ip !== '0.0.0.0') {
                   assignedIp = resp.ip;
@@ -232,26 +230,32 @@ export class DeviceProvisioningService {
                   if (resp.ssid) assignedSsid = resp.ssid;
                   console.log('[Provisioning] Hardware reported Wi-Fi connected via readValue:', assignedIp);
                   break;
-                } else if (resp.status === 'AUTH_FAILED') {
-                  throw new Error('Wi-Fi connection failed: Incorrect Wi-Fi password or authentication rejected.');
-                } else if (resp.status === 'SSID_NOT_FOUND' || resp.status === 'NO_SSID') {
-                  throw new Error(`Wi-Fi connection failed: Network "${creds.ssid}" not found in range.`);
-                } else if (resp.status === 'TIMEOUT' || resp.status === 'WIFI_TIMEOUT') {
-                  throw new Error(`Wi-Fi connection timed out: ESP32 could not connect to "${creds.ssid}".`);
+                } else if (status === 'AUTH_FAILED') {
+                  throw new Error('Incorrect Wi-Fi password');
+                } else if (status === 'NO_SSID' || status === 'SSID_NOT_FOUND') {
+                  throw new Error('Network not found (make sure it is 2.4 GHz)');
+                } else if (status === 'WIFI_TIMEOUT' || status === 'TIMEOUT') {
+                  throw new Error('Connection timed out');
+                } else if (status === 'FAILED' || state === 'WIFI_FAILED') {
+                  throw new Error(resp.error || 'Wi-Fi connection failed');
                 }
               }
             }
           } catch (e: any) {
-            if (e.message && (e.message.includes('Wi-Fi connection') || e.message.includes('timed out'))) throw e;
+            if (
+              e.message &&
+              (e.message.includes('Incorrect Wi-Fi password') ||
+                e.message.includes('Network not found') ||
+                e.message.includes('timed out') ||
+                e.message.includes('failed'))
+            ) {
+              throw e;
+            }
           }
         }
       }
     } finally {
-      if (unsubscribeMonitor) {
-        try {
-          unsubscribeMonitor();
-        } catch {}
-      }
+      unsubscribeNotifications();
     }
 
     // STRICT CHECK: ESP32 must have confirmed real connection

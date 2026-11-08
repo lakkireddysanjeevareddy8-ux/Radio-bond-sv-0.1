@@ -14,6 +14,7 @@ export interface SavedDevice {
   firmwareVersion: string;
   sensor: string; // 'LD2410C'
   connectionType: 'WIFI' | 'BLE';
+  ssid?: string;
   telemetry?: Telemetry;
   userRole?: UserDeviceRole;
   isShared?: boolean;

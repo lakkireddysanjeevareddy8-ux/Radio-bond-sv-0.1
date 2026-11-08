@@ -3,6 +3,10 @@ import { Platform } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { AppNavigator } from './src/navigation/AppNavigator';
 import { EmergencyScreen } from './src/screens/EmergencyScreen';
+import { DeviceErrorBanner } from './src/components/DeviceErrorBanner';
+import { ErrorBoundary } from './src/components/ErrorBoundary';
+import { setupGlobalErrorHandlers } from './src/utils/setupGlobalErrorHandlers';
+import { logger } from './src/utils/logger';
 import { deviceService } from './src/services/DeviceCommunicationService';
 import { useAppStore } from './src/store/useAppStore';
 import { useDeviceStore } from './src/store/useDeviceStore';
@@ -11,6 +15,9 @@ import { useContactStore } from './src/store/useContactStore';
 import { EmergencySoundService } from './src/services/EmergencySoundService';
 import { EmergencyPushService } from './src/services/EmergencyPushService';
 import { BluetoothService } from './src/services/bluetoothService';
+
+// Initialize global crash & unhandled promise rejection tracking
+setupGlobalErrorHandlers();
 
 // Configure foreground notification behavior on native platforms
 if (Platform.OS !== 'web') {
@@ -153,10 +160,11 @@ export default function App() {
   }, [deviceConfig?.deviceId, connectedDevice?.id, activeDeviceId, isSimulatorMode]);
 
   return (
-    <>
+    <ErrorBoundary>
       <StatusBar style="auto" />
       <AppNavigator />
+      <DeviceErrorBanner />
       <EmergencyScreen />
-    </>
+    </ErrorBoundary>
   );
 }
