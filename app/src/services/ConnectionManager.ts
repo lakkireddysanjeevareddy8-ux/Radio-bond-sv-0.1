@@ -7,7 +7,7 @@ import {
   ConnectionManagerState,
 } from '../store/useConnectionStore';
 import { useAppStore } from '../store/useAppStore';
-import { useDeviceStore, SavedDevice } from '../store/useDeviceStore';
+import { useDeviceStore } from '../store/useDeviceStore';
 import { storage } from '../utils/storage';
 import { logger } from '../utils/logger';
 import { PRODUCT_CATALOG } from './productCatalog';
@@ -28,6 +28,7 @@ class ConnectionManagerClass {
   // Auto-reconnect state
   private reconnectAttempt: number = 0;
   private reconnectTimer: any = null;
+  private slowRetryTimer: any = null;
   private readonly MAX_RECONNECT_ATTEMPTS = 10;
   private isManualDisconnect: boolean = false;
 
@@ -37,6 +38,14 @@ class ConnectionManagerClass {
   // Listeners
   private listeners: Set<ConnectionManagerListener> = new Set();
   private isInitialized: boolean = false;
+
+  /**
+   * Calculates the exponential backoff delay in seconds:
+   * 1, 2, 4, 8, 16, 30, 30... (capped at 30s)
+   */
+  public getBackoffDelay(attempt: number): number {
+    return Math.min(30, Math.pow(2, Math.max(0, attempt - 1)));
+  }
 
   /**
    * Initializes ConnectionManager once on application startup.
@@ -49,7 +58,15 @@ class ConnectionManagerClass {
     logger.info('CONN_MGR', 'Initializing ConnectionManager singleton');
     console.log('[ConnectionManager] Initializing...');
 
-    // 1. Load last connected device metadata from persistent storage
+    // 1. Load manual disconnect flag from persistent storage
+    try {
+      const manual = await storage.getJSON<boolean>('wsg_manual_disconnect', false);
+      this.isManualDisconnect = Boolean(manual);
+    } catch (e) {
+      console.warn('[ConnectionManager] Could not read manual disconnect flag:', e);
+    }
+
+    // 2. Load last connected device metadata from persistent storage
     try {
       const lastMeta = await storage.getJSON<ConnectedDeviceInfo>(
         'wsg_last_connected_device_meta',
@@ -63,16 +80,35 @@ class ConnectionManagerClass {
       console.warn('[ConnectionManager] Could not read last connected device:', e);
     }
 
-    // 2. Wire Bluetooth adapter state listener
+    // 3. Make ONE background reconnect attempt on startup if Bluetooth is ON and not manually disconnected
+    if (!this.isManualDisconnect && this.lastConnectedDevice?.id) {
+      const target = this.lastConnectedDevice;
+      BluetoothService.isBluetoothAvailable()
+        .then((btOn) => {
+          if (btOn && this.state === 'IDLE') {
+            logger.info('CONN_MGR', `Background startup reconnect to ${target.id}`);
+            this.connect(target, { isReconnect: true }).catch((err) => {
+              logger.info('CONN_MGR', `Startup background reconnect quiet exit: ${err.message}`);
+              if (this.state === 'RECONNECTING' || this.state === 'CONNECTING') {
+                this.transitionTo('IDLE', 'Startup background reconnect completed without connection');
+              }
+            });
+          }
+        })
+        .catch(() => {});
+    }
+
+    // 4. Wire Bluetooth adapter state listener
     BluetoothService.addBluetoothStateListener((adapterState) => {
       console.log('[ConnectionManager] Bluetooth adapter state changed to:', adapterState);
       if (adapterState === 'off') {
         this.cancelReconnectTimer();
+        this.cancelSlowRetryTimer();
         this.transitionTo('BLUETOOTH_OFF', 'Bluetooth adapter turned off');
       } else if (adapterState === 'on') {
         if (this.state === 'BLUETOOTH_OFF') {
           const target = this.connectedDevice || this.lastConnectedDevice;
-          if (target && target.id) {
+          if (target && target.id && !this.isManualDisconnect) {
             logger.info('CONN_MGR', `Bluetooth turned back on. Auto-reconnecting to ${target.id}`);
             this.reconnectAttempt = 0;
             this.startAutoReconnect('Bluetooth adapter turned back on');
@@ -83,7 +119,7 @@ class ConnectionManagerClass {
       }
     });
 
-    // 3. Wire AppState resume listener
+    // 5. Wire AppState resume listener
     AppState.addEventListener('change', async (nextState) => {
       if (nextState === 'active') {
         logger.info('CONN_MGR', 'App resumed to foreground: checking BLE connection health');
@@ -107,7 +143,14 @@ class ConnectionManagerClass {
             console.log('[ConnectionManager] Connection dropped while backgrounded: starting auto-reconnect');
             this.handleBleDisconnect(activeDev.id, 'Connection lost while backgrounded');
           }
-        } else if (this.state === 'RECONNECTING' || this.state === 'FAILED') {
+        } else if (this.state === 'FAILED') {
+          // Trigger one immediate retry on AppState 'active' when state is FAILED
+          if (!this.isManualDisconnect) {
+            logger.info('CONN_MGR', 'AppState active: triggering immediate retry from FAILED state');
+            this.cancelSlowRetryTimer();
+            this.executeForegroundRetry('AppState active immediate retry');
+          }
+        } else if (this.state === 'RECONNECTING') {
           const isAlive = await this.isDeviceConnected(activeDev.id);
           if (isAlive) {
             logger.info('CONN_MGR', 'Device reconnected in background, marking CONNECTED');
@@ -119,6 +162,9 @@ class ConnectionManagerClass {
             this.transitionTo('CONNECTED', 'Verified connection on foreground resume');
           }
         }
+      } else {
+        // App backgrounded: pause slow retries
+        this.cancelSlowRetryTimer();
       }
     });
   }
@@ -149,7 +195,6 @@ class ConnectionManagerClass {
    */
   public subscribe(listener: ConnectionManagerListener): () => void {
     this.listeners.add(listener);
-    // Notify immediately with current state
     try {
       listener(this.state, 'Initial subscription');
     } catch {}
@@ -186,18 +231,22 @@ class ConnectionManagerClass {
       return await this.inFlightConnectPromise;
     }
 
-    this.isManualDisconnect = false;
-    this.cancelReconnectTimer();
-    this.reconnectAttempt = 0;
-
-    // 3. Verify Bluetooth is turned on
-    const btAvailable = await BluetoothService.isBluetoothAvailable();
-    if (!btAvailable) {
-      this.transitionTo('BLUETOOTH_OFF', 'Cannot connect: Bluetooth is turned off');
-      throw new Error('BLUETOOTH_DISABLED');
+    if (!options?.isReconnect) {
+      this.isManualDisconnect = false;
+      storage.setJSON('wsg_manual_disconnect', false).catch(() => {});
+      this.cancelReconnectTimer();
+      this.cancelSlowRetryTimer();
+      this.reconnectAttempt = 0;
     }
 
     this.inFlightConnectPromise = (async () => {
+      // 3. Verify Bluetooth is turned on
+      const btAvailable = await BluetoothService.isBluetoothAvailable();
+      if (!btAvailable) {
+        this.transitionTo('BLUETOOTH_OFF', 'Cannot connect: Bluetooth is turned off');
+        throw new Error('BLUETOOTH_DISABLED');
+      }
+
       const nextState: ConnectionManagerState = options?.isReconnect ? 'RECONNECTING' : 'CONNECTING';
       this.transitionTo(nextState, `Connecting to "${devName}" (${devId})`);
 
@@ -237,20 +286,42 @@ class ConnectionManagerClass {
 
     let session: ConnectedBleSession;
 
-    // Connect via BluetoothService
-    if ('product' in device && (device as any).product) {
-      session = await BluetoothService.connectGatt(device as DiscoveredBleDevice);
+    // Check whether device has a usable rawDevice instance (e.g. not loaded from storage)
+    const hasUsableRawDevice = Boolean(
+      device.rawDevice &&
+      (Platform.OS === 'web' ? Boolean(device.rawDevice.gatt) : true)
+    );
+
+    if (!hasUsableRawDevice) {
+      // Connect by ID using NativeBluetoothService.reconnectOrScan
+      if (Platform.OS === 'android' || Platform.OS === 'ios') {
+        const nativeSession = await NativeBluetoothService.reconnectOrScan(devId);
+        session = nativeSession as unknown as ConnectedBleSession;
+      } else {
+        session = await BluetoothService.connectGatt({
+          id: devId,
+          name: devName,
+          rssi: device.rssi ?? -60,
+          rawDevice: device.rawDevice,
+          product: PRODUCT_CATALOG[0],
+          isNative: false,
+        });
+      }
     } else {
-      const defaultProduct = PRODUCT_CATALOG.find((p) => p.id === 'wsg-01') || PRODUCT_CATALOG[0];
-      const discovered: DiscoveredBleDevice = {
-        id: devId,
-        name: devName,
-        rssi: device.rssi ?? -60,
-        rawDevice: device.rawDevice,
-        product: defaultProduct,
-        isNative: Platform.OS === 'android' || Platform.OS === 'ios',
-      };
-      session = await BluetoothService.connectGatt(discovered);
+      if ('product' in device && (device as any).product) {
+        session = await BluetoothService.connectGatt(device as DiscoveredBleDevice);
+      } else {
+        const defaultProduct = PRODUCT_CATALOG.find((p) => p.id === 'wsg-01') || PRODUCT_CATALOG[0];
+        const discovered: DiscoveredBleDevice = {
+          id: devId,
+          name: devName,
+          rssi: device.rssi ?? -60,
+          rawDevice: device.rawDevice,
+          product: defaultProduct,
+          isNative: Platform.OS === 'android' || Platform.OS === 'ios',
+        };
+        session = await BluetoothService.connectGatt(discovered);
+      }
     }
 
     this.activeSession = session;
@@ -258,7 +329,7 @@ class ConnectionManagerClass {
     // Attach disconnect listener guarded against duplicate registration
     this.attachDisconnectListener(session);
 
-    // Build connected device model
+    // Build connected device model keeping live rawDevice ONLY in memory
     const connInfo: ConnectedDeviceInfo = {
       id: devId,
       name: devName,
@@ -274,9 +345,20 @@ class ConnectionManagerClass {
     this.connectedDevice = connInfo;
     this.lastConnectedDevice = connInfo;
 
-    // Persist last connected device ID and metadata
+    // Strip rawDevice/server and persist ONLY serializable plain fields
+    const metaToPersist = {
+      id: devId,
+      name: devName,
+      connectionType: connInfo.connectionType || 'BLE',
+      model: connInfo.model || 'WSG-01',
+      room: connInfo.room || 'Master Washroom',
+      rssi: typeof connInfo.rssi === 'number' ? connInfo.rssi : 0,
+      ssid: connInfo.ssid || undefined,
+      ipAddress: connInfo.ipAddress || undefined,
+    };
+
     storage.setItem('wsg_last_connected_device_id', devId).catch(() => {});
-    storage.setJSON('wsg_last_connected_device_meta', connInfo).catch(() => {});
+    storage.setJSON('wsg_last_connected_device_meta', metaToPersist).catch(() => {});
 
     // Transition to CONNECTED
     this.transitionTo('CONNECTED', `GATT connection verified for "${devName}" (${devId})`);
@@ -291,28 +373,39 @@ class ConnectionManagerClass {
 
   /**
    * User or UI initiated disconnect.
-   * Cancels any pending auto-reconnect and marks disconnect as intentional.
+   * Idempotent: cancels auto-reconnect, marks manual disconnect, and cleanly tears down link.
    */
   public async disconnect(reason: string = 'User initiated disconnect'): Promise<void> {
     logger.info('CONN_MGR', `disconnect requested: ${reason}`);
     console.log(`[ConnectionManager] disconnect requested: ${reason}`);
 
     this.isManualDisconnect = true;
+    storage.setJSON('wsg_manual_disconnect', true).catch(() => {});
     this.cancelReconnectTimer();
+    this.cancelSlowRetryTimer();
     this.reconnectAttempt = 0;
 
-    const targetId = this.connectedDevice?.id || this.activeSession?.device?.id;
-    if (targetId) {
-      await this.cancelDeviceConnection(targetId);
-    }
+    const dev = this.connectedDevice;
+    const session = this.activeSession;
 
-    if (this.activeSession) {
-      BluetoothService.disconnect(this.activeSession);
-      this.activeSession = null;
+    // Idempotent guard: already clean
+    if (this.state === 'IDLE' && !dev && !session) {
+      return;
     }
 
     this.connectedDevice = null;
+    this.activeSession = null;
     this.transitionTo('IDLE', reason);
+
+    if (session) {
+      try {
+        BluetoothService.disconnect(session);
+      } catch (e) {
+        console.warn('[ConnectionManager] disconnect error:', e);
+      }
+    } else if (dev?.id) {
+      await this.cancelDeviceConnection(dev.id);
+    }
   }
 
   /**
@@ -323,7 +416,10 @@ class ConnectionManagerClass {
     logger.info('CONN_MGR', 'User triggered retry()');
     console.log('[ConnectionManager] User triggered retry()');
 
+    this.isManualDisconnect = false;
+    storage.setJSON('wsg_manual_disconnect', false).catch(() => {});
     this.cancelReconnectTimer();
+    this.cancelSlowRetryTimer();
     this.reconnectAttempt = 0;
 
     const target = this.connectedDevice || this.lastConnectedDevice;
@@ -339,15 +435,12 @@ class ConnectionManagerClass {
       return;
     }
 
-    this.transitionTo('CONNECTING', 'User manual retry initiated');
     try {
       await this.cancelDeviceConnection(target.id);
-      await new Promise((r) => setTimeout(r, 300));
-      await this.connect(target, { isReconnect: true });
-      this.reconnectAttempt = 0;
+      await new Promise((r) => setTimeout(r, 200));
+      await this.connect(target, { isReconnect: false });
     } catch (err: any) {
       logger.error('CONN_MGR', 'Manual retry failed', logger.serializeError(err));
-      this.transitionTo('FAILED', err.message || 'Retry failed');
       throw err;
     }
   }
@@ -362,8 +455,8 @@ class ConnectionManagerClass {
     console.log(`[ConnectionManager] handleBleDisconnect: ${deviceId} (${reason}) [manual=${this.isManualDisconnect}]`);
 
     if (this.isManualDisconnect) {
-      this.isManualDisconnect = false;
       this.cancelReconnectTimer();
+      this.cancelSlowRetryTimer();
       this.reconnectAttempt = 0;
       this.transitionTo('IDLE', `Manual disconnect: ${reason}`);
       return;
@@ -394,18 +487,23 @@ class ConnectionManagerClass {
     if (this.reconnectAttempt > this.MAX_RECONNECT_ATTEMPTS) {
       logger.warn('CONN_MGR', `Auto-reconnect stopped: Exceeded max ${this.MAX_RECONNECT_ATTEMPTS} attempts`);
       this.transitionTo('FAILED', `Auto-reconnect failed after ${this.MAX_RECONNECT_ATTEMPTS} attempts`);
+      this.startSlowRetryTimer();
       return;
     }
 
     // Exponential backoff delay calculation
-    const delayMs = Math.min(30000, 1000 * Math.pow(2, this.reconnectAttempt - 1));
+    const delaySec = this.getBackoffDelay(this.reconnectAttempt);
+    const delayMs = delaySec * 1000;
+
     this.transitionTo(
       'RECONNECTING',
-      `Auto-reconnect attempt ${this.reconnectAttempt}/${this.MAX_RECONNECT_ATTEMPTS} in ${delayMs / 1000}s (trigger: ${triggerReason})`
+      `Auto-reconnect attempt ${this.reconnectAttempt}/${this.MAX_RECONNECT_ATTEMPTS} in ${delaySec}s (trigger: ${triggerReason})`
     );
 
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
+
+      if (this.isManualDisconnect) return;
 
       // Ensure Bluetooth adapter is still turned on
       const btAvailable = await BluetoothService.isBluetoothAvailable();
@@ -421,10 +519,7 @@ class ConnectionManagerClass {
       );
 
       try {
-        await this.cancelDeviceConnection(target.id);
-        await new Promise((r) => setTimeout(r, 300));
-
-        await this.executeConnect(target, { isReconnect: true });
+        await this.connect(target, { isReconnect: true });
         logger.info('CONN_MGR', `Auto-reconnect succeeded on attempt ${this.reconnectAttempt}`);
         this.reconnectAttempt = 0;
       } catch (err: any) {
@@ -434,10 +529,70 @@ class ConnectionManagerClass {
           logger.serializeError(err)
         );
         if (this.state === 'RECONNECTING') {
-          this.startAutoReconnect(err.message || 'GATT connect rejected');
+          if (this.reconnectAttempt >= this.MAX_RECONNECT_ATTEMPTS) {
+            this.transitionTo('FAILED', `Auto-reconnect failed after ${this.MAX_RECONNECT_ATTEMPTS} attempts`);
+            this.startSlowRetryTimer();
+          } else {
+            this.startAutoReconnect(err.message || 'GATT connect rejected');
+          }
         }
       }
     }, delayMs);
+  }
+
+  /**
+   * Starts a slow 60-second retry loop while the app remains in the foreground.
+   */
+  private startSlowRetryTimer(): void {
+    this.cancelSlowRetryTimer();
+    if (this.isManualDisconnect) return;
+    if (AppState.currentState !== 'active') return;
+
+    this.slowRetryTimer = setTimeout(async () => {
+      this.slowRetryTimer = null;
+      if (this.state !== 'FAILED') return;
+      if (this.isManualDisconnect) return;
+      if (AppState.currentState !== 'active') return;
+
+      const btAvail = await BluetoothService.isBluetoothAvailable();
+      if (!btAvail) {
+        this.transitionTo('BLUETOOTH_OFF', 'Bluetooth is turned off');
+        return;
+      }
+
+      logger.info('CONN_MGR', 'Executing foreground slow retry (every 60s)');
+      await this.executeForegroundRetry('Slow retry (every 60s)');
+    }, 60000);
+  }
+
+  /**
+   * Cancels slow retry timer.
+   */
+  private cancelSlowRetryTimer(): void {
+    if (this.slowRetryTimer) {
+      clearTimeout(this.slowRetryTimer);
+      this.slowRetryTimer = null;
+    }
+  }
+
+  /**
+   * Executes one foreground retry attempt when in FAILED state.
+   */
+  private async executeForegroundRetry(reason: string): Promise<void> {
+    const target = this.connectedDevice || this.lastConnectedDevice;
+    if (!target || !target.id) return;
+
+    try {
+      await this.connect(target, { isReconnect: true });
+    } catch (err: any) {
+      logger.info('CONN_MGR', `Foreground retry failed: ${err.message}`);
+      if (this.state === 'RECONNECTING') {
+        this.transitionTo('FAILED', err.message || 'Foreground retry failed');
+      }
+      if (this.state === 'FAILED' && AppState.currentState === 'active' && !this.isManualDisconnect) {
+        this.startSlowRetryTimer();
+      }
+    }
   }
 
   /**
@@ -514,18 +669,60 @@ class ConnectionManagerClass {
           ...meta,
         });
       }
+
+      // Persist stripped plain fields
+      const metaToPersist = {
+        id: this.connectedDevice.id,
+        name: this.connectedDevice.name,
+        connectionType: this.connectedDevice.connectionType || 'BLE',
+        model: this.connectedDevice.model || 'WSG-01',
+        room: this.connectedDevice.room || 'Master Washroom',
+        rssi: typeof this.connectedDevice.rssi === 'number' ? this.connectedDevice.rssi : 0,
+        ssid: this.connectedDevice.ssid || undefined,
+        ipAddress: this.connectedDevice.ipAddress || undefined,
+      };
+      storage.setJSON('wsg_last_connected_device_meta', metaToPersist).catch(() => {});
     }
   }
 
   /**
    * Sets scanning state (called by BleScanManager).
+   * Never transitions to SCANNING from RECONNECTING, FAILED, CONNECTED, or CONNECTING.
+   * If a scan runs during RECONNECTING, the reconnect loop keeps going.
+   * When scan stops, does not change state unless state is currently SCANNING.
    */
   public setScanning(isScanning: boolean): void {
-    if (isScanning && this.state !== 'CONNECTED' && this.state !== 'CONNECTING') {
-      this.transitionTo('SCANNING', 'BleScanManager started scan');
-    } else if (!isScanning && this.state === 'SCANNING') {
-      this.transitionTo('IDLE', 'BleScanManager stopped scan');
+    if (isScanning) {
+      if (
+        this.state !== 'CONNECTED' &&
+        this.state !== 'CONNECTING' &&
+        this.state !== 'RECONNECTING' &&
+        this.state !== 'FAILED' &&
+        this.state !== 'BLUETOOTH_OFF'
+      ) {
+        this.transitionTo('SCANNING', 'BleScanManager started scan');
+      }
+    } else {
+      if (this.state === 'SCANNING') {
+        this.transitionTo('IDLE', 'BleScanManager stopped scan');
+      }
     }
+  }
+
+  /**
+   * Resets internal state for unit testing purposes.
+   */
+  public resetForTesting(): void {
+    this.cancelReconnectTimer();
+    this.cancelSlowRetryTimer();
+    this.state = 'IDLE';
+    this.connectedDevice = null;
+    this.lastConnectedDevice = null;
+    this.activeSession = null;
+    this.reconnectAttempt = 0;
+    this.isManualDisconnect = false;
+    this.inFlightConnectPromise = null;
+    this.listeners.clear();
   }
 
   /**

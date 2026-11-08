@@ -846,20 +846,10 @@ class NativeBluetoothServiceClass {
     const devIdentifier = session?.device?.name || session?.device?.id || 'unknown';
     logger.info('BLE_CONN', `Disconnecting active native session for ${devIdentifier}`);
     console.log('[NativeBLE] Disconnecting active session for:', devIdentifier);
-    try {
-      const { ConnectionManager } = require('./ConnectionManager');
-      ConnectionManager.disconnect('NativeBluetoothService disconnect called');
-    } catch {}
-    if (session?.server) {
-      try {
-        logger.info('BLE_CONN', `Calling cancelConnection on server ${session.server.id}`);
-        console.log('[NativeBLE] Calling cancelConnection on device:', session.server.id);
-        await session.server.cancelConnection();
-        logger.info('BLE_CONN', `cancelConnection completed for ${session.server.id}`);
-      } catch (e) {
-        logger.warn('BLE_CONN', `cancelConnection note on ${session?.server?.id}`, logger.serializeError(e));
-        console.warn('[NativeBLE] Disconnect note:', e);
-      }
+
+    const devId = session?.server?.id || session?.device?.id;
+    if (devId) {
+      await this.cancelDeviceConnection(devId);
     }
   }
 

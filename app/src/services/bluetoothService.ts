@@ -1573,11 +1573,6 @@ export class BluetoothService {
       this.activeSession = null;
     }
 
-    try {
-      const { ConnectionManager } = require('./ConnectionManager');
-      ConnectionManager.disconnect('BluetoothService.disconnect called');
-    } catch {}
-
     if (session.isNative) {
       NativeBluetoothService.disconnect(session as any);
       return;
