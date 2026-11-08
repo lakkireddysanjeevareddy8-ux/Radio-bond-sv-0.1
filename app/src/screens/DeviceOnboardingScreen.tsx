@@ -258,13 +258,16 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
   // Load real Wi-Fi networks (for BLE onboarding)
   const loadWifiNetworks = async (session?: ConnectedBleSession | null) => {
     setIsScanningWifi(true);
-    const wifiActive = await WifiService.checkDeviceWifiEnabled();
-    setIsWifiEnabled(wifiActive);
+    const hasBle = Boolean(session || bleSession);
+    if (!hasBle) {
+      const wifiActive = await WifiService.checkDeviceWifiEnabled();
+      setIsWifiEnabled(wifiActive);
 
-    if (!wifiActive) {
-      setIsScanningWifi(false);
-      setIsWifiTurnedOff(true);
-      return;
+      if (!wifiActive) {
+        setIsScanningWifi(false);
+        setIsWifiTurnedOff(true);
+        return;
+      }
     }
 
     try {
@@ -321,13 +324,16 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
     setIsScanningWifi(true);
     setErrorMessage('');
 
-    // Ensure Wi-Fi is actively enabled before proceeding
-    const wifiActive = await WifiService.checkDeviceWifiEnabled();
-    if (!wifiActive) {
-      setIsScanningWifi(false);
-      setIsWifiTurnedOff(true);
-      setIsWifiEnabled(false);
-      return;
+    // Ensure Wi-Fi is actively enabled if no active BLE session exists
+    const hasBle = Boolean(bleSession);
+    if (!hasBle) {
+      const wifiActive = await WifiService.checkDeviceWifiEnabled();
+      if (!wifiActive) {
+        setIsScanningWifi(false);
+        setIsWifiTurnedOff(true);
+        setIsWifiEnabled(false);
+        return;
+      }
     }
 
     const controller = new AbortController();

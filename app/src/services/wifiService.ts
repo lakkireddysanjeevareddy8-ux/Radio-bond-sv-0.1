@@ -172,29 +172,19 @@ export class WifiService {
     bleSession?: ConnectedBleSession | null,
     abortSignal?: AbortSignal
   ): Promise<DiscoveredWifiNetwork[]> {
-    // 0. Ensure device Wi-Fi is actively turned on
-    const isWifiOn = await this.checkDeviceWifiEnabled();
-    if (!isWifiOn) {
-      this.openSystemWifiSettings();
-      throw new Error('WIFI_DISABLED');
-    }
-
-    const permission = await this.requestPermissions();
-    if (permission === 'DENIED') {
-      throw new Error('PERMISSION_DENIED');
-    }
-    if (permission === 'PERMANENTLY_DENIED') {
-      throw new Error('PERMISSION_PERMANENTLY_DENIED');
-    }
-
     const rawMap = new Map<string, DiscoveredWifiNetwork>();
+    const activeBleSession = bleSession || BluetoothService.getActiveSession();
+    const hasBleSession = Boolean(
+      activeBleSession && (activeBleSession.provisionChar || activeBleSession.server)
+    );
 
     // 1. Physical Hardware Scan via ESP32 BLE (Commercial IoT Standard)
-    if (bleSession && (bleSession.provisionChar || BluetoothService.getActiveSession()?.provisionChar)) {
+    // Run the ESP32 scan FIRST whenever a BLE session exists without being blocked by phone Wi-Fi
+    if (hasBleSession && activeBleSession) {
       try {
         if (abortSignal?.aborted) return [];
 
-        const targetSession = bleSession || BluetoothService.getActiveSession();
+        const targetSession = activeBleSession;
         await new Promise<void>((resolve) => {
           let timeoutId: any = null;
 
@@ -249,38 +239,57 @@ export class WifiService {
       }
     }
 
-    // 2. Native Android Wi-Fi Scanning (if running natively on Android device)
+    // Status tracking for fallback / phone permissions
+    let wifiDisabledError = false;
+    let permissionError: 'PERMISSION_DENIED' | 'PERMISSION_PERMANENTLY_DENIED' | null = null;
+
+    // 2. Native Android Wi-Fi Scanning (fallback or standalone when no BLE session)
     if (Platform.OS === 'android') {
       try {
-        const NativeWifi = (globalThis as any)?.NativeModules?.WifiManager;
-        if (NativeWifi && NativeWifi.loadWifiList) {
-          const nativeList = await NativeWifi.loadWifiList();
-          if (Array.isArray(nativeList)) {
-            for (const item of nativeList) {
-              const ssid = (item.SSID || '').trim();
-              if (ssid) {
-                const rssi = typeof item.level === 'number' ? item.level : -60;
-                const sec = item.capabilities?.includes('WPA3')
-                  ? 'WPA3'
-                  : item.capabilities?.includes('WPA')
-                  ? 'WPA2'
-                  : 'OPEN';
+        const isWifiOn = await this.checkDeviceWifiEnabled();
+        if (!isWifiOn) {
+          console.warn('[WiFiService] Phone Wi-Fi is disabled, skipping native Android Wi-Fi scan fallback');
+          wifiDisabledError = true;
+        } else {
+          const permission = await this.requestPermissions();
+          if (permission === 'DENIED') {
+            console.warn('[WiFiService] Location/NEARBY_WIFI permission DENIED, skipping native Android scan fallback');
+            permissionError = 'PERMISSION_DENIED';
+          } else if (permission === 'PERMANENTLY_DENIED') {
+            console.warn('[WiFiService] Location/NEARBY_WIFI permission PERMANENTLY_DENIED, skipping native Android scan fallback');
+            permissionError = 'PERMISSION_PERMANENTLY_DENIED';
+          } else {
+            const NativeWifi = (globalThis as any)?.NativeModules?.WifiManager;
+            if (NativeWifi && NativeWifi.loadWifiList) {
+              const nativeList = await NativeWifi.loadWifiList();
+              if (Array.isArray(nativeList)) {
+                for (const item of nativeList) {
+                  const ssid = (item.SSID || '').trim();
+                  if (ssid) {
+                    const rssi = typeof item.level === 'number' ? item.level : -60;
+                    const sec = item.capabilities?.includes('WPA3')
+                      ? 'WPA3'
+                      : item.capabilities?.includes('WPA')
+                      ? 'WPA2'
+                      : 'OPEN';
 
-                if (!rawMap.has(ssid) || (rawMap.get(ssid)?.rssi ?? -100) < rssi) {
-                  rawMap.set(ssid, {
-                    ssid,
-                    bssid: item.BSSID,
-                    rssi,
-                    signalLevel: this.calculateSignalLevel(rssi),
-                    security: sec,
-                  });
+                    if (!rawMap.has(ssid) || (rawMap.get(ssid)?.rssi ?? -100) < rssi) {
+                      rawMap.set(ssid, {
+                        ssid,
+                        bssid: item.BSSID,
+                        rssi,
+                        signalLevel: this.calculateSignalLevel(rssi),
+                        security: sec,
+                      });
+                    }
+                  }
                 }
               }
             }
           }
         }
       } catch (e) {
-        console.warn('Native Android Wi-Fi scan exception:', e);
+        console.warn('[WiFiService] Native Android Wi-Fi scan exception (skipped fallback):', e);
       }
     }
 
@@ -297,11 +306,8 @@ export class WifiService {
         if (resp.ok) {
           const data = await resp.json();
           if (data.error === 'WIFI_DISABLED' || data.wifiEnabled === false) {
-            this.openSystemWifiSettings();
-            throw new Error('WIFI_DISABLED');
-          }
-
-          if (data && Array.isArray(data.networks)) {
+            wifiDisabledError = true;
+          } else if (data && Array.isArray(data.networks)) {
             for (const net of data.networks) {
               const ssid = (net.ssid || '').trim();
               if (ssid) {
@@ -322,9 +328,7 @@ export class WifiService {
           }
         }
       } catch (bridgeErr: any) {
-        if (bridgeErr?.message === 'WIFI_DISABLED') {
-          throw bridgeErr;
-        }
+        // Bridge optional
       }
     }
 
@@ -363,6 +367,17 @@ export class WifiService {
 
       for (const net of fallbackNetworks) {
         rawMap.set(net.ssid, net);
+      }
+    }
+
+    // Throw WIFI_DISABLED / PERMISSION_* only when there is no BLE session and no results at all
+    if (!hasBleSession && rawMap.size === 0) {
+      if (wifiDisabledError) {
+        this.openSystemWifiSettings();
+        throw new Error('WIFI_DISABLED');
+      }
+      if (permissionError) {
+        throw new Error(permissionError);
       }
     }
 
