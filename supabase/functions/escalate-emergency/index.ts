@@ -23,6 +23,32 @@ serve(async (req: Request) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceRole);
 
+    // Security check: Validate Authorization header
+    const authHeader = req.headers.get('Authorization') || '';
+    if (!authHeader.startsWith('Bearer ')) {
+      return new Response(JSON.stringify({ error: 'Unauthorized: Bearer token required' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const token = authHeader.replace('Bearer ', '').trim();
+    let callerUserId: string | null = null;
+    let isServiceRole = false;
+
+    if (token === supabaseServiceRole) {
+      isServiceRole = true;
+    } else {
+      const { data: { user }, error: userErr } = await supabase.auth.getUser(token);
+      if (userErr || !user) {
+        return new Response(JSON.stringify({ error: 'Unauthorized: Invalid authentication token' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      callerUserId = user.id;
+    }
+
     const body = await req.json();
     const eventId = body.eventId;
 
@@ -45,6 +71,28 @@ serve(async (req: Request) => {
         status: 404,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    // Caller authorization check: must be owner or active trusted contact
+    if (!isServiceRole && callerUserId) {
+      const isOwner = event.owner_user_id === callerUserId;
+      let isContact = false;
+      if (!isOwner && event.owner_user_id) {
+        const { data: contactLink } = await supabase
+          .from('trusted_contact_users')
+          .select('id')
+          .eq('contact_user_id', callerUserId)
+          .eq('status', 'active')
+          .maybeSingle();
+        if (contactLink) isContact = true;
+      }
+
+      if (!isOwner && !isContact) {
+        return new Response(
+          JSON.stringify({ error: 'Forbidden: You do not have permission to escalate this emergency' }),
+          { status: 403, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
     }
 
     // Check if event was already acknowledged, resolved, or cancelled

@@ -48,6 +48,7 @@ import { BleScanManager } from '../services/bleScanManager';
 import { DeviceProvisioningService } from '../services/deviceProvisioningService';
 import { useDeviceStore } from '../store/useDeviceStore';
 import { useAppStore } from '../store/useAppStore';
+import { SecureTokenStorage } from '../utils/secureTokenStorage';
 import { useConnectionStore } from '../store/useConnectionStore';
 import { ConnectionManager } from '../services/ConnectionManager';
 import { logger, formatUserBleError } from '../utils/logger';
@@ -898,6 +899,9 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
         data.cmd === 'STATUS' ||
         data.type === 'status'
       ) {
+        if (data.token && targetDevice?.id) {
+          SecureTokenStorage.saveDeviceToken(targetDevice.id, data.token).catch(() => {});
+        }
         const normStatus = String(data.status || '').toUpperCase();
         const normState = String(data.state || '').toUpperCase();
 

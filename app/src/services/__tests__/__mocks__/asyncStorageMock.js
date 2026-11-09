@@ -16,3 +16,4 @@ module.exports = {
   ...asyncStorage,
   default: asyncStorage,
 };
+

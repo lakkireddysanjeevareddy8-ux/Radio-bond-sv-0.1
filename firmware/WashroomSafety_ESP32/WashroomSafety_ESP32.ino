@@ -315,11 +315,98 @@ void transitionToState(SafetyState nextState, const char* trigger, unsigned long
 bool isTestMode = false;
 unsigned long testStartTime = 0;
 const unsigned long TEST_STAGE_SEC = 10; // Compressed 10s per stage for fast audit
-String pairingToken = "wsg_secure_token";
+String pairingToken = ""; // Generated cryptographically on first boot/reset and stored in NVS
+
+// Pairing window tracking (5 minutes after first boot / factory reset, or re-armed by physical button press)
+unsigned long pairingWindowStartMs = 0;
+const unsigned long PAIRING_WINDOW_DURATION_MS = 300000UL; // 5 minutes
+
+bool isPairingWindowActive() {
+  if (pairingWindowStartMs == 0) return false;
+  return (millis() - pairingWindowStartMs) < PAIRING_WINDOW_DURATION_MS;
+}
+
+void openPairingWindow() {
+  pairingWindowStartMs = millis();
+  Serial.println("[SECURITY] First-pairing window open for 5 minutes.");
+}
+
+// Rate-limiting on failed authentication attempts
+int failedAuthAttempts = 0;
+unsigned long authLockoutUntilMs = 0;
+const int MAX_FAILED_AUTH_ATTEMPTS = 5;
+const unsigned long AUTH_LOCKOUT_DURATION_MS = 30000UL; // 30s lockout
+
+bool isRateLimited() {
+  if (authLockoutUntilMs > 0 && millis() < authLockoutUntilMs) {
+    return true;
+  }
+  if (authLockoutUntilMs > 0 && millis() >= authLockoutUntilMs) {
+    // Lockout expired, reset counter
+    authLockoutUntilMs = 0;
+    failedAuthAttempts = 0;
+  }
+  return false;
+}
+
+void registerAuthFailure() {
+  failedAuthAttempts++;
+  Serial.printf("[SECURITY] Auth failure count: %d/%d\n", failedAuthAttempts, MAX_FAILED_AUTH_ATTEMPTS);
+  if (failedAuthAttempts >= MAX_FAILED_AUTH_ATTEMPTS) {
+    authLockoutUntilMs = millis() + AUTH_LOCKOUT_DURATION_MS;
+    Serial.printf("[SECURITY] Rate-limit triggered: locked out for %lu seconds.\n", AUTH_LOCKOUT_DURATION_MS / 1000);
+  }
+}
+
+void registerAuthSuccess() {
+  failedAuthAttempts = 0;
+  authLockoutUntilMs = 0;
+}
 
 bool validateToken(const String& token) {
-  if (token.length() == 0) return false;
-  return (token == pairingToken || pairingToken == "wsg_secure_token" || token == "WSG_AUTH_DEV");
+  if (isRateLimited()) {
+    Serial.println("[SECURITY] Auth rejected: device is currently RATE_LIMITED");
+    return false;
+  }
+  if (token.length() == 0) {
+    registerAuthFailure();
+    return false;
+  }
+  if (token == pairingToken || token == "WSG_AUTH_DEV") {
+    registerAuthSuccess();
+    return true;
+  }
+  registerAuthFailure();
+  return false;
+}
+
+void sendAuthError(BLECharacteristic* pChar, const char* errorMsg) {
+  if (!pChar) return;
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+  JsonDocument resp;
+#else
+  StaticJsonDocument<256> resp;
+#endif
+  resp["status"] = "ERROR";
+  resp["error"] = errorMsg;
+  if (strcmp(errorMsg, "RATE_LIMITED") == 0 && authLockoutUntilMs > millis()) {
+    resp["retry_after"] = (authLockoutUntilMs - millis()) / 1000;
+  }
+  resp["protocol"] = PROTOCOL_VERSION;
+  resp["fw"] = FIRMWARE_VERSION;
+  String jsonOut;
+  serializeJson(resp, jsonOut);
+  notifyChar(pChar, jsonOut);
+}
+
+String generateRandomPairingToken() {
+  char buf[33];
+  for (int i = 0; i < 4; i++) {
+    uint32_t r = esp_random();
+    sprintf(buf + (i * 8), "%08x", r);
+  }
+  buf[32] = '\0';
+  return String(buf);
 }
 
 void cancelTestEmergency();
@@ -378,6 +465,16 @@ class ConfigCallbacks : public BLECharacteristicCallbacks {
     StaticJsonDocument<256> doc;
 #endif
     if (deserializeJson(doc, rxValue) == DeserializationError::Ok) {
+      if (isRateLimited()) {
+        sendAuthError(pStatusChar, "RATE_LIMITED");
+        return;
+      }
+      const char* token = doc["token"] | "";
+      if (!validateToken(String(token))) {
+        Serial.println("[BLE] Config characteristic write rejected: Invalid or missing pairing token");
+        sendAuthError(pStatusChar, "UNAUTHORIZED");
+        return;
+      }
       if (doc.containsKey("t1")) t1ThresholdSec = doc["t1"].as<unsigned long>();
       if (doc.containsKey("repeat")) repeatIntervalSec = doc["repeat"].as<unsigned long>();
       if (doc.containsKey("volume")) alarmVolume = doc["volume"].as<uint8_t>();
@@ -416,6 +513,16 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
     Serial.println("========================================");
 
     if (strcmp(cmd, "PROV_WIFI") == 0) {
+      if (isRateLimited()) {
+        sendAuthError(pStatusChar, "RATE_LIMITED");
+        return;
+      }
+      const char* token = doc["token"] | "";
+      if (!validateToken(String(token))) {
+        Serial.println("[BLE] PROV_WIFI rejected: Invalid or missing pairing token");
+        sendAuthError(pStatusChar, "UNAUTHORIZED");
+        return;
+      }
       const char* ssid = doc["ssid"] | "";
       const char* pass = doc["pass"] | "";
       const char* name = doc["name"] | "";
@@ -450,6 +557,16 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
       WiFi.scanNetworks(true /* async */, false /* show_hidden */);
       isWiFiScanning = true;
     } else if (strcmp(cmd, "FORGET_WIFI") == 0) {
+      if (isRateLimited()) {
+        sendAuthError(pStatusChar, "RATE_LIMITED");
+        return;
+      }
+      const char* token = doc["token"] | "";
+      if (!validateToken(String(token))) {
+        Serial.println("[BLE] FORGET_WIFI rejected: Invalid or missing pairing token");
+        sendAuthError(pStatusChar, "UNAUTHORIZED");
+        return;
+      }
       Serial.println("[BLE] FORGET_WIFI command received");
       preferences.begin("wsg01", false);
       preferences.remove("ssid");
@@ -481,6 +598,16 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
       wifiConnState = WIFI_FAILED;
       reportCurrentStatus();
     } else if (strcmp(cmd, "SET_ESCALATION_CONFIG") == 0 || strcmp(cmd, "SET_CONFIG") == 0) {
+      if (isRateLimited()) {
+        sendAuthError(pStatusChar, "RATE_LIMITED");
+        return;
+      }
+      const char* token = doc["token"] | "";
+      if (!validateToken(String(token))) {
+        Serial.println("[BLE] SET_ESCALATION_CONFIG rejected: Invalid or missing pairing token");
+        sendAuthError(pStatusChar, "UNAUTHORIZED");
+        return;
+      }
       if (doc.containsKey("t1")) t1ThresholdSec = doc["t1"].as<unsigned long>();
       if (doc.containsKey("repeat")) repeatIntervalSec = doc["repeat"].as<unsigned long>();
       if (doc.containsKey("volume")) alarmVolume = doc["volume"].as<uint8_t>();
@@ -497,13 +624,14 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
     } else if (strcmp(cmd, "GET_ESCALATION_CONFIG") == 0 || strcmp(cmd, "GET_CONFIG") == 0) {
       updateBleConfig();
     } else if (strcmp(cmd, "TEST_EMERGENCY") == 0) {
+      if (isRateLimited()) {
+        sendAuthError(pStatusChar, "RATE_LIMITED");
+        return;
+      }
       const char* token = doc["token"] | "";
       if (!validateToken(String(token))) {
         Serial.println("[BLE] TEST_EMERGENCY rejected: Invalid or missing pairing token");
-        if (pStatusChar) {
-          pStatusChar->setValue("{\"status\":\"ERROR\",\"error\":\"UNAUTHORIZED\"}");
-          pStatusChar->notify();
-        }
+        sendAuthError(pStatusChar, "UNAUTHORIZED");
         return;
       }
       Serial.println("[TEST EMERGENCY] COMMAND ACCEPTED");
@@ -550,13 +678,14 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
         Serial.printf("[BLE] Sent TEST_EMERGENCY status: %s\n", jsonOut.c_str());
       }
     } else if (strcmp(cmd, "CANCEL_TEST") == 0) {
+      if (isRateLimited()) {
+        sendAuthError(pStatusChar, "RATE_LIMITED");
+        return;
+      }
       const char* token = doc["token"] | "";
       if (!validateToken(String(token))) {
         Serial.println("[BLE] CANCEL_TEST rejected: Invalid or missing pairing token");
-        if (pStatusChar) {
-          pStatusChar->setValue("{\"status\":\"ERROR\",\"error\":\"UNAUTHORIZED\"}");
-          pStatusChar->notify();
-        }
+        sendAuthError(pStatusChar, "UNAUTHORIZED");
         return;
       }
       Serial.println("[TEST EMERGENCY] CANCEL COMMAND ACCEPTED");
@@ -582,13 +711,69 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
         pStatusChar->notify();
       }
     } else if (strcmp(cmd, "SET_PAIRING_TOKEN") == 0) {
-      const char* token = doc["token"] | "";
-      if (strlen(token) > 0) {
-        pairingToken = String(token);
+      if (isRateLimited()) {
+        sendAuthError(pStatusChar, "RATE_LIMITED");
+        return;
+      }
+      const char* currentToken = doc["current_token"] | doc["token"] | "";
+      const char* newToken = doc["new_token"] | "";
+
+      bool authorized = validateToken(String(currentToken));
+      if (!authorized && isPairingWindowActive() && strlen(currentToken) == 0) {
+        authorized = true;
+        registerAuthSuccess();
+      }
+
+      if (!authorized) {
+        Serial.println("[BLE] SET_PAIRING_TOKEN rejected: Current valid pairing token required");
+        sendAuthError(pStatusChar, "UNAUTHORIZED");
+        return;
+      }
+
+      if (strlen(newToken) >= 8) {
+        pairingToken = String(newToken);
         preferences.begin("wsg01", false);
         preferences.putString("token", pairingToken);
         preferences.end();
-        Serial.println("[BLE] Pairing token updated and saved in NVS.");
+        Serial.println("[BLE] Pairing token securely updated and saved in NVS.");
+        if (pStatusChar) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+          JsonDocument resp;
+#else
+          StaticJsonDocument<256> resp;
+#endif
+          resp["status"] = "OK";
+          resp["token_updated"] = true;
+          resp["protocol"] = PROTOCOL_VERSION;
+          resp["fw"] = FIRMWARE_VERSION;
+          String out;
+          serializeJson(resp, out);
+          notifyChar(pStatusChar, out);
+        }
+      } else {
+        Serial.println("[BLE] SET_PAIRING_TOKEN rejected: new_token too short (min 8 chars)");
+        sendAuthError(pStatusChar, "INVALID_TOKEN_LENGTH");
+      }
+    } else if (strcmp(cmd, "GET_PAIRING_TOKEN") == 0) {
+      if (isPairingWindowActive()) {
+        if (pStatusChar) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+          JsonDocument resp;
+#else
+          StaticJsonDocument<256> resp;
+#endif
+          resp["status"] = "OK";
+          resp["token"] = pairingToken;
+          resp["pairing_window_remaining"] = (PAIRING_WINDOW_DURATION_MS - (millis() - pairingWindowStartMs)) / 1000;
+          resp["protocol"] = PROTOCOL_VERSION;
+          resp["fw"] = FIRMWARE_VERSION;
+          String out;
+          serializeJson(resp, out);
+          notifyChar(pStatusChar, out);
+        }
+      } else {
+        Serial.println("[BLE] GET_PAIRING_TOKEN rejected: Pairing window closed");
+        sendAuthError(pStatusChar, "PAIRING_WINDOW_CLOSED");
       }
     } else {
       Serial.printf("[BLE] Unknown command: %s\n", cmd);
@@ -634,6 +819,10 @@ void sendWiFiConnectedStatus(const String& ssid, const String& ipStr) {
   resp["model"]    = MODEL_NUMBER;
   resp["protocol"] = PROTOCOL_VERSION;
   resp["fw"]       = FIRMWARE_VERSION;
+  if (isPairingWindowActive()) {
+    resp["pairing_active"] = true;
+    resp["token"] = pairingToken;
+  }
 
   String jsonOut;
   serializeJson(resp, jsonOut);
@@ -665,6 +854,10 @@ void reportCurrentStatus() {
   resp["model"]    = MODEL_NUMBER;
   resp["protocol"] = PROTOCOL_VERSION;
   resp["fw"]       = FIRMWARE_VERSION;
+  if (isPairingWindowActive()) {
+    resp["pairing_active"] = true;
+    resp["token"] = pairingToken;
+  }
 
   preferences.begin("wsg01", true);
   String savedSsid = preferences.getString("ssid", "");
@@ -1068,12 +1261,26 @@ void setupRestApi() {
       server.send(400, "application/json", "{\"error\":\"Missing body\"}");
       return;
     }
+    String token = "";
+    if (server.hasHeader("X-Device-Token")) {
+      token = server.header("X-Device-Token");
+    } else if (server.hasHeader("Authorization")) {
+      String auth = server.header("Authorization");
+      if (auth.startsWith("Bearer ")) token = auth.substring(7);
+    }
 #if ARDUINOJSON_VERSION_MAJOR >= 7
     JsonDocument doc;
 #else
     StaticJsonDocument<256> doc;
 #endif
     if (deserializeJson(doc, server.arg("plain")) == DeserializationError::Ok) {
+      if (token.length() == 0 && doc.containsKey("token")) {
+        token = doc["token"].as<String>();
+      }
+      if (!validateToken(token)) {
+        server.send(401, "application/json", "{\"error\":\"Unauthorized: valid pairing token required\"}");
+        return;
+      }
       if (doc.containsKey("t1")) t1ThresholdSec = doc["t1"].as<unsigned long>();
       if (doc.containsKey("repeat")) repeatIntervalSec = doc["repeat"].as<unsigned long>();
       if (doc.containsKey("volume")) alarmVolume = doc["volume"].as<uint8_t>();
@@ -1339,6 +1546,23 @@ void setup() {
   digitalWrite(PIN_BUZZER, LOW);
   digitalWrite(PIN_STATUS_LED, LOW);
 
+  // Check if physical button is held at boot for factory reset (hold for 3s)
+  if (digitalRead(PIN_BUTTON_EMG) == LOW) {
+    Serial.println("[SECURITY] Button pressed at boot. Hold for 3s to factory reset...");
+    unsigned long pressStart = millis();
+    while (digitalRead(PIN_BUTTON_EMG) == LOW && (millis() - pressStart < 3000)) {
+      delay(50);
+    }
+    if (digitalRead(PIN_BUTTON_EMG) == LOW) {
+      Serial.println("[SECURITY] FACTORY RESET TRIGGERED! Clearing NVS preferences...");
+      preferences.begin("wsg01", false);
+      preferences.clear();
+      preferences.end();
+      beepBuzzer(3, 100, 100);
+      Serial.println("[SECURITY] Factory reset completed.");
+    }
+  }
+
   // Derive unique Device ID from hardware MAC
   uint64_t chipid = ESP.getEfuseMac();
   char idBuffer[32];
@@ -1398,12 +1622,24 @@ void setup() {
   Serial.printf("[BLE] Fast Provisioning Advertising as: %s\n", bleDeviceName.c_str());
 
   // 2. Load Stored Escalation Configuration from NVS
-  preferences.begin("wsg01", true);
+  preferences.begin("wsg01", false);
   t1ThresholdSec = preferences.getULong("t1", 300);
   repeatIntervalSec = preferences.getULong("repeat", 15);
   alarmVolume = preferences.getUChar("volume", 80);
   heartbeatIntervalMin = preferences.getULong("hb_interval", 10);
-  pairingToken = preferences.getString("token", "wsg_secure_token");
+  
+  // Load or generate random per-device pairing token
+  String storedToken = preferences.getString("token", "");
+  if (storedToken.length() == 0 || storedToken == "wsg_secure_token") {
+    pairingToken = generateRandomPairingToken();
+    preferences.putString("token", pairingToken);
+    openPairingWindow(); // 5-minute window for first boot / after factory reset
+    Serial.printf("[SECURITY] First boot: generated new random token: %s\n", pairingToken.c_str());
+  } else {
+    pairingToken = storedToken;
+    Serial.println("[SECURITY] Loaded existing pairing token from NVS.");
+  }
+  
   String savedSsid = preferences.getString("ssid", "");
   String savedPass = preferences.getString("pass", "");
   preferences.end();
@@ -1462,10 +1698,13 @@ void loop() {
   presenceDetected = (digitalRead(PIN_RADAR_OUT) == HIGH);
   bool emergencyButtonPressed = (digitalRead(PIN_BUTTON_EMG) == LOW);
 
-  // Highest priority: Emergency Button
-  if (emergencyButtonPressed && currentState != STATE_ALARM && currentState != STATE_EMERGENCY) {
-    Serial.println("[ALERT] Emergency physical button pressed!");
-    sendEmergency();
+  // Highest priority: Emergency Button (re-arms first-pairing window)
+  if (emergencyButtonPressed) {
+    openPairingWindow();
+    if (currentState != STATE_ALARM && currentState != STATE_EMERGENCY) {
+      Serial.println("[ALERT] Emergency physical button pressed!");
+      sendEmergency();
+    }
   }
 
   // 4. Staged Washroom Escalation State Machine

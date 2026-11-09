@@ -39,18 +39,18 @@ const DEBOUNCE_PERSIST_MS = 1000;
 
 // Sensitive field names to automatically redact
 const SENSITIVE_KEYS_REGEX =
-  /^(pass(word)?|pin|secret|token|auth(orization)?|apikey|anon_key|key|ssid_pass|wifi_pass|credential|access_token|refresh_token)$/i;
+  /^(pass(word)?|pin|secret|.*token.*|auth(orization)?|apikey|anon_key|key|ssid_pass|wifi_pass|wifiPass|credential|access_token|refresh_token)$/i;
 
 // String replacement regexes for sensitive tokens and passwords
 const SENSITIVE_STRING_PATTERNS: Array<{ regex: RegExp; replace: string }> = [
   // JSON or unquoted key-value: "pass":"xyz", pass: "xyz", pass=xyz, password: 'xyz'
   {
-    regex: /(["']?)(pass(?:word)?|pin|secret|token|auth(?:orization)?|apikey|anon_key|wifi_pass|wifiPass)\1\s*[:=]\s*(["']?)[^"',\s\n\r\)\}\]]+\3/gi,
+    regex: /(["']?)(pass(?:word)?|pin|secret|[a-zA-Z0-9_]*token[a-zA-Z0-9_]*|auth(?:orization)?|apikey|anon_key|wifi_pass|wifiPass)\1\s*[:=]\s*(["']?)[^"',\s\n\r\)\}\]]+\3/gi,
     replace: '$1$2$1: [REDACTED]',
   },
   // Key-value pair in query/URL/form: pass=xyz, token=xyz, key=xyz
   {
-    regex: /(pass(?:word)?|token|secret|apiKey|anon_key)=([^&,\s\n\r]+)/gi,
+    regex: /(pass(?:word)?|[a-zA-Z0-9_]*token[a-zA-Z0-9_]*|secret|apiKey|anon_key)=([^&,\s\n\r]+)/gi,
     replace: '$1=[REDACTED]',
   },
   // Bearer tokens: Bearer ey... or Bearer xyz

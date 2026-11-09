@@ -25,6 +25,8 @@ export const BLE_ERROR_CODES = {
   NO_SSID: 'NO_SSID',
   WIFI_TIMEOUT: 'WIFI_TIMEOUT',
   UNAUTHORIZED: 'UNAUTHORIZED',
+  RATE_LIMITED: 'RATE_LIMITED',
+  PAIRING_WINDOW_CLOSED: 'PAIRING_WINDOW_CLOSED',
   UNKNOWN_CMD: 'UNKNOWN_CMD',
   INVALID_JSON: 'INVALID_JSON',
   FW_UPDATE_NEEDED: 'FW_UPDATE_NEEDED',
@@ -39,6 +41,7 @@ export type BleErrorCode = (typeof BLE_ERROR_CODES)[keyof typeof BLE_ERROR_CODES
 export interface ProvWifiParams {
   ssid: string;
   pass: string;
+  token?: string;
   name?: string;
   room?: string;
 }
@@ -48,6 +51,12 @@ export interface EscalationConfigParams {
   repeat?: number;
   volume?: number;
   hb_interval?: number;
+  token?: string;
+}
+
+export interface SetPairingTokenParams {
+  currentToken?: string;
+  newToken: string;
 }
 
 export const BleProtocol = {
@@ -59,6 +68,7 @@ export const BleProtocol = {
       cmd: 'PROV_WIFI',
       ssid: params.ssid,
       pass: params.pass,
+      ...(params.token ? { token: params.token } : {}),
       ...(params.name ? { name: params.name } : {}),
       ...(params.room ? { room: params.room } : {}),
     });
@@ -81,8 +91,11 @@ export const BleProtocol = {
   /**
    * Builds FORGET_WIFI command JSON string.
    */
-  formatForgetWifi(): string {
-    return JSON.stringify({ cmd: 'FORGET_WIFI' });
+  formatForgetWifi(token?: string): string {
+    return JSON.stringify({
+      cmd: 'FORGET_WIFI',
+      ...(token ? { token } : {}),
+    });
   },
 
   /**
@@ -115,9 +128,11 @@ export const BleProtocol = {
   /**
    * Builds SET_ESCALATION_CONFIG command JSON string.
    */
-  formatSetEscalationConfig(config: EscalationConfigParams): string {
+  formatSetEscalationConfig(config: EscalationConfigParams, token?: string): string {
+    const effectiveToken = token || config.token;
     return JSON.stringify({
       cmd: 'SET_ESCALATION_CONFIG',
+      ...(effectiveToken ? { token: effectiveToken } : {}),
       ...(typeof config.t1 === 'number' ? { t1: config.t1 } : {}),
       ...(typeof config.repeat === 'number' ? { repeat: config.repeat } : {}),
       ...(typeof config.volume === 'number' ? { volume: config.volume } : {}),
@@ -134,11 +149,22 @@ export const BleProtocol = {
 
   /**
    * Builds SET_PAIRING_TOKEN command JSON string.
+   * Requires currentToken to authenticate the change, and newToken.
    */
-  formatSetPairingToken(token: string): string {
+  formatSetPairingToken(newTokenOrParams: string | SetPairingTokenParams, currentToken?: string): string {
+    if (typeof newTokenOrParams === 'string') {
+      return JSON.stringify({
+        cmd: 'SET_PAIRING_TOKEN',
+        ...(currentToken ? { current_token: currentToken, token: currentToken } : {}),
+        new_token: newTokenOrParams,
+      });
+    }
     return JSON.stringify({
       cmd: 'SET_PAIRING_TOKEN',
-      token,
+      ...(newTokenOrParams.currentToken
+        ? { current_token: newTokenOrParams.currentToken, token: newTokenOrParams.currentToken }
+        : {}),
+      new_token: newTokenOrParams.newToken,
     });
   },
 };
@@ -159,6 +185,9 @@ export interface WifiStatusPayload {
   is_test?: boolean;
   trigger?: string;
   source?: string;
+  pairing_active?: boolean;
+  token?: string;
+  retry_after?: number;
 }
 
 export interface WifiScanProgressPayload {
@@ -478,6 +507,9 @@ function categorizeParsedData(parsed: any): ParsedBleMessage {
         is_test: parsed.is_test,
         trigger: parsed.trigger,
         source: parsed.source,
+        pairing_active: parsed.pairing_active,
+        token: parsed.token,
+        retry_after: parsed.retry_after,
       },
       raw: parsed,
     };

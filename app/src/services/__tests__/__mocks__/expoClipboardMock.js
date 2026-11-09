@@ -6,3 +6,4 @@ module.exports = {
   }),
   getStringAsync: jest.fn(async () => clipboard),
 };
+

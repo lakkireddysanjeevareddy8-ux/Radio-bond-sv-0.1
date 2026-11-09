@@ -2,6 +2,7 @@ import { ConnectedBleSession, BluetoothService } from './bluetoothService';
 import { useAppStore } from '../store/useAppStore';
 import { parseBleMessage, BleProtocol } from './protocol';
 import { logger } from '../utils/logger';
+import { SecureTokenStorage } from '../utils/secureTokenStorage';
 
 export interface ProvisioningCredentials {
   ssid: string;
@@ -125,11 +126,14 @@ export class DeviceProvisioningService {
 
     onProgress?.('PREPARING', 'Preparing network credentials for WSG-01...');
 
+    const storedToken = (await SecureTokenStorage.getDeviceToken(session.device.id)) || undefined;
+
     // Construct provisioning payload (Espressif compatible JSON structure)
     const payload = JSON.stringify({
       cmd: 'PROV_WIFI',
       ssid: creds.ssid.trim(),
       pass: creds.password || '',
+      ...(storedToken ? { token: storedToken } : {}),
       name: creds.customDeviceName?.trim() || session.device.name,
       room: creds.room || 'Washroom',
       ts: Date.now(),

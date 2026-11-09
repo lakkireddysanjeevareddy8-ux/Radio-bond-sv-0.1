@@ -12,3 +12,4 @@ module.exports = {
     slug: 'wsg-01',
   },
 };
+

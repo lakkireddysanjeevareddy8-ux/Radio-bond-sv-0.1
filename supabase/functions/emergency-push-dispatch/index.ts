@@ -45,6 +45,39 @@ serve(async (req: Request) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceRole);
 
+    // Security check: Validate Authorization header or Webhook Secret
+    const authHeader = req.headers.get('Authorization') || '';
+    const webhookSecret = req.headers.get('x-webhook-secret') || '';
+    const expectedSecret = Deno.env.get('WEBHOOK_SECRET');
+
+    let isAuthorized = false;
+
+    if (expectedSecret && webhookSecret === expectedSecret) {
+      isAuthorized = true;
+    }
+
+    if (!isAuthorized && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.replace('Bearer ', '').trim();
+      if (token === supabaseServiceRole) {
+        isAuthorized = true;
+      } else {
+        const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
+        if (user && !authErr) {
+          isAuthorized = true;
+        }
+      }
+    }
+
+    if (!isAuthorized) {
+      return new Response(
+        JSON.stringify({ error: 'Unauthorized: valid authorization bearer token or webhook secret required' }),
+        {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    }
+
     const body: WebhookPayload = await req.json();
     const record = body.record;
 

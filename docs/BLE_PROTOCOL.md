@@ -331,15 +331,82 @@ Instructs device to refresh the **CONFIG** characteristic (`...26ab`) with curre
 ---
 
 ### 4.10. `SET_PAIRING_TOKEN`
-Stores an authorized numeric/alphanumeric pairing token for protected actions (`TEST_EMERGENCY`, `CANCEL_TEST`).
+Updates the authorized pairing token in NVS. Requires the current pairing token (or an active first-pairing window) to authenticate the change, preventing unauthorized hijacking.
 
 - **Request Payload (COMMAND):**
   ```json
   {
     "cmd": "SET_PAIRING_TOKEN",
-    "token": "439281"
+    "current_token": "439281a8b9c201ef",
+    "new_token": "981273ff801ba90e"
   }
   ```
+
+- **Reply (STATUS notification):**
+  ```json
+  {
+    "status": "OK",
+    "token_updated": true,
+    "protocol": 1,
+    "fw": "v1.2.0-esp32"
+  }
+  ```
+
+---
+
+### 4.11. `GET_PAIRING_TOKEN`
+Requests the device pairing token during the first-pairing window (first 5 minutes after first boot / factory reset, or re-armed by physical emergency button press). Outside the window, this command is rejected with `PAIRING_WINDOW_CLOSED`.
+
+- **Request Payload (COMMAND):**
+  ```json
+  { "cmd": "GET_PAIRING_TOKEN" }
+  ```
+
+- **Reply (STATUS notification - during pairing window):**
+  ```json
+  {
+    "status": "OK",
+    "token": "439281a8b9c201ef",
+    "pairing_window_remaining": 240,
+    "protocol": 1,
+    "fw": "v1.2.0-esp32"
+  }
+  ```
+
+- **Reply (outside pairing window):**
+  ```json
+  {
+    "status": "ERROR",
+    "error": "PAIRING_WINDOW_CLOSED"
+  }
+  ```
+
+---
+
+## 5. Security & First-Pairing Window
+
+1. **Per-Device Random Token:**
+   On first boot (or following a hardware factory reset via holding the emergency button for 3 seconds), the device generates a 128-bit cryptographically secure pseudorandom token using ESP32 hardware entropy (`esp_random()`), stored securely in NVS (`Preferences`).
+2. **First-Pairing Window:**
+   The pairing token is revealed to the mobile client **only** during the pairing window:
+   - For the first 5 minutes (300 seconds) after first boot or factory reset.
+   - When manually re-armed for 5 minutes by pressing the physical hardware emergency button (`GPIO 14`).
+   Outside this window, the token is stripped from all status notifications and cannot be retrieved over BLE without prior authorization.
+3. **Protected Commands:**
+   The valid per-device pairing token is strictly required for:
+   - `PROV_WIFI` (provisioning Wi-Fi credentials)
+   - `FORGET_WIFI` (erasing Wi-Fi credentials)
+   - `SET_ESCALATION_CONFIG` / `SET_CONFIG` (modifying safety timers or volume)
+   - Direct writes to the `CONFIG` GATT characteristic (`...26ab`)
+   - `TEST_EMERGENCY` & `CANCEL_TEST` (running emergency drills)
+   - `SET_PAIRING_TOKEN` (updating pairing keys)
+4. **Rate Limiting & Anti-Brute-Force Lockout:**
+   If a client provides an invalid token 5 times consecutively, the device enters a 30-second rate-limit lockout. Any protected command received during lockout returns:
+   ```json
+   { "status": "ERROR", "error": "RATE_LIMITED", "retry_after": 30 }
+   ```
+5. **App Secure Storage (`expo-secure-store`):**
+   The mobile application stores each paired device's token in hardware-backed secure storage (`expo-secure-store` Keystore/Keychain), never in plain `AsyncStorage`. Wi-Fi passwords and pairing tokens are **never transmitted to Supabase or logged**.
 
 ---
 
@@ -394,6 +461,8 @@ When a command fails or Wi-Fi provisioning encounters an issue, the device repor
 | `NO_SSID` | `STATUS` | Configured SSID could not be found within range (must be 2.4 GHz) | Prompt user: "Network not found. Ensure 2.4 GHz band is enabled." |
 | `WIFI_TIMEOUT` | `STATUS` | Wi-Fi association timed out or DHCP failed | Prompt user: "Wi-Fi connection timed out. Check router." |
 | `UNAUTHORIZED` | `STATUS` | Pairing token missing or incorrect for sensitive command | Prompt user to enter or re-generate pairing token |
+| `RATE_LIMITED` | `STATUS` | Too many failed attempts; client locked out for 30 seconds | Display cooldown timer (`retry_after`) |
+| `PAIRING_WINDOW_CLOSED` | `STATUS` | Pairing window expired (>5 min after boot/reset, or button not pressed) | Prompt user to press physical emergency button on hardware |
 | `UNKNOWN_CMD` | `STATUS` | Command string in `"cmd"` field was not recognized | Log warning; verify app protocol version |
 | `INVALID_JSON` | `STATUS` | JSON deserialization failed on the device | Check payload formatting / MTU chunking |
 | `FW_UPDATE_NEEDED` | *Client synthetic* | Device `protocol` integer is lower than `MIN_SUPPORTED_PROTOCOL` (1) | Show banner: *"Device firmware update needed"* |

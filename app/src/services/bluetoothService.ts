@@ -8,6 +8,7 @@ import { EmergencyPushService } from './EmergencyPushService';
 import { storage } from '../utils/storage';
 import { logger } from '../utils/logger';
 import { BleProtocol, parseBleMessage, BLE_UUIDS, BLE_ERROR_CODES } from './protocol';
+import { SecureTokenStorage } from '../utils/secureTokenStorage';
 
 export interface DiscoveredBleDevice {
   id: string;
@@ -123,11 +124,35 @@ export class BluetoothService {
       return false;
     }
 
-    const payload = JSON.stringify(cmdObj);
-    const sanitized = { ...cmdObj };
+    const commandCopy = { ...cmdObj };
+    const protectedCmds = [
+      'PROV_WIFI',
+      'FORGET_WIFI',
+      'SET_ESCALATION_CONFIG',
+      'SET_CONFIG',
+      'TEST_EMERGENCY',
+      'CANCEL_TEST',
+      'SET_PAIRING_TOKEN',
+    ];
+
+    if (protectedCmds.includes(commandCopy.cmd) && !commandCopy.token && targetSession?.device?.id) {
+      const storedToken = await SecureTokenStorage.getDeviceToken(targetSession.device.id);
+      if (storedToken) {
+        commandCopy.token = storedToken;
+        if (commandCopy.cmd === 'SET_PAIRING_TOKEN' && !commandCopy.current_token) {
+          commandCopy.current_token = storedToken;
+        }
+      }
+    }
+
+    const payload = JSON.stringify(commandCopy);
+    const sanitized = { ...commandCopy };
     if ('pass' in sanitized) sanitized.pass = '***';
     if ('password' in sanitized) sanitized.password = '***';
-    logger.info('BLE_CMD', `Writing command to ${targetSession.device.id}: ${cmdObj.cmd}`, sanitized);
+    if ('token' in sanitized) sanitized.token = '***';
+    if ('current_token' in sanitized) sanitized.current_token = '***';
+    if ('new_token' in sanitized) sanitized.new_token = '***';
+    logger.info('BLE_CMD', `Writing command to ${targetSession.device.id}: ${commandCopy.cmd}`, sanitized);
 
     try {
       const char = targetSession.provisionChar;
@@ -136,10 +161,10 @@ export class BluetoothService {
       } else {
         await char.writeValue(payload);
       }
-      logger.info('BLE_CMD', `Command ${cmdObj.cmd} sent successfully`);
+      logger.info('BLE_CMD', `Command ${commandCopy.cmd} sent successfully`);
       return true;
     } catch (err: any) {
-      logger.error('BLE_CMD', `Failed to send command ${cmdObj.cmd}`, logger.serializeError(err));
+      logger.error('BLE_CMD', `Failed to send command ${commandCopy.cmd}`, logger.serializeError(err));
       throw err;
     }
   }
@@ -790,12 +815,17 @@ export class BluetoothService {
       logger.warn('BLE_CMD', 'writeEscalationConfig failed: no active session');
       return false;
     }
+    const token = (await SecureTokenStorage.getDeviceToken(session.device.id)) || undefined;
     const payload = BleProtocol.formatSetEscalationConfig({
       t1: config.t1Seconds,
       repeat: config.repeatIntervalSec,
       volume: config.alarmVolume,
+      token,
+    }, token);
+    logger.info('BLE_CMD', `Writing escalation config to ${session.device.id}`, {
+      ...config,
+      token: token ? '***' : undefined,
     });
-    logger.info('BLE_CMD', `Writing escalation config to ${session.device.id}`, config);
 
     try {
       if (session.configChar) {
@@ -1012,7 +1042,13 @@ export class BluetoothService {
     console.log('[WSG-01] Command characteristic:', 'provisionChar');
     console.log('[WSG-01] Command characteristic UUID:', targetChar.uuid);
 
-    const payload = BleProtocol.formatTestEmergency(token);
+    let effectiveToken = token;
+    if ((!effectiveToken || effectiveToken === 'wsg_secure_token') && targetSession?.device?.id) {
+      const stored = await SecureTokenStorage.getDeviceToken(targetSession.device.id);
+      if (stored) effectiveToken = stored;
+    }
+
+    const payload = BleProtocol.formatTestEmergency(effectiveToken);
     const payloadBytes = new TextEncoder().encode(payload);
     console.log('[TEST DEBUG 9] payload byte length =', payloadBytes.length);
     console.log('[WSG-01] Payload:', payload);
@@ -1058,7 +1094,12 @@ export class BluetoothService {
       console.warn('[WSG-01] No active BLE session available for CANCEL_TEST');
       return false;
     }
-    const payload = BleProtocol.formatCancelTest(token);
+    let effectiveToken = token;
+    if ((!effectiveToken || effectiveToken === 'wsg_secure_token') && targetSession?.device?.id) {
+      const stored = await SecureTokenStorage.getDeviceToken(targetSession.device.id);
+      if (stored) effectiveToken = stored;
+    }
+    const payload = BleProtocol.formatCancelTest(effectiveToken);
     try {
       const targetChar = targetSession.provisionChar;
       if (targetChar) {
@@ -1164,6 +1205,13 @@ export class BluetoothService {
     const parsed = msg.raw;
     logger.info('BLE_NOTIF', `Parsed notification from ${source}`, parsed);
     console.log(`[event] parsed ${JSON.stringify(parsed)}`);
+
+    // If device revealed pairing token during first-pairing window, save securely in SecureStore
+    if (parsed?.token && typeof parsed.token === 'string' && session?.device?.id) {
+      SecureTokenStorage.saveDeviceToken(session.device.id, parsed.token).catch((stErr) => {
+        logger.error('SECURE_STORE', `Could not save device token for ${session.device.id}`, logger.serializeError(stErr));
+      });
+    }
 
     // Check for outdated protocol version
     if (msg.kind === 'outdated_protocol') {
