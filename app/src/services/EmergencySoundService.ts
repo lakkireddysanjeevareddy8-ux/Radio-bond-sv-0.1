@@ -66,6 +66,17 @@ class EmergencySoundServiceClass {
           enableVibrate: true,
           showBadge: false,
         });
+
+        // Ongoing 24/7 background foreground service channel: LOW priority, silent, ongoing
+        await Notifications.setNotificationChannelAsync('ble_background_monitoring', {
+          name: 'Safety Guardian Background Service',
+          importance: Notifications.AndroidImportance.LOW,
+          sound: null,
+          enableVibrate: false,
+          enableLights: false,
+          showBadge: false,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        });
       } catch (e) {
         console.warn('[EmergencySoundService] Native Android channel init note:', e);
       }

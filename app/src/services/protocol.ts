@@ -126,6 +126,16 @@ export const BleProtocol = {
   },
 
   /**
+   * Builds SET_LOG_LEVEL command JSON string ('NONE' | 'ERROR' | 'INFO' | 'DEBUG').
+   */
+  formatSetLogLevel(level: 'NONE' | 'ERROR' | 'INFO' | 'DEBUG'): string {
+    return JSON.stringify({
+      cmd: 'SET_LOG_LEVEL',
+      level,
+    });
+  },
+
+  /**
    * Builds SET_ESCALATION_CONFIG command JSON string.
    */
   formatSetEscalationConfig(config: EscalationConfigParams, token?: string): string {
@@ -200,6 +210,26 @@ export interface WifiStatusPayload {
   pairing_active?: boolean;
   token?: string;
   retry_after?: number;
+  radar_status?: 'OK' | 'FAULT';
+  mic_status?: 'OK' | 'FAULT';
+  sensors_ok?: boolean;
+}
+
+export interface StatusHeartbeatPayload {
+  status: 'HEARTBEAT';
+  device_state: string;
+  wifi_state: string;
+  uptime: number;
+  free_heap: number;
+  min_free_heap?: number;
+  fw: string;
+  protocol: number;
+  model: string;
+  device_id: string;
+  radar_status: 'OK' | 'FAULT';
+  mic_status: 'OK' | 'FAULT';
+  sensors_ok?: boolean;
+  rssi?: number;
 }
 
 export interface WifiScanProgressPayload {
@@ -276,6 +306,7 @@ export interface DeviceErrorPayload {
 // Discriminated Parsed Message Union
 export type ParsedBleMessage =
   | { kind: 'wifi_status'; data: WifiStatusPayload; raw: any }
+  | { kind: 'heartbeat'; data: StatusHeartbeatPayload; raw: any }
   | { kind: 'wifi_scan_progress'; data: WifiScanProgressPayload; raw: any }
   | { kind: 'wifi_net'; data: WifiNetPayload; raw: any }
   | { kind: 'pong'; data: PongPayload; raw: any }
@@ -517,6 +548,33 @@ function categorizeParsedData(parsed: any): ParsedBleMessage {
         deviceId: parsed.deviceId || parsed.device_id,
         deviceName: parsed.deviceName || parsed.name,
         is_test: Boolean(parsed.is_test),
+      },
+      raw: parsed,
+    };
+  }
+
+  // 8b. Periodic status heartbeat messages
+  if (status === 'HEARTBEAT' || type === 'heartbeat') {
+    return {
+      kind: 'heartbeat',
+      data: {
+        status: 'HEARTBEAT',
+        device_state: parsed.device_state || parsed.state || 'IDLE',
+        wifi_state: parsed.wifi_state || parsed.status || 'DISCONNECTED',
+        uptime: Number(parsed.uptime ?? 0),
+        free_heap: Number(parsed.free_heap ?? 0),
+        min_free_heap: parsed.min_free_heap !== undefined ? Number(parsed.min_free_heap) : undefined,
+        fw: String(parsed.fw || ''),
+        protocol: Number(parsed.protocol ?? CURRENT_PROTOCOL_VERSION),
+        model: String(parsed.model || ''),
+        device_id: String(parsed.device_id || ''),
+        radar_status: (parsed.radar_status === 'FAULT' ? 'FAULT' : 'OK') as 'OK' | 'FAULT',
+        mic_status: (parsed.mic_status === 'FAULT' ? 'FAULT' : 'OK') as 'OK' | 'FAULT',
+        sensors_ok:
+          parsed.sensors_ok !== undefined
+            ? Boolean(parsed.sensors_ok)
+            : parsed.radar_status !== 'FAULT' && parsed.mic_status !== 'FAULT',
+        rssi: parsed.rssi !== undefined ? Number(parsed.rssi) : undefined,
       },
       raw: parsed,
     };

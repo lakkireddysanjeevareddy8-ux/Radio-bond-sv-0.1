@@ -11,6 +11,7 @@ import { useDeviceStore } from '../store/useDeviceStore';
 import { storage } from '../utils/storage';
 import { logger } from '../utils/logger';
 import { PRODUCT_CATALOG } from './productCatalog';
+import { BleForegroundService } from './BleForegroundService';
 
 export type { ConnectionManagerState };
 
@@ -161,6 +162,32 @@ class ConnectionManagerClass {
             }
             this.transitionTo('CONNECTED', 'Verified connection on foreground resume');
           }
+        } else if (this.state === 'IDLE') {
+          // On app resume, restore connection through ConnectionManager if not manually disconnected
+          if (!this.isManualDisconnect && this.lastConnectedDevice?.id) {
+            const target = this.lastConnectedDevice;
+            BluetoothService.isBluetoothAvailable().then((btOn) => {
+              if (btOn && this.state === 'IDLE') {
+                logger.info('CONN_MGR', `AppState active: restoring connection to ${target.id}`);
+                this.connect(target, { isReconnect: true }).catch((err) => {
+                  logger.info('CONN_MGR', `Foreground resume reconnect note: ${err?.message}`);
+                });
+              }
+            }).catch(() => {});
+          }
+        } else if (this.state === 'BLUETOOTH_OFF') {
+          BluetoothService.isBluetoothAvailable().then((btOn) => {
+            if (btOn && this.state === 'BLUETOOTH_OFF') {
+              const target = this.connectedDevice || this.lastConnectedDevice;
+              if (target?.id && !this.isManualDisconnect) {
+                logger.info('CONN_MGR', `AppState active: Bluetooth is on, auto-reconnecting to ${target.id}`);
+                this.reconnectAttempt = 0;
+                this.startAutoReconnect('AppState active Bluetooth recovery');
+              } else {
+                this.transitionTo('IDLE', 'Bluetooth turned on');
+              }
+            }
+          }).catch(() => {});
         }
       } else {
         // App backgrounded: pause slow retries
@@ -816,10 +843,19 @@ class ConnectionManagerClass {
 
     if (nextState === 'CONNECTED') {
       useAppStore.getState().setIsOnline(true);
+      BleForegroundService.startForegroundNotification(
+        this.connectedDevice?.name || this.lastConnectedDevice?.name || 'Washroom Guardian'
+      ).catch(() => {});
+    } else if (nextState === 'RECONNECTING') {
+      BleForegroundService.updateForegroundNotification(
+        this.connectedDevice?.name || this.lastConnectedDevice?.name || 'Washroom Guardian',
+        true
+      ).catch(() => {});
     } else if (nextState === 'FAILED' || nextState === 'IDLE' || nextState === 'BLUETOOTH_OFF') {
       if (useAppStore.getState().wifiStatus !== 'CONNECTED') {
         useAppStore.getState().setIsOnline(false);
       }
+      BleForegroundService.stopForegroundNotification().catch(() => {});
     }
 
     useConnectionStore.setState({

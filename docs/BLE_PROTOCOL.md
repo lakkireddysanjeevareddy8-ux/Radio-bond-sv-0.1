@@ -419,6 +419,54 @@ Requests the device pairing token during the first-pairing window (first 5 minut
 
 ---
 
+### 4.13. `SET_LOG_LEVEL`
+Sets the serial log output verbosity level on the ESP32. Set to `NONE` to completely disable serial log output.
+
+- **Request Payload (COMMAND):**
+  ```json
+  {
+    "cmd": "SET_LOG_LEVEL",
+    "level": "INFO"
+  }
+  ```
+  *(Supported levels: `"NONE"`, `"ERROR"`, `"INFO"`, `"DEBUG"`)*
+
+- **Reply (STATUS notification):**
+  ```json
+  {
+    "status": "OK",
+    "log_level_updated": true
+  }
+  ```
+
+---
+
+### 4.14. Periodic Status Heartbeat Notification
+Sent periodically (every 30 seconds) over the **STATUS** characteristic (`...26a9`) to connected BLE clients:
+
+- **Notification Payload (STATUS notification):**
+  ```json
+  {
+    "type": "status",
+    "status": "HEARTBEAT",
+    "device_state": "IDLE",
+    "wifi_state": "CONNECTED",
+    "uptime": 1420,
+    "free_heap": 184512,
+    "min_free_heap": 172032,
+    "fw": "v1.2.0-esp32",
+    "protocol": 1,
+    "model": "WSG-01",
+    "device_id": "wsg01-A4821254003A",
+    "radar_status": "OK",
+    "mic_status": "OK",
+    "sensors_ok": true,
+    "rssi": -65
+  }
+  ```
+
+---
+
 ## 5. Security & First-Pairing Window
 
 1. **Per-Device Random Token:**

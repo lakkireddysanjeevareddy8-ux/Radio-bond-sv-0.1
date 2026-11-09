@@ -256,3 +256,4 @@ The **History / Events Screen** (`EventsScreen.tsx`) tracks and displays every e
 3. **Trigger:** Hardware cause (`MANUAL_EMERGENCY`, `INACTIVITY_STILLNESS`, `VOICE_KEYWORD`, `TEST_EMERGENCY`).
 4. **Acknowledgment:** Timestamp when caregiver tapped "I'M CHECKING", or `Unacknowledged`.
 5. **Resolution:** Outcome (`Resolved at <time>`, `Cancelled (False Alarm)`, or `Active Alarm`).
+

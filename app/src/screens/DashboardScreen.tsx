@@ -48,6 +48,8 @@ import {
   RefreshCw,
 } from 'lucide-react-native';
 import { ConnectionManager } from '../services/ConnectionManager';
+import { PermissionPrimerModal } from '../components/PermissionPrimerModal';
+import { BatteryOptimizationService } from '../services/BatteryOptimizationService';
 
 export const DashboardScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
@@ -84,6 +86,17 @@ export const DashboardScreen: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'ROUTINE'>('OVERVIEW');
   const [showDeviceDropdown, setShowDeviceDropdown] = useState<boolean>(false);
   const [showCaregiversModal, setShowCaregiversModal] = useState<boolean>(false);
+  const [showBatteryOptModal, setShowBatteryOptModal] = useState<boolean>(false);
+
+  // Prompt once to disable battery optimization on Android when a device is connected
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    BatteryOptimizationService.hasPrompted().then((prompted) => {
+      if (!prompted && (connStatus === 'connected' || bluetoothStatus === 'CONNECTED')) {
+        setShowBatteryOptModal(true);
+      }
+    }).catch(() => {});
+  }, [connStatus, bluetoothStatus]);
 
   // Live Wi-Fi telemetry polling - ONLY runs when connected device is WIFI and status is 'connected'
   // Treats BLE as primary: never calls setIsOnline(false) or touches status while BLE is active
@@ -672,6 +685,14 @@ export const DashboardScreen: React.FC = () => {
           isReadOnlyViewer={isSharedViewer}
         />
       </Modal>
+
+      {/* Battery Optimization Exemption Primer Modal (Prompt once on Android) */}
+      <PermissionPrimerModal
+        visible={showBatteryOptModal}
+        type="battery_optimization"
+        onContinue={() => setShowBatteryOptModal(false)}
+        onDismiss={() => setShowBatteryOptModal(false)}
+      />
     </View>
   );
 };

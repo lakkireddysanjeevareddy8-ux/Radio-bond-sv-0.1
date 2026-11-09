@@ -91,6 +91,14 @@ describe('BleProtocol', () => {
       });
     });
 
+    test('formatSetLogLevel builds SET_LOG_LEVEL command', () => {
+      const json = BleProtocol.formatSetLogLevel('NONE');
+      expect(JSON.parse(json)).toEqual({
+        cmd: 'SET_LOG_LEVEL',
+        level: 'NONE',
+      });
+    });
+
     test('formatSetEscalationConfig builds SET_ESCALATION_CONFIG command', () => {
       const json = BleProtocol.formatSetEscalationConfig({
         t1: 240,
@@ -239,6 +247,38 @@ describe('BleProtocol', () => {
           const res = parseBleMessage(broken);
           expect(res.kind).toBe('malformed');
         }).not.toThrow();
+      }
+    });
+
+    test('parses periodic status heartbeat notification with heap, sensors and state', () => {
+      const payload = JSON.stringify({
+        type: 'status',
+        status: 'HEARTBEAT',
+        device_state: 'IDLE',
+        wifi_state: 'CONNECTED',
+        uptime: 1420,
+        free_heap: 184512,
+        min_free_heap: 172032,
+        fw: 'v1.2.0-esp32',
+        protocol: 1,
+        model: 'WSG-01',
+        device_id: 'wsg01-A4821254003A',
+        radar_status: 'OK',
+        mic_status: 'OK',
+        sensors_ok: true,
+        rssi: -65,
+      });
+      const parsed = parseBleMessage(payload);
+      expect(parsed.kind).toBe('heartbeat');
+      if (parsed.kind === 'heartbeat') {
+        expect(parsed.data.device_state).toBe('IDLE');
+        expect(parsed.data.wifi_state).toBe('CONNECTED');
+        expect(parsed.data.free_heap).toBe(184512);
+        expect(parsed.data.uptime).toBe(1420);
+        expect(parsed.data.radar_status).toBe('OK');
+        expect(parsed.data.mic_status).toBe('OK');
+        expect(parsed.data.sensors_ok).toBe(true);
+        expect(parsed.data.protocol).toBe(1);
       }
     });
 

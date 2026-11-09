@@ -36,6 +36,7 @@ import { ManageTrustedContactsScreen } from './ManageTrustedContactsScreen';
 import { useEmergencyContactStore } from '../store/useEmergencyContactStore';
 import { EmergencyContactService } from '../services/EmergencyContactService';
 import { sentryService } from '../services/sentryService';
+import { BatteryOptimizationService } from '../services/BatteryOptimizationService';
 import { APP_VERSION_STRING, APP_DETAILS } from '../utils/version';
 import {
   Pencil,
@@ -58,6 +59,7 @@ import {
   Activity,
   Moon,
   ShieldCheck,
+  BatteryCharging,
   Users,
   MapPin,
   Sliders,
@@ -451,6 +453,29 @@ export const SettingsScreen: React.FC = () => {
             </View>
             <ChevronRight size={18} color="#64748B" />
           </TouchableOpacity>
+
+          {Platform.OS === 'android' && (
+            <TouchableOpacity
+              style={[styles.permissionsRowBtn, { borderTopWidth: 1, borderTopColor: '#F1F5F9' }]}
+              onPress={() => BatteryOptimizationService.openBatterySettings()}
+              activeOpacity={0.8}
+              accessibilityRole="button"
+              accessibilityLabel="Exempt from Battery Saver"
+            >
+              <View style={styles.permissionsBtnLeft}>
+                <View style={[styles.permissionsIconWrapper, { backgroundColor: '#FEF3C7' }]}>
+                  <BatteryCharging size={20} color="#D97706" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.permissionsRowTitle}>Battery Optimization Exemption</Text>
+                  <Text style={styles.permissionsRowSubtitle}>
+                    Exempt app from OS battery saver to keep background BLE monitoring active 24/7
+                  </Text>
+                </View>
+              </View>
+              <ChevronRight size={18} color="#64748B" />
+            </TouchableOpacity>
+          )}
         </View>
 
         {/* 4. Emergency Contacts Row */}

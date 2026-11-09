@@ -42,10 +42,13 @@ class PermissionServiceClass {
         }
       } else {
         try {
-          const locGranted = await PermissionsAndroid.check(
+          const fineGranted = await PermissionsAndroid.check(
             PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
           );
-          return locGranted ? 'granted' : 'denied';
+          const coarseGranted = await PermissionsAndroid.check(
+            PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION
+          );
+          return fineGranted || coarseGranted ? 'granted' : 'denied';
         } catch {
           return 'denied';
         }
@@ -96,11 +99,25 @@ class PermissionServiceClass {
           }
           return 'denied';
         } else {
-          const res = await PermissionsAndroid.request(
-            PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
-          );
-          if (res === PermissionsAndroid.RESULTS.GRANTED) return 'granted';
-          if (res === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN) return 'blocked';
+          const results = await PermissionsAndroid.requestMultiple([
+            PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+            PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
+          ]);
+          const fineResult = results[PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION];
+          const coarseResult = results[PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION];
+
+          if (
+            fineResult === PermissionsAndroid.RESULTS.GRANTED ||
+            coarseResult === PermissionsAndroid.RESULTS.GRANTED
+          ) {
+            return 'granted';
+          }
+          if (
+            fineResult === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN ||
+            coarseResult === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN
+          ) {
+            return 'blocked';
+          }
           return 'denied';
         }
       } catch (err) {

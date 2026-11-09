@@ -16,10 +16,12 @@ import {
   Settings,
   ShieldCheck,
   AlertTriangle,
+  BatteryCharging,
 } from 'lucide-react-native';
 import { PermissionService } from '../services/PermissionService';
+import { BatteryOptimizationService } from '../services/BatteryOptimizationService';
 
-export type PermissionType = 'bluetooth' | 'notifications' | 'location';
+export type PermissionType = 'bluetooth' | 'notifications' | 'location' | 'battery_optimization';
 
 interface PermissionPrimerModalProps {
   visible: boolean;
@@ -48,9 +50,9 @@ const PERMISSION_CONFIGS: Record<PermissionType, PermissionConfig> = {
     blockedTitle: 'Bluetooth Permission Required',
     badge: 'DEVICE DISCOVERY',
     description:
-      'Washroom Safety Gadget requires Bluetooth to discover, configure, and pair with your WSG-01 sensor nearby.',
+      'Washroom Safety Gadget requires Bluetooth (Scan and Connect permissions on Android 12+) to discover, connect, and receive real-time alerts from your WSG-01 sensor.',
     blockedDescription:
-      'Bluetooth permission was denied. Please open Settings and enable Bluetooth for this app so we can find your WSG-01 sensor.',
+      'Bluetooth permission was permanently denied. Please open Settings and enable Nearby Devices / Bluetooth for this app so we can communicate with your WSG-01 sensor.',
     primaryColor: '#2563EB',
     iconBg: '#EFF6FF',
     icon: <Bluetooth size={36} color="#2563EB" />,
@@ -72,12 +74,24 @@ const PERMISSION_CONFIGS: Record<PermissionType, PermissionConfig> = {
     blockedTitle: 'Location Permission Required',
     badge: 'BLUETOOTH REQUIREMENT',
     description:
-      'Android requires location access to discover Bluetooth Low Energy devices. Your physical location is never tracked, stored, or shared.',
+      'Android requires location access to discover Bluetooth Low Energy devices on this version of Android. Your physical location is never tracked, stored, or shared.',
     blockedDescription:
       'Location permission was previously denied. Android requires this to scan for Bluetooth devices. Please enable location access in system settings.',
     primaryColor: '#059669',
     iconBg: '#ECFDF5',
     icon: <MapPin size={36} color="#059669" />,
+  },
+  battery_optimization: {
+    title: 'Disable Battery Optimization',
+    blockedTitle: 'Battery Saver Exemption Needed',
+    badge: 'UNINTERRUPTED SAFETY',
+    description:
+      'To keep you protected 24/7, Android must be configured to exempt this app from background battery sleep. This allows the app to maintain a persistent safety link to your washroom sensor.',
+    blockedDescription:
+      'Battery saver will terminate background Bluetooth safety monitoring. Please exempt Washroom Safety Gadget from battery optimization in system settings.',
+    primaryColor: '#D97706',
+    iconBg: '#FEF3C7',
+    icon: <BatteryCharging size={36} color="#D97706" />,
   },
 };
 
@@ -102,7 +116,11 @@ export const PermissionPrimerModal: React.FC<PermissionPrimerModalProps> = ({
     : description || config.description;
 
   const handlePrimaryPress = async () => {
-    if (isBlocked) {
+    if (type === 'battery_optimization') {
+      await BatteryOptimizationService.openBatterySettings();
+      await BatteryOptimizationService.markPrompted();
+      await onContinue();
+    } else if (isBlocked) {
       await PermissionService.openSettings();
       onDismiss();
     } else {
@@ -110,12 +128,19 @@ export const PermissionPrimerModal: React.FC<PermissionPrimerModalProps> = ({
     }
   };
 
+  const handleDismiss = async () => {
+    if (type === 'battery_optimization') {
+      await BatteryOptimizationService.markPrompted();
+    }
+    onDismiss();
+  };
+
   return (
     <Modal
       visible={visible}
       transparent
       animationType="fade"
-      onRequestClose={onDismiss}
+      onRequestClose={handleDismiss}
     >
       <View style={styles.backdrop}>
         <View style={[styles.card, { maxWidth: Math.min(width - 40, 420) }]}>
@@ -175,13 +200,17 @@ export const PermissionPrimerModal: React.FC<PermissionPrimerModalProps> = ({
               activeOpacity={0.88}
             >
               <Text style={styles.primaryButtonText}>
-                {isBlocked ? 'Open System Settings' : 'Continue'}
+                {type === 'battery_optimization'
+                  ? 'Exempt from Battery Saver'
+                  : isBlocked
+                  ? 'Open System Settings'
+                  : 'Continue'}
               </Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               style={styles.secondaryButton}
-              onPress={onDismiss}
+              onPress={handleDismiss}
               activeOpacity={0.7}
             >
               <Text style={styles.secondaryButtonText}>

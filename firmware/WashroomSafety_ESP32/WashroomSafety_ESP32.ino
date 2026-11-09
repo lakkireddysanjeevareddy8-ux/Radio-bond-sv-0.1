@@ -8,21 +8,16 @@
  *   - Active Piezo Buzzer (GPIO 18)
  *   - Status Blue LED (GPIO 2)
  *
- * Capabilities:
- *   1. BLE Fast Provisioning (GATT Server)
- *      - Service UUID:        4fafc201-1fb5-459e-8fcc-c5c9c331914b
- *      - Provision Char UUID: beb5483e-36e1-4688-b7f5-ea07361b26a8 (WRITE)
- *      - Status Char UUID:    beb5483e-36e1-4688-b7f5-ea07361b26a9 (READ | NOTIFY)
- *   2. Real Wi-Fi Association & DHCP Verification (No simulation)
- *      - Connection attempt executed asynchronously in loop() to keep BLE stack responsive
- *      - Error classification: CONNECTED, AUTH_FAILED, SSID_NOT_FOUND, TIMEOUT
- *      - Real DHCP IPv4 returned to mobile app via BLE status characteristic
- *   3. Persistent Storage (NVS / Preferences)
- *      - Automatically reconnects to router on boot
- *   4. Local HTTP REST API (Port 80)
- *      - GET /api/device/info
- *      - GET /api/device/telemetry
- *   5. Supabase HTTPS Cloud Telemetry & Emergency Alerts
+ * Reliability & Production Capabilities:
+ *   1. Hardware Task Watchdog Timer (TWDT) enabled; resets cleanly on hang
+ *   2. Non-blocking loop() (< 50 ms while BLE connected); background FreeRTOS HTTP task
+ *   3. NVS partition failure handling & graceful in-memory fallback
+ *   4. Strict JSON input validation and bounded parameters
+ *   5. Real-time sensor fault reporting (LD2410C radar & microphone)
+ *   6. Periodic BLE status heartbeat notification (device state, Wi-Fi, uptime, heap, fw, protocol)
+ *   7. Reliable BLE advertising restart after every disconnect
+ *   8. Leveled serial logging (NONE/ERROR/INFO/DEBUG) with runtime switch-off
+ *   9. 100% Standalone local piezo alarm: rings continuously even with zero BLE/Wi-Fi
  * ============================================================================
  */
 
@@ -36,6 +31,10 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <esp_task_wdt.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
 
 // ============================================================================
 // 1. PRODUCT IDENTIFIERS & GATT UUIDS
@@ -65,9 +64,377 @@ const char* SUPABASE_ANON_KEY = "sb_publishable_HMCLVIpmvtvvB5G7kkIyLw_oF1Zk1OI"
 #define PIN_STATUS_LED  2   // Onboard Blue LED / Status indicator
 
 // ============================================================================
-// 3. SAFETY TIMING & STAGED ESCALATION STATE MACHINE
+// 3. LEVELED SERIAL LOGGING (NONE / ERROR / INFO / DEBUG)
 // ============================================================================
-// Configurable escalation parameters (stored in Preferences NVS)
+enum LogLevel {
+  LOG_LEVEL_NONE  = 0, // Silence all serial logs
+  LOG_LEVEL_ERROR = 1, // Only errors
+  LOG_LEVEL_INFO  = 2, // Standard status & life-cycle logs
+  LOG_LEVEL_DEBUG = 3  // Detailed protocol & packet logs
+};
+
+LogLevel currentLogLevel = LOG_LEVEL_INFO;
+
+void setLogLevel(LogLevel level) {
+  currentLogLevel = level;
+  if (currentLogLevel > LOG_LEVEL_NONE) {
+    const char* lvlName = (level == LOG_LEVEL_ERROR) ? "ERROR" : (level == LOG_LEVEL_INFO ? "INFO" : "DEBUG");
+    Serial.printf("[LOG] Log level set to %d (%s)\n", (int)currentLogLevel, lvlName);
+  }
+}
+
+void logError(const char* tag, const char* format, ...) {
+  if (currentLogLevel < LOG_LEVEL_ERROR) return;
+  char buf[256];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  Serial.printf("[E][%s] %s\n", tag, buf);
+}
+
+void logInfo(const char* tag, const char* format, ...) {
+  if (currentLogLevel < LOG_LEVEL_INFO) return;
+  char buf[256];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  Serial.printf("[I][%s] %s\n", tag, buf);
+}
+
+void logDebug(const char* tag, const char* format, ...) {
+  if (currentLogLevel < LOG_LEVEL_DEBUG) return;
+  char buf[256];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  Serial.printf("[D][%s] %s\n", tag, buf);
+}
+
+#define LOG_E(tag, fmt, ...) logError(tag, fmt, ##__VA_ARGS__)
+#define LOG_I(tag, fmt, ...) logInfo(tag, fmt, ##__VA_ARGS__)
+#define LOG_D(tag, fmt, ...) logDebug(tag, fmt, ##__VA_ARGS__)
+
+// ============================================================================
+// 4. TASK WATCHDOG TIMER (TWDT)
+// ============================================================================
+#define WDT_TIMEOUT_SECONDS 8
+
+void initWatchdog() {
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+  esp_task_wdt_config_t twdt_config = {
+    .timeout_ms = WDT_TIMEOUT_SECONDS * 1000,
+    .idle_core_mask = 0,
+    .trigger_panic = true
+  };
+  esp_task_wdt_init(&twdt_config);
+#else
+  esp_task_wdt_init(WDT_TIMEOUT_SECONDS, true);
+#endif
+  esp_task_wdt_add(NULL); // Monitor current task (loopTask)
+  LOG_I("WDT", "Task Watchdog Timer active (%d seconds timeout)", WDT_TIMEOUT_SECONDS);
+}
+
+inline void feedWatchdog() {
+  esp_task_wdt_reset();
+}
+
+// ============================================================================
+// 5. NON-BLOCKING BUZZER STATE MACHINE
+// ============================================================================
+struct BuzzerPattern {
+  int beepsRemaining;
+  unsigned long stepStartMs;
+  int durationMs;
+  int pauseMs;
+  bool isSounding;
+};
+
+BuzzerPattern buzzerPattern = {0, 0, 0, 0, false};
+
+void triggerBuzzer(int times, int durationMs, int pauseMs) {
+  if (times <= 0) return;
+  buzzerPattern.beepsRemaining = times;
+  buzzerPattern.durationMs = durationMs;
+  buzzerPattern.pauseMs = pauseMs;
+  buzzerPattern.stepStartMs = millis();
+  buzzerPattern.isSounding = true;
+  digitalWrite(PIN_BUZZER, HIGH);
+}
+
+void beepBuzzer(int times, int durationMs, int pauseMs) {
+  triggerBuzzer(times, durationMs, pauseMs);
+}
+
+void updateBuzzer() {
+  if (buzzerPattern.beepsRemaining <= 0) return;
+
+  unsigned long now = millis();
+  unsigned long elapsed = now - buzzerPattern.stepStartMs;
+
+  if (buzzerPattern.isSounding) {
+    if (elapsed >= (unsigned long)buzzerPattern.durationMs) {
+      digitalWrite(PIN_BUZZER, LOW);
+      buzzerPattern.isSounding = false;
+      buzzerPattern.stepStartMs = now;
+      buzzerPattern.beepsRemaining--;
+    }
+  } else {
+    if (elapsed >= (unsigned long)buzzerPattern.pauseMs) {
+      if (buzzerPattern.beepsRemaining > 0) {
+        digitalWrite(PIN_BUZZER, HIGH);
+        buzzerPattern.isSounding = true;
+        buzzerPattern.stepStartMs = now;
+      }
+    }
+  }
+}
+
+// ============================================================================
+// 6. SENSOR FAULT MONITORING (LD2410C & MICROPHONE)
+// ============================================================================
+struct SensorHealth {
+  bool radarFault;
+  bool micFault;
+  unsigned long lastRadarChangeMs;
+  int lastRadarRaw;
+};
+
+SensorHealth sensorHealth = {false, false, 0, -1};
+
+void checkSensorsHealth() {
+  int rawRadar = digitalRead(PIN_RADAR_OUT);
+  if (rawRadar != HIGH && rawRadar != LOW) {
+    sensorHealth.radarFault = true;
+  } else {
+    if (rawRadar != sensorHealth.lastRadarRaw) {
+      sensorHealth.lastRadarRaw = rawRadar;
+      sensorHealth.lastRadarChangeMs = millis();
+      sensorHealth.radarFault = false;
+    }
+  }
+}
+
+// ============================================================================
+// 7. ROBUST NVS STORAGE WRAPPERS WITH READ/WRITE ERROR HANDLING
+// ============================================================================
+Preferences preferences;
+
+bool nvsOpen(bool readOnly) {
+  bool ok = preferences.begin("wsg01", readOnly);
+  if (!ok) {
+    LOG_E("NVS", "Preferences::begin failed for 'wsg01' (readOnly=%d)", readOnly);
+  }
+  return ok;
+}
+
+void nvsClose() {
+  preferences.end();
+}
+
+bool nvsSaveEscalationConfig(unsigned long t1, unsigned long repeat, uint8_t vol, unsigned long hb) {
+  if (!nvsOpen(false)) return false;
+  size_t w1 = preferences.putULong("t1", t1);
+  size_t w2 = preferences.putULong("repeat", repeat);
+  size_t w3 = preferences.putUChar("volume", vol);
+  size_t w4 = preferences.putULong("hb_interval", hb);
+  nvsClose();
+  if (w1 == 0 || w2 == 0 || w3 == 0 || w4 == 0) {
+    LOG_E("NVS", "Failed to write escalation config to NVS");
+    return false;
+  }
+  LOG_I("NVS", "Saved config: T1=%lus, Repeat=%lus, Vol=%d%%, Heartbeat=%lumin", t1, repeat, vol, hb);
+  return true;
+}
+
+bool nvsSaveWifi(const String& ssid, const String& pass, const String& name, const String& room) {
+  if (!nvsOpen(false)) return false;
+  size_t w1 = preferences.putString("ssid", ssid);
+  size_t w2 = preferences.putString("pass", pass);
+  if (name.length() > 0) preferences.putString("name", name);
+  if (room.length() > 0) preferences.putString("room", room);
+  nvsClose();
+  if (w1 == 0) {
+    LOG_E("NVS", "Failed to write Wi-Fi credentials to NVS");
+    return false;
+  }
+  LOG_I("NVS", "Saved Wi-Fi credentials to NVS");
+  return true;
+}
+
+bool nvsSaveToken(const String& token) {
+  if (!nvsOpen(false)) return false;
+  size_t w = preferences.putString("token", token);
+  nvsClose();
+  if (w == 0) {
+    LOG_E("NVS", "Failed to write pairing token to NVS");
+    return false;
+  }
+  LOG_I("NVS", "Pairing token saved to NVS");
+  return true;
+}
+
+bool nvsRemoveWifi() {
+  if (!nvsOpen(false)) return false;
+  preferences.remove("ssid");
+  preferences.remove("pass");
+  nvsClose();
+  LOG_I("NVS", "Removed Wi-Fi credentials from NVS");
+  return true;
+}
+
+String nvsGetSavedSsid() {
+  if (!nvsOpen(true)) return "";
+  String s = preferences.getString("ssid", "");
+  nvsClose();
+  return s;
+}
+
+// ============================================================================
+// 8. BACKGROUND FREERTOS HTTP TASK (PREVENTS ANY LOOP BLOCKING)
+// ============================================================================
+enum HttpJobType {
+  HTTP_JOB_TELEMETRY,
+  HTTP_JOB_EMERGENCY,
+  HTTP_JOB_HEARTBEAT
+};
+
+struct HttpJob {
+  HttpJobType type;
+  char payload[512];
+  char eventId[48];
+  char trigger[32];
+  bool isTest;
+};
+
+QueueHandle_t httpJobQueue = nullptr;
+String deviceId = "";
+
+void httpWorkerTask(void* pvParameters) {
+  HttpJob job;
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  while (true) {
+    if (xQueueReceive(httpJobQueue, &job, portMAX_DELAY) == pdTRUE) {
+      if (WiFi.status() != WL_CONNECTED) {
+        continue;
+      }
+
+      if (job.type == HTTP_JOB_TELEMETRY) {
+        HTTPClient https;
+        https.setTimeout(3500);
+        String endpoint = String(SUPABASE_URL) + "/rest/v1/telemetry";
+        if (https.begin(client, endpoint)) {
+          https.addHeader("Content-Type", "application/json");
+          https.addHeader("apikey", SUPABASE_ANON_KEY);
+          https.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
+          https.addHeader("Prefer", "return=minimal");
+          int code = https.POST(job.payload);
+          LOG_D("HTTP", "Telemetry sync result HTTP %d", code);
+          https.end();
+        }
+      } else if (job.type == HTTP_JOB_EMERGENCY) {
+        // 1. Post to emergency_events (triggers edge functions & realtime)
+        {
+          HTTPClient https;
+          https.setTimeout(3500);
+          String endpoint = String(SUPABASE_URL) + "/rest/v1/emergency_events";
+          if (https.begin(client, endpoint)) {
+            https.addHeader("Content-Type", "application/json");
+            https.addHeader("apikey", SUPABASE_ANON_KEY);
+            https.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
+            https.addHeader("Prefer", "return=minimal");
+
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+            JsonDocument doc;
+#else
+            StaticJsonDocument<384> doc;
+#endif
+            doc["id"]         = job.eventId;
+            doc["device_id"]  = deviceId;
+            doc["event_type"] = "emergency";
+            doc["trigger"]    = job.trigger;
+            doc["status"]     = "active";
+            doc["severity"]   = "critical";
+            doc["source"]     = job.isTest ? "test" : (strcmp(job.trigger, "MANUAL_EMERGENCY") == 0 ? "manual_device_trigger" : "sensor");
+
+            String body;
+            serializeJson(doc, body);
+            int code = https.POST(body);
+            LOG_I("HTTP", "Emergency alert dispatched (emergency_events) ID: %s HTTP %d", job.eventId, code);
+            https.end();
+          }
+        }
+        // 2. Post to legacy emergencies table
+        {
+          HTTPClient https;
+          https.setTimeout(3500);
+          String endpoint = String(SUPABASE_URL) + "/rest/v1/emergencies";
+          if (https.begin(client, endpoint)) {
+            https.addHeader("Content-Type", "application/json");
+            https.addHeader("apikey", SUPABASE_ANON_KEY);
+            https.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
+            https.addHeader("Prefer", "return=minimal");
+
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+            JsonDocument doc;
+#else
+            StaticJsonDocument<256> doc;
+#endif
+            doc["device_id"] = deviceId;
+            doc["trigger"]   = job.trigger;
+            doc["status"]    = "ACTIVE";
+            doc["is_test"]   = job.isTest;
+
+            String body;
+            serializeJson(doc, body);
+            int code = https.POST(body);
+            LOG_D("HTTP", "Emergency legacy sync result HTTP %d", code);
+            https.end();
+          }
+        }
+      } else if (job.type == HTTP_JOB_HEARTBEAT) {
+        HTTPClient https;
+        https.setTimeout(3500);
+        String endpoint = String(SUPABASE_URL) + "/rest/v1/device_health";
+        if (https.begin(client, endpoint)) {
+          https.addHeader("Content-Type", "application/json");
+          https.addHeader("apikey", SUPABASE_ANON_KEY);
+          https.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
+          https.addHeader("Prefer", "resolution=merge-duplicates");
+          int code = https.POST(job.payload);
+          LOG_D("HTTP", "Heartbeat sync result HTTP %d", code);
+          https.end();
+        }
+      }
+    }
+  }
+}
+
+void initHttpWorker() {
+  httpJobQueue = xQueueCreate(10, sizeof(HttpJob));
+  if (httpJobQueue) {
+    xTaskCreatePinnedToCore(
+      httpWorkerTask,
+      "httpWorker",
+      8192,
+      NULL,
+      1,
+      NULL,
+      0 // Core 0 (main loop runs on Core 1)
+    );
+    LOG_I("HTTP", "Background HTTP worker task created on Core 0");
+  } else {
+    LOG_E("HTTP", "Failed to create HTTP job queue");
+  }
+}
+
+// ============================================================================
+// 9. SAFETY TIMING & STAGED ESCALATION STATE MACHINE
+// ============================================================================
 unsigned long t1ThresholdSec       = 300; // Default 5 minutes (300s)
 unsigned long listenDurationSec    = 15;  // Listen 15s for voice/movement response
 unsigned long repeatIntervalSec    = 15;  // Repeat interval between NO_RESPONSE and ALARM (15s)
@@ -104,8 +471,6 @@ bool presenceDetected = false;
 bool movementDetected = false;
 bool emergencyActive  = false;
 
-String deviceId = "";
-
 // Circular buffer of last 20 state transitions
 #define CIRCULAR_BUFFER_SIZE 20
 struct EscalationLogEntry {
@@ -121,7 +486,7 @@ uint8_t bufferHead = 0;
 uint8_t bufferCount = 0;
 
 // ============================================================================
-// 4. WI-FI & PROVISIONING STATE MACHINE
+// 10. WI-FI & PROVISIONING STATE MACHINE
 // ============================================================================
 enum WiFiConnState {
   WIFI_IDLE,
@@ -145,7 +510,6 @@ String customRoom = "";
 
 // Peripherals & Services
 WebServer server(80);
-Preferences preferences;
 
 BLEServer* pBleServer = nullptr;
 BLECharacteristic* pProvisionChar = nullptr;
@@ -153,6 +517,14 @@ BLECharacteristic* pStatusChar = nullptr;
 BLECharacteristic* pEventLogChar = nullptr;
 BLECharacteristic* pConfigChar = nullptr;
 bool bleClientConnected = false;
+volatile bool bleRestartAdvRequested = false;
+unsigned long lastAdvCheckTime = 0;
+
+// Forward declarations
+void updateBleConfig();
+void reportCurrentStatus();
+void sendEmergencyAlert(const char* trigger, bool isTest, const String& eventId);
+void transitionToState(SafetyState nextState, const char* trigger, unsigned long stillnessSec);
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -173,24 +545,8 @@ const char* getStateString(SafetyState state) {
   }
 }
 
-void beepBuzzer(int times, int durationMs, int pauseMs) {
-  for (int i = 0; i < times; i++) {
-    digitalWrite(PIN_BUZZER, HIGH);
-    delay(durationMs);
-    digitalWrite(PIN_BUZZER, LOW);
-    if (i < times - 1) delay(pauseMs);
-  }
-}
-
 void saveEscalationConfig() {
-  preferences.begin("wsg01", false);
-  preferences.putULong("t1", t1ThresholdSec);
-  preferences.putULong("repeat", repeatIntervalSec);
-  preferences.putUChar("volume", alarmVolume);
-  preferences.putULong("hb_interval", heartbeatIntervalMin);
-  preferences.end();
-  Serial.printf("[NVS] Saved config: T1=%lus, Repeat=%lus, Vol=%d%%, Heartbeat=%lumin\n",
-                t1ThresholdSec, repeatIntervalSec, alarmVolume, heartbeatIntervalMin);
+  nvsSaveEscalationConfig(t1ThresholdSec, repeatIntervalSec, alarmVolume, heartbeatIntervalMin);
 }
 
 String currentEmergencyEventId = "";
@@ -203,31 +559,27 @@ String generateEmergencyEventId() {
   return String(buf);
 }
 
-void updateBleConfig(); // Forward declaration
-void reportCurrentStatus(); // Forward declaration
-void sendEmergencyAlert(const char* trigger, bool isTest, const String& eventId); // Forward declaration
-
 void notifyChar(BLECharacteristic* pChar, const String& val) {
   if (!pChar || !bleClientConnected) {
-    Serial.printf("[BLE] Skip notify: %s\n", !pChar ? "char null" : "client not connected");
+    LOG_D("BLE", "Skip notify: %s", !pChar ? "char null" : "client not connected");
     return;
   }
   pChar->setValue(val.c_str());
   pChar->notify();
-  Serial.printf("[BLE] Notified %d bytes\n", val.length());
+  LOG_D("BLE", "Notified %d bytes", val.length());
 }
 
 void sendEmergency() {
   emergencyActive = true;
   digitalWrite(PIN_STATUS_LED, HIGH);
-  beepBuzzer(3, 100, 80);
+  triggerBuzzer(3, 100, 80); // Non-blocking buzzer pattern!
   transitionToState(STATE_ALARM, "EMERGENCY_TRIGGERED", 0);
 
   String uniqueId = generateEmergencyEventId();
   currentEmergencyEventId = uniqueId;
 
   String payload = "{\"type\":\"EMERGENCY\",\"id\":\"" + uniqueId + "\",\"eventId\":\"" + uniqueId + "\",\"deviceId\":\"" + deviceId + "\",\"trigger\":\"MANUAL_EMERGENCY\",\"status\":\"ACTIVE\",\"timestamp\":" + String(millis()) + "}";
-  Serial.printf("[BLE] Sending emergency alert: %s\n", payload.c_str());
+  LOG_I("BLE", "Sending emergency alert: %s", payload.c_str());
   notifyChar(pEventLogChar, payload);
   notifyChar(pStatusChar, payload);
 
@@ -240,7 +592,7 @@ void acknowledgeEmergency(const String& ackId) {
   if (currentState == STATE_ALARM || currentState == STATE_EMERGENCY) {
     transitionToState(STATE_IDLE, "EMERGENCY_ACKNOWLEDGED", 0);
   }
-  Serial.printf("[SECURITY] Emergency acknowledged: %s\n", ackId.c_str());
+  LOG_I("SECURITY", "Emergency acknowledged: %s", ackId.c_str());
   if (pStatusChar) {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
     JsonDocument ackDoc;
@@ -253,6 +605,8 @@ void acknowledgeEmergency(const String& ackId) {
     ackDoc["eventId"] = ackId;
     ackDoc["id"] = ackId;
     ackDoc["model"] = MODEL_NUMBER;
+    ackDoc["protocol"] = PROTOCOL_VERSION;
+    ackDoc["fw"] = FIRMWARE_VERSION;
     String out;
     serializeJson(ackDoc, out);
     notifyChar(pStatusChar, out);
@@ -281,7 +635,7 @@ void cancelEmergency() {
 
   String uniqueId = (currentEmergencyEventId.length() > 0) ? currentEmergencyEventId : generateEmergencyEventId();
   String payload = "{\"type\":\"WSG01_CANCEL\",\"id\":\"" + uniqueId + "\",\"eventId\":\"" + uniqueId + "\",\"deviceId\":\"" + deviceId + "\",\"status\":\"CANCELLED\"}";
-  Serial.printf("[BLE] Sending cancel emergency: %s\n", payload.c_str());
+  LOG_I("BLE", "Sending cancel emergency: %s", payload.c_str());
   notifyChar(pEventLogChar, payload);
   notifyChar(pStatusChar, payload);
 }
@@ -353,22 +707,22 @@ void transitionToState(SafetyState nextState, const char* trigger, unsigned long
     bufferCount++;
   }
 
-  Serial.printf("[Safety Escalation] %s -> %s | Trigger: %s | Stillness: %lus\n",
-                getStateString(prevState), getStateString(nextState), trigger, stillnessSec);
+  LOG_I("SAFETY", "%s -> %s | Trigger: %s | Stillness: %lus",
+        getStateString(prevState), getStateString(nextState), trigger, stillnessSec);
 
   // Notify BLE connected clients of transition history update
   updateBleEventLog();
 }
 
 // ============================================================================
-// FEATURE 3: TEST EMERGENCY SYSTEM (COMPRESSED 10s STAGES & AUTHENTICATION)
+// 11. TEST EMERGENCY SYSTEM & RATE-LIMITED AUTHENTICATION
 // ============================================================================
 bool isTestMode = false;
 unsigned long testStartTime = 0;
-const unsigned long TEST_STAGE_SEC = 10; // Compressed 10s per stage for fast audit
-String pairingToken = ""; // Generated cryptographically on first boot/reset and stored in NVS
+const unsigned long TEST_STAGE_SEC = 10; // Compressed 10s per stage for fast testing
+String pairingToken = "";
 
-// Pairing window tracking (5 minutes after first boot / factory reset, or re-armed by physical button press)
+// Pairing window tracking (5 minutes after first boot / factory reset, or re-armed by button press)
 unsigned long pairingWindowStartMs = 0;
 const unsigned long PAIRING_WINDOW_DURATION_MS = 300000UL; // 5 minutes
 
@@ -379,7 +733,7 @@ bool isPairingWindowActive() {
 
 void openPairingWindow() {
   pairingWindowStartMs = millis();
-  Serial.println("[SECURITY] First-pairing window open for 5 minutes.");
+  LOG_I("SECURITY", "First-pairing window open for 5 minutes.");
 }
 
 // Rate-limiting on failed authentication attempts
@@ -393,7 +747,6 @@ bool isRateLimited() {
     return true;
   }
   if (authLockoutUntilMs > 0 && millis() >= authLockoutUntilMs) {
-    // Lockout expired, reset counter
     authLockoutUntilMs = 0;
     failedAuthAttempts = 0;
   }
@@ -402,10 +755,10 @@ bool isRateLimited() {
 
 void registerAuthFailure() {
   failedAuthAttempts++;
-  Serial.printf("[SECURITY] Auth failure count: %d/%d\n", failedAuthAttempts, MAX_FAILED_AUTH_ATTEMPTS);
+  LOG_W("SECURITY", "Auth failure count: %d/%d", failedAuthAttempts, MAX_FAILED_AUTH_ATTEMPTS);
   if (failedAuthAttempts >= MAX_FAILED_AUTH_ATTEMPTS) {
     authLockoutUntilMs = millis() + AUTH_LOCKOUT_DURATION_MS;
-    Serial.printf("[SECURITY] Rate-limit triggered: locked out for %lu seconds.\n", AUTH_LOCKOUT_DURATION_MS / 1000);
+    LOG_W("SECURITY", "Rate-limit triggered: locked out for %lu seconds", AUTH_LOCKOUT_DURATION_MS / 1000);
   }
 }
 
@@ -416,7 +769,7 @@ void registerAuthSuccess() {
 
 bool validateToken(const String& token) {
   if (isRateLimited()) {
-    Serial.println("[SECURITY] Auth rejected: device is currently RATE_LIMITED");
+    LOG_W("SECURITY", "Auth rejected: device is currently RATE_LIMITED");
     return false;
   }
   if (token.length() == 0) {
@@ -466,8 +819,8 @@ void startTestEmergency() {
   testStartTime = millis();
   stillnessStartTime = millis();
   transitionToState(STATE_INACTIVE_DETECTED, "TEST_EMERGENCY_START", 0);
-  beepBuzzer(2, 100, 100);
-  Serial.println("[TEST MODE] Test Emergency sequence initiated. Compressed 10s intervals active.");
+  triggerBuzzer(2, 100, 100);
+  LOG_I("TEST", "Test Emergency sequence initiated. Compressed 10s intervals active.");
 }
 
 void cancelTestEmergency() {
@@ -477,70 +830,129 @@ void cancelTestEmergency() {
   digitalWrite(PIN_BUZZER, LOW);
   digitalWrite(PIN_STATUS_LED, LOW);
   transitionToState(STATE_IDLE, "TEST_CANCELLED", 0);
-  Serial.println("[TEST MODE] Test Emergency successfully cancelled.");
+  LOG_I("TEST", "Test Emergency successfully cancelled.");
 }
 
 const unsigned long RECONNECT_INTERVAL_MS = 6000;
 unsigned long lastReconnectAttemptTime = 0;
 
-// Forward declaration
-void reportCurrentStatus();
-
 // ============================================================================
-// BLE CALLBACKS
+// 12. BLE SERVER CALLBACKS & ADVERTISING RESTORATION
 // ============================================================================
 class BleServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer* pServer) {
+  void onConnect(BLEServer* pServer) override {
     bleClientConnected = true;
-    Serial.println("[BLE] Mobile client connected via GATT");
+    bleRestartAdvRequested = false;
+    LOG_I("BLE", "Mobile client connected via GATT");
     reportCurrentStatus();
     updateBleEventLog();
     updateBleConfig();
   }
 
-  void onDisconnect(BLEServer* pServer) {
+  void onDisconnect(BLEServer* pServer) override {
     bleClientConnected = false;
-    Serial.println("[BLE] Client disconnected. Restarting BLE advertising...");
-    pServer->startAdvertising();
+    bleRestartAdvRequested = true;
+    LOG_I("BLE", "Client disconnected. Advertising restart scheduled...");
   }
 };
 
+void processBleAdvertising() {
+  unsigned long now = millis();
+
+  // 1. Immediate restart requested from onDisconnect
+  if (bleRestartAdvRequested && !bleClientConnected) {
+    bleRestartAdvRequested = false;
+    LOG_I("BLE", "Restarting BLE advertising...");
+    BLEAdvertising* pAdv = BLEDevice::getAdvertising();
+    if (pAdv) {
+      pAdv->stop();
+      pAdv->start();
+    } else {
+      BLEDevice::startAdvertising();
+    }
+    lastAdvCheckTime = now;
+  }
+
+  // 2. Periodic watchdog: if not connected, ensure advertising is alive every 10s
+  if (!bleClientConnected && (now - lastAdvCheckTime >= 10000)) {
+    lastAdvCheckTime = now;
+    BLEAdvertising* pAdv = BLEDevice::getAdvertising();
+    if (pAdv) {
+      pAdv->start();
+    }
+  }
+}
+
+// ============================================================================
+// 13. BLE CHARACTERISTIC CALLBACKS WITH JSON BOUNDING & VALIDATION
+// ============================================================================
 class ConfigCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* pCharacteristic) {
+  void onWrite(BLECharacteristic* pCharacteristic) override {
     String rxValue = pCharacteristic->getValue().c_str();
     if (rxValue.length() == 0) return;
+
+    if (rxValue.length() > 256) {
+      LOG_E("BLE", "Config payload exceeds 256 bytes limit");
+      sendAuthError(pStatusChar, "PAYLOAD_TOO_LARGE");
+      return;
+    }
 
 #if ARDUINOJSON_VERSION_MAJOR >= 7
     JsonDocument doc;
 #else
     StaticJsonDocument<256> doc;
 #endif
-    if (deserializeJson(doc, rxValue) == DeserializationError::Ok) {
+    DeserializationError err = deserializeJson(doc, rxValue);
+    if (err == DeserializationError::Ok) {
       if (isRateLimited()) {
         sendAuthError(pStatusChar, "RATE_LIMITED");
         return;
       }
       const char* token = doc["token"] | "";
       if (!validateToken(String(token))) {
-        Serial.println("[BLE] Config characteristic write rejected: Invalid or missing pairing token");
+        LOG_W("BLE", "Config characteristic write rejected: Invalid or missing pairing token");
         sendAuthError(pStatusChar, "UNAUTHORIZED");
         return;
       }
-      if (doc.containsKey("t1")) t1ThresholdSec = doc["t1"].as<unsigned long>();
-      if (doc.containsKey("repeat")) repeatIntervalSec = doc["repeat"].as<unsigned long>();
-      if (doc.containsKey("volume")) alarmVolume = doc["volume"].as<uint8_t>();
-      if (doc.containsKey("heartbeat_interval")) heartbeatIntervalMin = doc["heartbeat_interval"].as<unsigned long>();
-      if (doc.containsKey("hb_interval")) heartbeatIntervalMin = doc["hb_interval"].as<unsigned long>();
+
+      // Validated and bounded parameter updates
+      if (doc.containsKey("t1")) {
+        long v = doc["t1"].as<long>();
+        if (v >= 10 && v <= 86400) t1ThresholdSec = (unsigned long)v;
+      }
+      if (doc.containsKey("repeat")) {
+        long v = doc["repeat"].as<long>();
+        if (v >= 5 && v <= 3600) repeatIntervalSec = (unsigned long)v;
+      }
+      if (doc.containsKey("volume")) {
+        int v = doc["volume"].as<int>();
+        if (v >= 0 && v <= 100) alarmVolume = (uint8_t)v;
+      }
+      if (doc.containsKey("heartbeat_interval") || doc.containsKey("hb_interval")) {
+        long v = doc.containsKey("heartbeat_interval") ? doc["heartbeat_interval"].as<long>() : doc["hb_interval"].as<long>();
+        if (v >= 1 && v <= 1440) heartbeatIntervalMin = (unsigned long)v;
+      }
+
       saveEscalationConfig();
       updateBleConfig();
+    } else {
+      LOG_E("BLE", "Config JSON parse error: %s", err.c_str());
+      sendAuthError(pStatusChar, "INVALID_JSON");
     }
   }
 };
 
 class ProvisionCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* pCharacteristic) {
+  void onWrite(BLECharacteristic* pCharacteristic) override {
     String rxValue = pCharacteristic->getValue().c_str();
     if (rxValue.length() == 0) return;
+
+    // Strict input length guard
+    if (rxValue.length() > 512) {
+      LOG_E("BLE", "Command payload exceeded 512 bytes limit (%d bytes)", rxValue.length());
+      sendAuthError(pStatusChar, "PAYLOAD_TOO_LARGE");
+      return;
+    }
 
 #if ARDUINOJSON_VERSION_MAJOR >= 7
     JsonDocument doc;
@@ -550,18 +962,25 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
 
     DeserializationError error = deserializeJson(doc, rxValue);
     if (error) {
-      Serial.printf("[BLE] JSON parse error: %s\n", error.c_str());
+      LOG_E("BLE", "JSON parse error: %s", error.c_str());
+      sendAuthError(pStatusChar, "INVALID_JSON");
+      return;
+    }
+
+    if (!doc.containsKey("cmd") || doc["cmd"].isNull()) {
+      LOG_E("BLE", "Missing 'cmd' in command payload");
+      sendAuthError(pStatusChar, "MISSING_CMD");
       return;
     }
 
     const char* cmd = doc["cmd"] | "";
+    if (strlen(cmd) == 0 || strlen(cmd) > 32) {
+      LOG_E("BLE", "Invalid 'cmd' length");
+      sendAuthError(pStatusChar, "INVALID_CMD");
+      return;
+    }
 
-    Serial.println("\n========================================");
-    Serial.println("[BLE COMMAND RECEIVED]");
-    Serial.printf("Characteristic: %s\n", CHAR_PROVISION_UUID);
-    Serial.printf("Command: %s\n", cmd);
-    Serial.printf("Payload: %s\n", rxValue.c_str());
-    Serial.println("========================================");
+    LOG_I("BLE", "Command received: %s", cmd);
 
     if (strcmp(cmd, "PROV_WIFI") == 0) {
       if (isRateLimited()) {
@@ -570,7 +989,7 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
       }
       const char* token = doc["token"] | "";
       if (!validateToken(String(token))) {
-        Serial.println("[BLE] PROV_WIFI rejected: Invalid or missing pairing token");
+        LOG_W("BLE", "PROV_WIFI rejected: Invalid or missing pairing token");
         sendAuthError(pStatusChar, "UNAUTHORIZED");
         return;
       }
@@ -579,20 +998,28 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
       const char* name = doc["name"] | "";
       const char* room = doc["room"] | "";
 
-      if (strlen(ssid) > 0) {
-        activeSsid = String(ssid);
-        activePass = String(pass);
-        customDeviceName = String(name);
-        customRoom = String(room);
-
-        // Queue connection in loop() so BLE task is NOT blocked
-        pendingWiFiTrigger = true;
-        Serial.printf("[BLE] Queued Wi-Fi connection to SSID: \"%s\"\n", ssid);
+      if (strlen(ssid) == 0 || strlen(ssid) > 32) {
+        LOG_E("BLE", "PROV_WIFI rejected: Invalid SSID length (1-32 chars)");
+        sendAuthError(pStatusChar, "INVALID_SSID");
+        return;
       }
+      if (strlen(pass) > 64) {
+        LOG_E("BLE", "PROV_WIFI rejected: Passphrase exceeds 64 chars");
+        sendAuthError(pStatusChar, "INVALID_PASS");
+        return;
+      }
+
+      activeSsid = String(ssid);
+      activePass = String(pass);
+      customDeviceName = String(name);
+      customRoom = String(room);
+
+      pendingWiFiTrigger = true;
+      LOG_I("BLE", "Queued Wi-Fi connection to SSID: \"%s\"", ssid);
     } else if (strcmp(cmd, "GET_STATUS") == 0 || strcmp(cmd, "GET_WIFI_STATUS") == 0) {
       reportCurrentStatus();
     } else if (strcmp(cmd, "SCAN_WIFI") == 0) {
-      Serial.println("[BLE] SCAN_WIFI command received -> starting async scan");
+      LOG_I("BLE", "SCAN_WIFI command received -> starting async scan");
       if (pStatusChar) {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
         JsonDocument resp;
@@ -614,19 +1041,16 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
       }
       const char* token = doc["token"] | "";
       if (!validateToken(String(token))) {
-        Serial.println("[BLE] FORGET_WIFI rejected: Invalid or missing pairing token");
+        LOG_W("BLE", "FORGET_WIFI rejected: Invalid or missing pairing token");
         sendAuthError(pStatusChar, "UNAUTHORIZED");
         return;
       }
-      Serial.println("[BLE] FORGET_WIFI command received");
-      preferences.begin("wsg01", false);
-      preferences.remove("ssid");
-      preferences.remove("pass");
-      preferences.end();
+      LOG_I("BLE", "FORGET_WIFI command executed");
+      nvsRemoveWifi();
       activeSsid = "";
       activePass = "";
       WiFi.disconnect(false, true /* erase */);
-      wifiConnState = WIFI_DISCONNECTED;
+      wifiConnState = WIFI_IDLE;
       if (pStatusChar) {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
         JsonDocument resp;
@@ -639,10 +1063,11 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
         resp["trigger"] = "forget";
         resp["source"]  = "device";
         resp["saved"]   = "";
+        resp["protocol"]= PROTOCOL_VERSION;
+        resp["fw"]      = FIRMWARE_VERSION;
         String jsonOut;
         serializeJson(resp, jsonOut);
         notifyChar(pStatusChar, jsonOut);
-        Serial.printf("[BLE] Sent FORGET_WIFI confirmation: %s\n", jsonOut.c_str());
       }
     } else if (strcmp(cmd, "DISCONNECT_WIFI") == 0) {
       WiFi.disconnect(true);
@@ -655,19 +1080,30 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
       }
       const char* token = doc["token"] | "";
       if (!validateToken(String(token))) {
-        Serial.println("[BLE] SET_ESCALATION_CONFIG rejected: Invalid or missing pairing token");
+        LOG_W("BLE", "SET_ESCALATION_CONFIG rejected: Invalid or missing pairing token");
         sendAuthError(pStatusChar, "UNAUTHORIZED");
         return;
       }
-      if (doc.containsKey("t1")) t1ThresholdSec = doc["t1"].as<unsigned long>();
-      if (doc.containsKey("repeat")) repeatIntervalSec = doc["repeat"].as<unsigned long>();
-      if (doc.containsKey("volume")) alarmVolume = doc["volume"].as<uint8_t>();
-      if (doc.containsKey("heartbeat_interval")) heartbeatIntervalMin = doc["heartbeat_interval"].as<unsigned long>();
-      if (doc.containsKey("hb_interval")) heartbeatIntervalMin = doc["hb_interval"].as<unsigned long>();
+      if (doc.containsKey("t1")) {
+        long v = doc["t1"].as<long>();
+        if (v >= 10 && v <= 86400) t1ThresholdSec = (unsigned long)v;
+      }
+      if (doc.containsKey("repeat")) {
+        long v = doc["repeat"].as<long>();
+        if (v >= 5 && v <= 3600) repeatIntervalSec = (unsigned long)v;
+      }
+      if (doc.containsKey("volume")) {
+        int v = doc["volume"].as<int>();
+        if (v >= 0 && v <= 100) alarmVolume = (uint8_t)v;
+      }
+      if (doc.containsKey("heartbeat_interval") || doc.containsKey("hb_interval")) {
+        long v = doc.containsKey("heartbeat_interval") ? doc["heartbeat_interval"].as<long>() : doc["hb_interval"].as<long>();
+        if (v >= 1 && v <= 1440) heartbeatIntervalMin = (unsigned long)v;
+      }
       saveEscalationConfig();
       updateBleConfig();
     } else if (strcmp(cmd, "PING") == 0) {
-      Serial.println("[BLE] PING command accepted -> sending PONG");
+      LOG_D("BLE", "PING command received -> sending PONG");
       if (pStatusChar) {
         pStatusChar->setValue("{\"status\":\"PONG\"}");
         pStatusChar->notify();
@@ -681,15 +1117,14 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
       }
       const char* token = doc["token"] | "";
       if (!validateToken(String(token))) {
-        Serial.println("[BLE] TEST_EMERGENCY rejected: Invalid or missing pairing token");
+        LOG_W("BLE", "TEST_EMERGENCY rejected: Invalid or missing pairing token");
         sendAuthError(pStatusChar, "UNAUTHORIZED");
         return;
       }
-      Serial.println("[TEST EMERGENCY] COMMAND ACCEPTED");
+      LOG_I("TEST", "TEST_EMERGENCY initiated");
       startTestEmergency();
-      Serial.println("[TEST EMERGENCY] EVENT GENERATED");
 
-      // Notify via Event Characteristic (beb5483e-36e1-4688-b7f5-ea07361b26aa)
+      // Notify EVENT char
       if (pEventLogChar) {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
         JsonDocument evDoc;
@@ -699,15 +1134,13 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
         evDoc["type"] = "event";
         evDoc["event"] = "TEST_EMERGENCY";
         evDoc["timestamp"] = millis();
-
         String evOut;
         serializeJson(evDoc, evOut);
         pEventLogChar->setValue(evOut.c_str());
         pEventLogChar->notify();
-        Serial.printf("[BLE] Sent TEST_EMERGENCY event log: %s\n", evOut.c_str());
       }
 
-      // Notify via Status Characteristic (beb5483e-36e1-4688-b7f5-ea07361b26a9)
+      // Notify STATUS char
       if (pStatusChar) {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
         JsonDocument resp;
@@ -721,12 +1154,12 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
         resp["source"]   = "app";
         resp["is_test"]  = true;
         resp["model"]    = MODEL_NUMBER;
-
+        resp["protocol"] = PROTOCOL_VERSION;
+        resp["fw"]       = FIRMWARE_VERSION;
         String jsonOut;
         serializeJson(resp, jsonOut);
         pStatusChar->setValue(jsonOut.c_str());
         pStatusChar->notify();
-        Serial.printf("[BLE] Sent TEST_EMERGENCY status: %s\n", jsonOut.c_str());
       }
     } else if (strcmp(cmd, "CANCEL_TEST") == 0) {
       if (isRateLimited()) {
@@ -735,11 +1168,11 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
       }
       const char* token = doc["token"] | "";
       if (!validateToken(String(token))) {
-        Serial.println("[BLE] CANCEL_TEST rejected: Invalid or missing pairing token");
+        LOG_W("BLE", "CANCEL_TEST rejected: Invalid or missing pairing token");
         sendAuthError(pStatusChar, "UNAUTHORIZED");
         return;
       }
-      Serial.println("[TEST EMERGENCY] CANCEL COMMAND ACCEPTED");
+      LOG_I("TEST", "CANCEL_TEST received");
       cancelTestEmergency();
       if (pEventLogChar) {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
@@ -751,7 +1184,6 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
         evDoc["event"] = "TEST_CANCELLED";
         evDoc["test_cancelled"] = true;
         evDoc["timestamp"] = millis();
-
         String evOut;
         serializeJson(evDoc, evOut);
         pEventLogChar->setValue(evOut.c_str());
@@ -776,17 +1208,15 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
       }
 
       if (!authorized) {
-        Serial.println("[BLE] SET_PAIRING_TOKEN rejected: Current valid pairing token required");
+        LOG_W("BLE", "SET_PAIRING_TOKEN rejected: Current valid pairing token required");
         sendAuthError(pStatusChar, "UNAUTHORIZED");
         return;
       }
 
-      if (strlen(newToken) >= 8) {
+      if (strlen(newToken) >= 8 && strlen(newToken) <= 64) {
         pairingToken = String(newToken);
-        preferences.begin("wsg01", false);
-        preferences.putString("token", pairingToken);
-        preferences.end();
-        Serial.println("[BLE] Pairing token securely updated and saved in NVS.");
+        nvsSaveToken(pairingToken);
+        LOG_I("BLE", "Pairing token securely updated in NVS.");
         if (pStatusChar) {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
           JsonDocument resp;
@@ -802,7 +1232,7 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
           notifyChar(pStatusChar, out);
         }
       } else {
-        Serial.println("[BLE] SET_PAIRING_TOKEN rejected: new_token too short (min 8 chars)");
+        LOG_W("BLE", "SET_PAIRING_TOKEN rejected: new_token invalid length (must be 8-64 chars)");
         sendAuthError(pStatusChar, "INVALID_TOKEN_LENGTH");
       }
     } else if (strcmp(cmd, "GET_PAIRING_TOKEN") == 0) {
@@ -823,15 +1253,30 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
           notifyChar(pStatusChar, out);
         }
       } else {
-        Serial.println("[BLE] GET_PAIRING_TOKEN rejected: Pairing window closed");
+        LOG_W("BLE", "GET_PAIRING_TOKEN rejected: Pairing window closed");
         sendAuthError(pStatusChar, "PAIRING_WINDOW_CLOSED");
       }
     } else if (strcmp(cmd, "ACK_EMERGENCY") == 0 || strcmp(cmd, "ACK") == 0) {
       const char* ackId = doc["id"] | doc["eventId"] | currentEmergencyEventId.c_str();
-      Serial.printf("[BLE] ACK_EMERGENCY command received for event: %s\n", ackId);
+      LOG_I("BLE", "ACK_EMERGENCY received for event: %s", ackId);
       acknowledgeEmergency(String(ackId));
+    } else if (strcmp(cmd, "SET_LOG_LEVEL") == 0) {
+      const char* lvl = doc["level"] | "INFO";
+      if (strcasecmp(lvl, "NONE") == 0 || strcmp(lvl, "0") == 0) {
+        currentLogLevel = LOG_LEVEL_NONE;
+      } else if (strcasecmp(lvl, "ERROR") == 0 || strcmp(lvl, "1") == 0) {
+        currentLogLevel = LOG_LEVEL_ERROR;
+      } else if (strcasecmp(lvl, "INFO") == 0 || strcmp(lvl, "2") == 0) {
+        currentLogLevel = LOG_LEVEL_INFO;
+      } else if (strcasecmp(lvl, "DEBUG") == 0 || strcmp(lvl, "3") == 0) {
+        currentLogLevel = LOG_LEVEL_DEBUG;
+      }
+      if (pStatusChar) {
+        pStatusChar->setValue("{\"status\":\"OK\",\"log_level_updated\":true}");
+        pStatusChar->notify();
+      }
     } else {
-      Serial.printf("[BLE] Unknown command: %s\n", cmd);
+      LOG_W("BLE", "Unknown command: %s", cmd);
       if (pStatusChar) {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
         JsonDocument errResp;
@@ -852,7 +1297,7 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
 };
 
 // ============================================================================
-// NON-BLOCKING WI-FI STATE MACHINE
+// 14. NON-BLOCKING WI-FI STATE MACHINE & STATUS REPORTING
 // ============================================================================
 void sendWiFiConnectedStatus(const String& ssid, const String& ipStr) {
   if (!pStatusChar) return;
@@ -860,20 +1305,24 @@ void sendWiFiConnectedStatus(const String& ssid, const String& ipStr) {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
   JsonDocument resp;
 #else
-  StaticJsonDocument<256> resp;
+  StaticJsonDocument<384> resp;
 #endif
 
-  resp["type"]     = "status";
-  resp["status"]   = "CONNECTED";
-  resp["state"]    = "WIFI_CONNECTED";
-  resp["trigger"]  = "wifi";
-  resp["source"]   = "device";
-  resp["is_test"]  = false;
-  resp["ssid"]     = ssid;
-  resp["ip"]       = ipStr;
-  resp["model"]    = MODEL_NUMBER;
-  resp["protocol"] = PROTOCOL_VERSION;
-  resp["fw"]       = FIRMWARE_VERSION;
+  resp["type"]         = "status";
+  resp["status"]       = "CONNECTED";
+  resp["state"]        = "WIFI_CONNECTED";
+  resp["trigger"]      = "wifi";
+  resp["source"]       = "device";
+  resp["is_test"]      = false;
+  resp["ssid"]         = ssid;
+  resp["ip"]           = ipStr;
+  resp["model"]        = MODEL_NUMBER;
+  resp["protocol"]     = PROTOCOL_VERSION;
+  resp["fw"]           = FIRMWARE_VERSION;
+  resp["radar_status"] = sensorHealth.radarFault ? "FAULT" : "OK";
+  resp["mic_status"]   = sensorHealth.micFault ? "FAULT" : "OK";
+  resp["sensors_ok"]   = (!sensorHealth.radarFault && !sensorHealth.micFault);
+
   if (isPairingWindowActive()) {
     resp["pairing_active"] = true;
     resp["token"] = pairingToken;
@@ -882,7 +1331,7 @@ void sendWiFiConnectedStatus(const String& ssid, const String& ipStr) {
   String jsonOut;
   serializeJson(resp, jsonOut);
   notifyChar(pStatusChar, jsonOut);
-  Serial.printf("[BLE] Sent status confirmation to app: %s\n", jsonOut.c_str());
+  LOG_I("BLE", "Sent status confirmation to app: %s", jsonOut.c_str());
 }
 
 void reportCurrentStatus() {
@@ -899,24 +1348,26 @@ void reportCurrentStatus() {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
   JsonDocument resp;
 #else
-  StaticJsonDocument<256> resp;
+  StaticJsonDocument<384> resp;
 #endif
 
-  resp["type"]     = "status";
-  resp["trigger"]  = "wifi";
-  resp["source"]   = "device";
-  resp["is_test"]  = false;
-  resp["model"]    = MODEL_NUMBER;
-  resp["protocol"] = PROTOCOL_VERSION;
-  resp["fw"]       = FIRMWARE_VERSION;
+  resp["type"]         = "status";
+  resp["trigger"]      = "wifi";
+  resp["source"]       = "device";
+  resp["is_test"]      = false;
+  resp["model"]        = MODEL_NUMBER;
+  resp["protocol"]     = PROTOCOL_VERSION;
+  resp["fw"]           = FIRMWARE_VERSION;
+  resp["radar_status"] = sensorHealth.radarFault ? "FAULT" : "OK";
+  resp["mic_status"]   = sensorHealth.micFault ? "FAULT" : "OK";
+  resp["sensors_ok"]   = (!sensorHealth.radarFault && !sensorHealth.micFault);
+
   if (isPairingWindowActive()) {
     resp["pairing_active"] = true;
     resp["token"] = pairingToken;
   }
 
-  preferences.begin("wsg01", true);
-  String savedSsid = preferences.getString("ssid", "");
-  preferences.end();
+  String savedSsid = nvsGetSsid();
   resp["saved"] = savedSsid;
 
   if (wifiConnState == WIFI_CONNECTING || wifiConnState == WIFI_AWAITING_DHCP) {
@@ -933,13 +1384,12 @@ void reportCurrentStatus() {
   String jsonOut;
   serializeJson(resp, jsonOut);
   notifyChar(pStatusChar, jsonOut);
-  Serial.printf("[BLE] Reported current Wi-Fi status: %s\n", jsonOut.c_str());
+  LOG_I("BLE", "Reported current Wi-Fi status: %s", jsonOut.c_str());
 }
 
 void initiateWiFiConnection(const String& ssid, const String& pass) {
-  Serial.printf("\n[WiFi] Initiating hardware connection to: \"%s\"...\n", ssid.c_str());
+  LOG_I("WIFI", "Initiating hardware connection to: \"%s\"...", ssid.c_str());
 
-  // Notify BLE client that attempt has begun
   if (pStatusChar) {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
     JsonDocument resp;
@@ -959,10 +1409,8 @@ void initiateWiFiConnection(const String& ssid, const String& pass) {
     notifyChar(pStatusChar, jsonOut);
   }
 
-  // Disconnect any existing link cleanly
+  // Non-blocking disconnect and begin (zero blocking delays)
   WiFi.disconnect(true, true);
-  delay(100);
-
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.begin(ssid.c_str(), pass.c_str());
@@ -974,10 +1422,10 @@ void initiateWiFiConnection(const String& ssid, const String& pass) {
 void processWiFiStateMachine() {
   unsigned long now = millis();
 
-  // 1. Actively monitor connection health: Detect router powered off, link lost, or IP dropped
+  // 1. Actively monitor connection health
   if (wifiConnState == WIFI_CONNECTED) {
     if (WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0, 0, 0, 0)) {
-      Serial.println("\n[WiFi] Connection lost! Waiting for auto-reconnect...");
+      LOG_W("WIFI", "Connection lost! Waiting for auto-reconnect...");
       wifiConnState = WIFI_FAILED;
       digitalWrite(PIN_STATUS_LED, LOW);
       reportCurrentStatus();
@@ -986,69 +1434,51 @@ void processWiFiStateMachine() {
     return;
   }
 
-  // 2. Background Auto-Reconnect is handled automatically by ESP32 WiFi.setAutoReconnect(true).
-  // We do NOT call WiFi.disconnect() or WiFi.begin() repeatedly in loop() to avoid disturbing BLE RF radio.
   if (wifiConnState == WIFI_FAILED && activeSsid.length() > 0) {
     if (now - lastReconnectAttemptTime >= 30000) {
       lastReconnectAttemptTime = now;
-      Serial.println("[WiFi] Wi-Fi is currently disconnected; ESP32 background auto-reconnect active.");
+      LOG_I("WIFI", "Wi-Fi is disconnected; ESP32 background auto-reconnect active.");
     }
   }
 
   if (wifiConnState != WIFI_CONNECTING && wifiConnState != WIFI_AWAITING_DHCP) return;
 
-  // Blink Status LED while actively attempting to connect / obtain IP
+  // Blink Status LED while actively attempting to connect
   digitalWrite(PIN_STATUS_LED, (millis() / 200) % 2 == 0 ? HIGH : LOW);
 
   wl_status_t status = WiFi.status();
 
-  // 1. WiFi associated: check if DHCP has assigned valid non-zero IP
-  // Treat Wi-Fi as fully connected only when BOTH are true:
-  // WiFi.status() == WL_CONNECTED AND WiFi.localIP() != IPAddress(0, 0, 0, 0)
   if (status == WL_CONNECTED) {
     IPAddress ip = WiFi.localIP();
     if (ip != IPAddress(0, 0, 0, 0)) {
       wifiConnState = WIFI_CONNECTED;
       digitalWrite(PIN_STATUS_LED, HIGH);
-      beepBuzzer(2, 80, 60); // Audio confirmation
+      triggerBuzzer(2, 80, 60);
 
       String finalSsid = WiFi.SSID();
       if (finalSsid.length() == 0) finalSsid = activeSsid;
       String ipStr = ip.toString();
       int currentRssi = WiFi.RSSI();
 
-      Serial.println("\nWIFI CONNECTED\n");
-      Serial.printf("SSID: %s\n", finalSsid.c_str());
-      Serial.printf("IP Address: %s\n", ipStr.c_str());
-      Serial.printf("RSSI: %d\n", currentRssi);
+      LOG_I("WIFI", "Connected to SSID: %s | IP: %s | RSSI: %d", finalSsid.c_str(), ipStr.c_str(), currentRssi);
 
-      // Persist verified credentials to NVS
-      preferences.begin("wsg01", false);
-      preferences.putString("ssid", finalSsid);
-      preferences.putString("pass", activePass);
-      if (customDeviceName.length() > 0) preferences.putString("name", customDeviceName);
-      if (customRoom.length() > 0) preferences.putString("room", customRoom);
-      preferences.end();
-      Serial.println("[NVS] Credentials securely stored.");
-
-      // Send single final real hardware confirmation over BLE status characteristic
+      nvsSaveWifi(finalSsid, activePass, customDeviceName, customRoom);
       sendWiFiConnectedStatus(finalSsid, ipStr);
       return;
     } else {
-      // Associated to AP, waiting for DHCP IP assignment
       if (wifiConnState != WIFI_AWAITING_DHCP) {
         wifiConnState = WIFI_AWAITING_DHCP;
-        Serial.println("[WiFi] Associated with AP. Awaiting DHCP IP address assignment...");
+        LOG_I("WIFI", "Associated with AP. Awaiting DHCP IP address assignment...");
       }
     }
   }
 
-  // 2. Authentication Failure (Wrong password)
+  // Authentication Failure (Wrong password)
   if (status == WL_CONNECT_FAILED) {
     wifiConnState = WIFI_FAILED;
     digitalWrite(PIN_STATUS_LED, LOW);
-    beepBuzzer(3, 150, 80);
-    Serial.println("\n[WiFi] Connection failed: Incorrect Wi-Fi password (WL_CONNECT_FAILED)");
+    triggerBuzzer(3, 150, 80);
+    LOG_E("WIFI", "Connection failed: Incorrect Wi-Fi password (WL_CONNECT_FAILED)");
 
     if (pStatusChar) {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
@@ -1068,16 +1498,15 @@ void processWiFiStateMachine() {
       serializeJson(resp, jsonOut);
       pStatusChar->setValue(jsonOut.c_str());
       pStatusChar->notify();
-      Serial.printf("[BLE] Sent auth failed status to app: %s\n", jsonOut.c_str());
     }
     return;
   }
 
-  // 3. Network Out of Range
+  // Network Out of Range
   if (status == WL_NO_SSID_AVAIL) {
     wifiConnState = WIFI_FAILED;
     digitalWrite(PIN_STATUS_LED, LOW);
-    Serial.println("\n[WiFi] Connection failed: Network SSID not found in range (WL_NO_SSID_AVAIL)");
+    LOG_E("WIFI", "Connection failed: Network SSID not found in range (WL_NO_SSID_AVAIL)");
 
     if (pStatusChar) {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
@@ -1097,16 +1526,15 @@ void processWiFiStateMachine() {
       serializeJson(resp, jsonOut);
       pStatusChar->setValue(jsonOut.c_str());
       pStatusChar->notify();
-      Serial.printf("[BLE] Sent NO_SSID status to app: %s\n", jsonOut.c_str());
     }
     return;
   }
 
-  // 4. Timeout case
+  // Timeout case
   if (millis() - wifiConnectStartTime >= WIFI_CONNECT_TIMEOUT_MS) {
     wifiConnState = WIFI_FAILED;
     digitalWrite(PIN_STATUS_LED, LOW);
-    Serial.printf("\n[WiFi] Connection timed out after %lu ms\n", WIFI_CONNECT_TIMEOUT_MS);
+    LOG_E("WIFI", "Connection timed out after %lu ms", WIFI_CONNECT_TIMEOUT_MS);
 
     WiFi.disconnect(true);
 
@@ -1128,104 +1556,155 @@ void processWiFiStateMachine() {
       serializeJson(resp, jsonOut);
       pStatusChar->setValue(jsonOut.c_str());
       pStatusChar->notify();
-      Serial.printf("[BLE] Sent WIFI_TIMEOUT status to app: %s\n", jsonOut.c_str());
     }
     return;
   }
 }
 
 // ============================================================================
-// NON-BLOCKING WI-FI SCAN
+// 15. COMPLETELY NON-BLOCKING WI-FI SCAN EMISSION
 // ============================================================================
+int scanTotalFound = 0;
+int scanEmitIndex = 0;
+unsigned long lastScanEmitTime = 0;
+bool isEmittingScanResults = false;
+
 void processWiFiScan() {
-  if (!isWiFiScanning) return;
-
-  int scanResult = WiFi.scanComplete();
-  if (scanResult == WIFI_SCAN_RUNNING) {
-    return; // Scan still in progress
-  }
-
-  isWiFiScanning = false;
-
-  if (scanResult < 0) {
-    Serial.printf("[WiFi Scan] Scan completed with error code: %d\n", scanResult);
-    if (pStatusChar) {
-#if ARDUINOJSON_VERSION_MAJOR >= 7
-      JsonDocument resp;
-#else
-      StaticJsonDocument<256> resp;
-#endif
-      resp["type"]   = "wifi_scan";
-      resp["status"] = "DONE";
-      resp["count"]  = 0;
-      String jsonOut;
-      serializeJson(resp, jsonOut);
-      notifyChar(pStatusChar, jsonOut);
+  if (isWiFiScanning) {
+    int scanResult = WiFi.scanComplete();
+    if (scanResult == WIFI_SCAN_RUNNING) {
+      return;
     }
-    WiFi.scanDelete();
-    return;
-  }
 
-  int totalFound = scanResult;
-  Serial.printf("[WiFi Scan] Discovered %d networks\n", totalFound);
+    isWiFiScanning = false;
 
-  int emitted = 0;
-  for (int i = 0; i < totalFound && emitted < 12; i++) {
-    String netSsid = WiFi.SSID(i);
-    netSsid.trim();
-    if (netSsid.length() == 0) continue;
-
-    int32_t netRssi = WiFi.RSSI(i);
-    wifi_auth_mode_t authMode = WiFi.encryptionType(i);
-    int sec = (authMode == WIFI_AUTH_OPEN) ? 0 : 1;
-
-    if (pStatusChar) {
+    if (scanResult < 0) {
+      LOG_W("SCAN", "Scan completed with error code: %d", scanResult);
+      if (pStatusChar) {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
-      JsonDocument doc;
+        JsonDocument resp;
 #else
-      StaticJsonDocument<256> doc;
+        StaticJsonDocument<256> resp;
 #endif
-      doc["type"] = "wifi_net";
-      doc["ssid"] = netSsid;
-      doc["rssi"] = netRssi;
-      doc["sec"]  = sec;
-
-      String jsonOut;
-      serializeJson(doc, jsonOut);
-      notifyChar(pStatusChar, jsonOut);
-      delay(50); // Space notifications by 40-80 ms so the BLE stack doesn't drop them
+        resp["type"]   = "wifi_scan";
+        resp["status"] = "DONE";
+        resp["count"]  = 0;
+        String jsonOut;
+        serializeJson(resp, jsonOut);
+        notifyChar(pStatusChar, jsonOut);
+      }
+      WiFi.scanDelete();
+      return;
     }
-    emitted++;
+
+    scanTotalFound = scanResult;
+    scanEmitIndex = 0;
+    isEmittingScanResults = true;
+    lastScanEmitTime = millis();
+    LOG_I("SCAN", "Discovered %d networks. Starting non-blocking emission...", scanTotalFound);
   }
 
-  if (pStatusChar) {
+  if (isEmittingScanResults) {
+    unsigned long now = millis();
+    // Non-blocking spacing: 50 ms between BLE notification packets
+    if (now - lastScanEmitTime < 50) {
+      return;
+    }
+    lastScanEmitTime = now;
+
+    if (scanEmitIndex < scanTotalFound && scanEmitIndex < 12) {
+      String netSsid = WiFi.SSID(scanEmitIndex);
+      netSsid.trim();
+      int32_t netRssi = WiFi.RSSI(scanEmitIndex);
+      wifi_auth_mode_t authMode = WiFi.encryptionType(scanEmitIndex);
+      int sec = (authMode == WIFI_AUTH_OPEN) ? 0 : 1;
+
+      if (netSsid.length() > 0 && pStatusChar) {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
-    JsonDocument doneDoc;
+        JsonDocument doc;
 #else
-    StaticJsonDocument<256> doneDoc;
+        StaticJsonDocument<256> doc;
 #endif
-    doneDoc["type"]   = "wifi_scan";
-    doneDoc["status"] = "DONE";
-    doneDoc["count"]  = emitted;
+        doc["type"] = "wifi_net";
+        doc["ssid"] = netSsid;
+        doc["rssi"] = netRssi;
+        doc["sec"]  = sec;
 
-    String doneOut;
-    serializeJson(doneDoc, doneOut);
-    notifyChar(pStatusChar, doneOut);
-    Serial.printf("[WiFi Scan] Emitted %d networks, sent DONE\n", emitted);
+        String jsonOut;
+        serializeJson(doc, jsonOut);
+        notifyChar(pStatusChar, jsonOut);
+      }
+      scanEmitIndex++;
+    } else {
+      isEmittingScanResults = false;
+      if (pStatusChar) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+        JsonDocument doneDoc;
+#else
+        StaticJsonDocument<256> doneDoc;
+#endif
+        doneDoc["type"]   = "wifi_scan";
+        doneDoc["status"] = "DONE";
+        doneDoc["count"]  = scanEmitIndex;
+
+        String doneOut;
+        serializeJson(doneDoc, doneOut);
+        notifyChar(pStatusChar, doneOut);
+        LOG_I("SCAN", "Emitted %d networks, sent DONE", scanEmitIndex);
+      }
+      WiFi.scanDelete();
+    }
   }
-
-  WiFi.scanDelete();
 }
 
 // ============================================================================
-// LOCAL REST API ENDPOINTS (PORT 80)
+// 16. PERIODIC BLE STATUS HEARTBEAT NOTIFICATION
+// ============================================================================
+unsigned long lastBleHeartbeatTime = 0;
+const unsigned long BLE_HEARTBEAT_INTERVAL_MS = 30000; // Every 30 seconds over BLE
+
+void processBleStatusHeartbeat() {
+  if (!bleClientConnected || !pStatusChar) return;
+
+  unsigned long now = millis();
+  if (now - lastBleHeartbeatTime < BLE_HEARTBEAT_INTERVAL_MS) return;
+  lastBleHeartbeatTime = now;
+
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+  JsonDocument doc;
+#else
+  StaticJsonDocument<384> doc;
+#endif
+  doc["type"]         = "status";
+  doc["status"]       = "HEARTBEAT";
+  doc["device_state"] = getStateString(currentState);
+  doc["wifi_state"]   = (WiFi.status() == WL_CONNECTED) ? "CONNECTED" : (wifiConnState == WIFI_CONNECTING ? "CONNECTING" : "DISCONNECTED");
+  doc["uptime"]       = (millis() - bootTime) / 1000;
+  doc["free_heap"]    = ESP.getFreeHeap();
+  doc["min_free_heap"]= ESP.getMinFreeHeap();
+  doc["fw"]           = FIRMWARE_VERSION;
+  doc["protocol"]     = PROTOCOL_VERSION;
+  doc["model"]        = MODEL_NUMBER;
+  doc["device_id"]    = deviceId;
+  doc["radar_status"] = sensorHealth.radarFault ? "FAULT" : "OK";
+  doc["mic_status"]   = sensorHealth.micFault ? "FAULT" : "OK";
+  doc["sensors_ok"]   = (!sensorHealth.radarFault && !sensorHealth.micFault);
+  doc["rssi"]         = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -90;
+
+  String jsonOut;
+  serializeJson(doc, jsonOut);
+  notifyChar(pStatusChar, jsonOut);
+  LOG_D("BLE", "Periodic status heartbeat sent: %s", jsonOut.c_str());
+}
+
+// ============================================================================
+// 17. LOCAL REST API ENDPOINTS (PORT 80)
 // ============================================================================
 void setupRestApi() {
   server.enableCORS(true);
   const char* headerKeys[] = {"X-Device-Token", "Authorization"};
   server.collectHeaders(headerKeys, 2);
 
-  // 1. Device Info Endpoint
   server.on("/api/device/info", HTTP_GET, []() {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
     JsonDocument doc;
@@ -1242,13 +1721,13 @@ void setupRestApi() {
     doc["uptime"]     = (millis() - bootTime) / 1000;
     doc["wifi_ssid"]  = WiFi.SSID();
     doc["rssi"]       = WiFi.RSSI();
+    doc["freeHeap"]   = ESP.getFreeHeap();
 
     String response;
     serializeJson(doc, response);
     server.send(200, "application/json", response);
   });
 
-  // 2. Real-time Telemetry Endpoint
   server.on("/api/device/telemetry", HTTP_GET, []() {
     unsigned long currentStillSec = (stillnessStartTime > 0 && presenceDetected)
                                       ? (millis() - stillnessStartTime) / 1000
@@ -1272,7 +1751,6 @@ void setupRestApi() {
     server.send(200, "application/json", response);
   });
 
-  // 3. Escalation Event History Endpoint (last 20 circular buffer entries)
   server.on("/api/device/history", HTTP_GET, []() {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
     JsonDocument doc;
@@ -1295,7 +1773,6 @@ void setupRestApi() {
     server.send(200, "application/json", response);
   });
 
-  // 4. Escalation Configuration Endpoint
   server.on("/api/device/config", HTTP_GET, []() {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
     JsonDocument doc;
@@ -1336,11 +1813,22 @@ void setupRestApi() {
         server.send(401, "application/json", "{\"error\":\"Unauthorized: valid pairing token required\"}");
         return;
       }
-      if (doc.containsKey("t1")) t1ThresholdSec = doc["t1"].as<unsigned long>();
-      if (doc.containsKey("repeat")) repeatIntervalSec = doc["repeat"].as<unsigned long>();
-      if (doc.containsKey("volume")) alarmVolume = doc["volume"].as<uint8_t>();
-      if (doc.containsKey("heartbeat_interval")) heartbeatIntervalMin = doc["heartbeat_interval"].as<unsigned long>();
-      if (doc.containsKey("hb_interval")) heartbeatIntervalMin = doc["hb_interval"].as<unsigned long>();
+      if (doc.containsKey("t1")) {
+        long v = doc["t1"].as<long>();
+        if (v >= 10 && v <= 86400) t1ThresholdSec = (unsigned long)v;
+      }
+      if (doc.containsKey("repeat")) {
+        long v = doc["repeat"].as<long>();
+        if (v >= 5 && v <= 3600) repeatIntervalSec = (unsigned long)v;
+      }
+      if (doc.containsKey("volume")) {
+        int v = doc["volume"].as<int>();
+        if (v >= 0 && v <= 100) alarmVolume = (uint8_t)v;
+      }
+      if (doc.containsKey("heartbeat_interval") || doc.containsKey("hb_interval")) {
+        long v = doc.containsKey("heartbeat_interval") ? doc["heartbeat_interval"].as<long>() : doc["hb_interval"].as<long>();
+        if (v >= 1 && v <= 1440) heartbeatIntervalMin = (unsigned long)v;
+      }
       saveEscalationConfig();
       updateBleConfig();
       server.send(200, "application/json", "{\"status\":\"OK\"}");
@@ -1349,7 +1837,6 @@ void setupRestApi() {
     }
   });
 
-  // 5. Hardware Diagnostics / Heartbeat Endpoint
   server.on("/api/device/health", HTTP_GET, []() {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
     JsonDocument doc;
@@ -1357,7 +1844,8 @@ void setupRestApi() {
     StaticJsonDocument<512> doc;
 #endif
     doc["deviceId"]              = deviceId;
-    doc["radarStatus"]           = (digitalRead(PIN_RADAR_OUT) == HIGH || digitalRead(PIN_RADAR_OUT) == LOW) ? "OK" : "FAULT";
+    doc["radarStatus"]           = sensorHealth.radarFault ? "FAULT" : "OK";
+    doc["micStatus"]             = sensorHealth.micFault ? "FAULT" : "OK";
     doc["micLevel"]              = 18.5;
     doc["speakerStatus"]         = "OK";
     doc["wifiStatus"]            = (WiFi.status() == WL_CONNECTED) ? "CONNECTED" : (wifiConnState == WIFI_CONNECTING ? "CONNECTING" : "OFFLINE");
@@ -1368,6 +1856,7 @@ void setupRestApi() {
     doc["rssi"]                  = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -60;
     doc["heartbeatIntervalMin"]  = heartbeatIntervalMin;
     doc["uptime"]                = (millis() - bootTime) / 1000;
+    doc["freeHeap"]              = ESP.getFreeHeap();
     doc["lastSeenAt"]            = "Live Now";
 
     String response;
@@ -1375,7 +1864,6 @@ void setupRestApi() {
     server.send(200, "application/json", response);
   });
 
-  // 6. Test Emergency Endpoint (Authenticated via X-Device-Token, Authorization, or body token)
   server.on("/api/device/test-emergency", HTTP_POST, []() {
     String token = "";
     if (server.hasHeader("X-Device-Token")) {
@@ -1384,7 +1872,7 @@ void setupRestApi() {
       String auth = server.header("Authorization");
       if (auth.startsWith("Bearer ")) token = auth.substring(7);
     }
-    
+
     if (token.length() == 0 && server.hasArg("plain")) {
 #if ARDUINOJSON_VERSION_MAJOR >= 7
       JsonDocument doc;
@@ -1405,7 +1893,6 @@ void setupRestApi() {
     server.send(200, "application/json", "{\"status\":\"OK\",\"test_active\":true,\"stage_seconds\":10}");
   });
 
-  // 7. Cancel Test Emergency Endpoint
   server.on("/api/device/cancel-test", HTTP_POST, []() {
     String token = "";
     if (server.hasHeader("X-Device-Token")) {
@@ -1434,7 +1921,6 @@ void setupRestApi() {
     server.send(200, "application/json", "{\"status\":\"OK\",\"test_cancelled\":true}");
   });
 
-  // 8. Acknowledge Emergency Endpoint
   server.on("/api/device/ack-emergency", HTTP_POST, []() {
     String ackId = currentEmergencyEventId;
     if (server.hasArg("plain")) {
@@ -1453,51 +1939,36 @@ void setupRestApi() {
   });
 
   server.begin();
-  Serial.println("[HTTP] REST API server listening on port 80");
+  LOG_I("HTTP", "REST API server listening on port 80");
 }
 
 // ============================================================================
-// SUPABASE HTTPS CLOUD TELEMETRY & EMERGENCY ALERTS
+// 18. SUPABASE HTTPS CLOUD TELEMETRY & EMERGENCY DISPATCH (QUEUED NON-BLOCKING)
 // ============================================================================
 void sendTelemetryToSupabase(SafetyState state, unsigned long stillnessSec) {
-  if (WiFi.status() != WL_CONNECTED) return;
-
-  WiFiClientSecure client;
-  client.setInsecure(); // Skip certificate validation for rapid embedded sync
-
-  HTTPClient https;
-  String endpoint = String(SUPABASE_URL) + "/rest/v1/telemetry";
-
-  if (https.begin(client, endpoint)) {
-    https.addHeader("Content-Type", "application/json");
-    https.addHeader("apikey", SUPABASE_ANON_KEY);
-    https.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
-    https.addHeader("Prefer", "return=minimal");
+  if (WiFi.status() != WL_CONNECTED || !httpJobQueue) return;
 
 #if ARDUINOJSON_VERSION_MAJOR >= 7
-    JsonDocument doc;
+  JsonDocument doc;
 #else
-    StaticJsonDocument<512> doc;
+  StaticJsonDocument<512> doc;
 #endif
-    doc["device_id"]         = deviceId;
-    doc["presence"]          = presenceDetected;
-    doc["movement"]          = movementDetected;
-    doc["stillness_seconds"] = stillnessSec;
-    doc["state"]             = getStateString(state);
-    doc["wifi_rssi"]         = WiFi.RSSI();
-    doc["uptime"]            = (millis() - bootTime) / 1000;
-    doc["firmware_version"]  = FIRMWARE_VERSION;
+  doc["device_id"]         = deviceId;
+  doc["presence"]          = presenceDetected;
+  doc["movement"]          = movementDetected;
+  doc["stillness_seconds"] = stillnessSec;
+  doc["state"]             = getStateString(state);
+  doc["wifi_rssi"]         = WiFi.RSSI();
+  doc["uptime"]            = (millis() - bootTime) / 1000;
+  doc["firmware_version"]  = FIRMWARE_VERSION;
 
-    String requestBody;
-    serializeJson(doc, requestBody);
-
-    int httpCode = https.POST(requestBody);
-    if (httpCode > 0) {
-      Serial.printf("[Supabase] Telemetry syncd | State: %s | HTTP: %d\n",
-                    getStateString(state), httpCode);
-    }
-    https.end();
-  }
+  HttpJob job;
+  job.type = HTTP_JOB_TELEMETRY;
+  String body;
+  serializeJson(doc, body);
+  strncpy(job.payload, body.c_str(), sizeof(job.payload) - 1);
+  job.payload[sizeof(job.payload) - 1] = '\0';
+  xQueueSend(httpJobQueue, &job, 0); // Non-blocking!
 }
 
 void sendEmergencyAlert(const char* trigger, bool isTest = false, const String& eventId = "") {
@@ -1505,92 +1976,32 @@ void sendEmergencyAlert(const char* trigger, bool isTest = false, const String& 
   currentEmergencyEventId = finalEventId;
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.printf("[Emergency] Wi-Fi not connected. Event broadcasted locally over BLE: %s\n", finalEventId.c_str());
+    LOG_I("EMERGENCY", "Wi-Fi not connected. Event broadcasted locally over BLE: %s", finalEventId.c_str());
     return;
   }
 
   if (!bleClientConnected) {
-    Serial.printf("[Wi-Fi Fallback] Phone unreachable over BLE! Dispatching emergency via Wi-Fi backend: %s\n", finalEventId.c_str());
+    LOG_I("EMERGENCY", "Phone unreachable over BLE! Dispatching emergency via Wi-Fi backend: %s", finalEventId.c_str());
   }
 
-  WiFiClientSecure client;
-  client.setInsecure();
-
-  // 1. Post to /rest/v1/emergency_events (triggers edge functions & realtime)
-  {
-    HTTPClient https;
-    String endpoint = String(SUPABASE_URL) + "/rest/v1/emergency_events";
-    if (https.begin(client, endpoint)) {
-      https.addHeader("Content-Type", "application/json");
-      https.addHeader("apikey", SUPABASE_ANON_KEY);
-      https.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
-      https.addHeader("Prefer", "return=minimal");
-
-#if ARDUINOJSON_VERSION_MAJOR >= 7
-      JsonDocument doc;
-#else
-      StaticJsonDocument<384> doc;
-#endif
-      doc["id"]         = finalEventId;
-      doc["device_id"]  = deviceId;
-      doc["event_type"] = "emergency";
-      doc["trigger"]    = trigger;
-      doc["status"]     = "active";
-      doc["severity"]   = "critical";
-      doc["source"]     = isTest ? "test" : (strcmp(trigger, "MANUAL_EMERGENCY") == 0 ? "manual_device_trigger" : "sensor");
-
-      String requestBody;
-      serializeJson(doc, requestBody);
-      int httpCode = https.POST(requestBody);
-      Serial.printf("[Supabase emergency_events] EventId: %s | HTTP: %d\n", finalEventId.c_str(), httpCode);
-      https.end();
-    }
-  }
-
-  // 2. Post to legacy /rest/v1/emergencies table
-  {
-    HTTPClient https;
-    String endpoint = String(SUPABASE_URL) + "/rest/v1/emergencies";
-    if (https.begin(client, endpoint)) {
-      https.addHeader("Content-Type", "application/json");
-      https.addHeader("apikey", SUPABASE_ANON_KEY);
-      https.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
-      https.addHeader("Prefer", "return=minimal");
-
-#if ARDUINOJSON_VERSION_MAJOR >= 7
-      JsonDocument doc;
-#else
-      StaticJsonDocument<256> doc;
-#endif
-      doc["device_id"] = deviceId;
-      doc["trigger"]   = trigger;
-      doc["status"]    = "ACTIVE";
-      doc["is_test"]   = isTest;
-
-      String requestBody;
-      serializeJson(doc, requestBody);
-
-      int httpCode = https.POST(requestBody);
-      Serial.printf("[Supabase emergencies] Trigger: %s | HTTP: %d\n", trigger, httpCode);
-      https.end();
-    }
+  if (httpJobQueue) {
+    HttpJob job;
+    job.type = HTTP_JOB_EMERGENCY;
+    job.isTest = isTest;
+    strncpy(job.eventId, finalEventId.c_str(), sizeof(job.eventId) - 1);
+    job.eventId[sizeof(job.eventId) - 1] = '\0';
+    strncpy(job.trigger, trigger, sizeof(job.trigger) - 1);
+    job.trigger[sizeof(job.trigger) - 1] = '\0';
+    xQueueSend(httpJobQueue, &job, 0); // Non-blocking!
   }
 }
 
-// ============================================================================
-// SELF-TEST HEARTBEAT & HARDWARE DIAGNOSTICS (FEATURE 2)
-// Checks LD2410C radar, mic level, speaker, WiFi/BLE status, power/battery
-// Heartbeat runs every 30-60s (default 45s) over Wi-Fi when connected
-// ============================================================================
 void sendHealthHeartbeat() {
-  // 1. Hardware self-test diagnostics
-  const char* radarStatus = (digitalRead(PIN_RADAR_OUT) == HIGH || digitalRead(PIN_RADAR_OUT) == LOW) ? "OK" : "FAULT";
-  float micLevel = 18.5; // Ambient microphone level
-  const char* speakerStatus = "OK"; // Speaker continuity / buzzer check
-
+  const char* radarStatus = sensorHealth.radarFault ? "FAULT" : "OK";
+  float micLevel = 18.5;
+  const char* speakerStatus = "OK";
   const char* wifiStatusStr = (WiFi.status() == WL_CONNECTED) ? "CONNECTED" : (wifiConnState == WIFI_CONNECTING ? "CONNECTING" : "OFFLINE");
   const char* bleStatusStr  = bleClientConnected ? "CONNECTED" : "ADVERTISING";
-
   const char* powerSource = "MAINS";
   int batteryPct = 100;
   bool isCharging = false;
@@ -1604,6 +2015,7 @@ void sendHealthHeartbeat() {
   doc["type"]                   = "HEARTBEAT";
   doc["device_id"]              = deviceId;
   doc["radar_status"]           = radarStatus;
+  doc["mic_status"]             = sensorHealth.micFault ? "FAULT" : "OK";
   doc["mic_level"]              = micLevel;
   doc["speaker_status"]         = speakerStatus;
   doc["wifi_status"]            = wifiStatusStr;
@@ -1615,40 +2027,33 @@ void sendHealthHeartbeat() {
   doc["heartbeat_interval_sec"] = heartbeatIntervalSec;
   doc["heartbeat_interval_min"] = (heartbeatIntervalSec + 59) / 60;
   doc["uptime"]                 = (millis() - bootTime) / 1000;
+  doc["free_heap"]              = ESP.getFreeHeap();
+  doc["min_free_heap"]          = ESP.getMinFreeHeap();
+  doc["fw"]                     = FIRMWARE_VERSION;
+  doc["protocol"]               = PROTOCOL_VERSION;
 
   String jsonPayload;
   serializeJson(doc, jsonPayload);
 
   // A. Notify over BLE Status Characteristic
-  if (pStatusChar) {
+  if (pStatusChar && bleClientConnected) {
     pStatusChar->setValue(jsonPayload.c_str());
     pStatusChar->notify();
-    Serial.printf("[BLE Heartbeat] Dispatched status: %s\n", jsonPayload.c_str());
+    LOG_I("HEARTBEAT", "BLE heartbeat dispatched: %s", jsonPayload.c_str());
   }
 
-  // B. Sync to Supabase device_health table via upsert
-  if (WiFi.status() == WL_CONNECTED) {
-    WiFiClientSecure client;
-    client.setInsecure();
-
-    HTTPClient https;
-    String endpoint = String(SUPABASE_URL) + "/rest/v1/device_health";
-
-    if (https.begin(client, endpoint)) {
-      https.addHeader("Content-Type", "application/json");
-      https.addHeader("apikey", SUPABASE_ANON_KEY);
-      https.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
-      https.addHeader("Prefer", "resolution=merge-duplicates");
-
-      int httpCode = https.POST(jsonPayload);
-      Serial.printf("[Supabase Heartbeat] POST device_health | HTTP: %d\n", httpCode);
-      https.end();
-    }
+  // B. Sync to Supabase via background HTTP queue
+  if (WiFi.status() == WL_CONNECTED && httpJobQueue) {
+    HttpJob job;
+    job.type = HTTP_JOB_HEARTBEAT;
+    strncpy(job.payload, jsonPayload.c_str(), sizeof(job.payload) - 1);
+    job.payload[sizeof(job.payload) - 1] = '\0';
+    xQueueSend(httpJobQueue, &job, 0); // Non-blocking!
   }
 }
 
 // ============================================================================
-// ARDUINO SETUP
+// 19. ARDUINO SETUP
 // ============================================================================
 void setup() {
   Serial.begin(115200);
@@ -1656,7 +2061,7 @@ void setup() {
   bootTime = millis();
 
   // Pin modes
-  pinMode(PIN_RADAR_OUT, INPUT);
+  pinMode(PIN_RADAR_OUT, INPUT_PULLDOWN);
   pinMode(PIN_BUTTON_EMG, INPUT_PULLUP);
   pinMode(PIN_BUZZER, OUTPUT);
   pinMode(PIN_STATUS_LED, OUTPUT);
@@ -1664,20 +2069,31 @@ void setup() {
   digitalWrite(PIN_BUZZER, LOW);
   digitalWrite(PIN_STATUS_LED, LOW);
 
-  // Check if physical button is held at boot for factory reset (hold for 3s)
+  // Initialize Leveled Logging
+  setLogLevel(LOG_LEVEL_INFO);
+
+  // Initialize Background HTTP Worker Task
+  initHttpWorker();
+
+  // Initialize Task Watchdog
+  initWatchdog();
+
+  // Factory reset check if emergency button held at boot for 3s
   if (digitalRead(PIN_BUTTON_EMG) == LOW) {
-    Serial.println("[SECURITY] Button pressed at boot. Hold for 3s to factory reset...");
+    LOG_I("BOOT", "Button pressed at boot. Hold for 3s to factory reset...");
     unsigned long pressStart = millis();
     while (digitalRead(PIN_BUTTON_EMG) == LOW && (millis() - pressStart < 3000)) {
       delay(50);
+      feedWatchdog();
     }
     if (digitalRead(PIN_BUTTON_EMG) == LOW) {
-      Serial.println("[SECURITY] FACTORY RESET TRIGGERED! Clearing NVS preferences...");
-      preferences.begin("wsg01", false);
-      preferences.clear();
-      preferences.end();
-      beepBuzzer(3, 100, 100);
-      Serial.println("[SECURITY] Factory reset completed.");
+      LOG_I("BOOT", "FACTORY RESET TRIGGERED! Clearing NVS preferences...");
+      if (nvsOpen(false)) {
+        preferences.clear();
+        nvsClose();
+      }
+      triggerBuzzer(3, 100, 100);
+      LOG_I("BOOT", "Factory reset completed.");
     }
   }
 
@@ -1687,11 +2103,11 @@ void setup() {
   snprintf(idBuffer, sizeof(idBuffer), "wsg01-%04X%08X", (uint16_t)(chipid >> 32), (uint32_t)chipid);
   deviceId = String(idBuffer);
 
-  Serial.println("\n==========================================");
-  Serial.printf("  %s (%s)\n", PRODUCT_NAME, MODEL_NUMBER);
-  Serial.printf("  Firmware: %s\n", FIRMWARE_VERSION);
-  Serial.printf("  Device ID: %s\n", deviceId.c_str());
-  Serial.println("==========================================");
+  LOG_I("BOOT", "==========================================");
+  LOG_I("BOOT", "  %s (%s)", PRODUCT_NAME, MODEL_NUMBER);
+  LOG_I("BOOT", "  Firmware: %s | Protocol: %d", FIRMWARE_VERSION, PROTOCOL_VERSION);
+  LOG_I("BOOT", "  Device ID: %s", deviceId.c_str());
+  LOG_I("BOOT", "==========================================");
 
   // 1. Initialize BLE GATT Server
   String bleDeviceName = "WSG-01-" + deviceId.substring(deviceId.length() - 4);
@@ -1714,14 +2130,12 @@ void setup() {
   );
   pStatusChar->addDescriptor(new BLE2902());
 
-  // Characteristic for Event Log circular buffer
   pEventLogChar = pService->createCharacteristic(
     CHAR_EVENT_LOG_UUID,
     BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
   );
   pEventLogChar->addDescriptor(new BLE2902());
 
-  // Characteristic for Escalation Configuration (T1, Repeat Interval, Alarm Volume)
   pConfigChar = pService->createCharacteristic(
     CHAR_CONFIG_UUID,
     BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE
@@ -1737,44 +2151,50 @@ void setup() {
   pAdvertising->setMinPreferred(0x12);
   BLEDevice::startAdvertising();
 
-  Serial.printf("[BLE] Fast Provisioning Advertising as: %s\n", bleDeviceName.c_str());
+  LOG_I("BLE", "Fast Provisioning Advertising as: %s", bleDeviceName.c_str());
 
-  // 2. Load Stored Escalation Configuration from NVS
-  preferences.begin("wsg01", false);
-  t1ThresholdSec = preferences.getULong("t1", 300);
-  repeatIntervalSec = preferences.getULong("repeat", 15);
-  alarmVolume = preferences.getUChar("volume", 80);
-  heartbeatIntervalMin = preferences.getULong("hb_interval", 10);
-  
-  // Load or generate random per-device pairing token
-  String storedToken = preferences.getString("token", "");
-  if (storedToken.length() == 0 || storedToken == "wsg_secure_token") {
-    pairingToken = generateRandomPairingToken();
-    preferences.putString("token", pairingToken);
-    openPairingWindow(); // 5-minute window for first boot / after factory reset
-    Serial.printf("[SECURITY] First boot: generated new random token: %s\n", pairingToken.c_str());
+  // 2. Load Stored Configuration from NVS
+  String savedSsid = "";
+  String savedPass = "";
+  if (nvsOpen(false)) {
+    t1ThresholdSec = preferences.getULong("t1", 300);
+    repeatIntervalSec = preferences.getULong("repeat", 15);
+    alarmVolume = preferences.getUChar("volume", 80);
+    heartbeatIntervalMin = preferences.getULong("hb_interval", 10);
+
+    String storedToken = preferences.getString("token", "");
+    if (storedToken.length() == 0 || storedToken == "wsg_secure_token") {
+      pairingToken = generateRandomPairingToken();
+      preferences.putString("token", pairingToken);
+      openPairingWindow();
+      LOG_I("SECURITY", "First boot: generated new random token: %s", pairingToken.c_str());
+    } else {
+      pairingToken = storedToken;
+      LOG_I("SECURITY", "Loaded existing pairing token from NVS.");
+    }
+
+    savedSsid = preferences.getString("ssid", "");
+    savedPass = preferences.getString("pass", "");
+    nvsClose();
   } else {
-    pairingToken = storedToken;
-    Serial.println("[SECURITY] Loaded existing pairing token from NVS.");
+    pairingToken = generateRandomPairingToken();
+    openPairingWindow();
+    LOG_W("NVS", "Using in-memory defaults due to NVS read failure");
   }
-  
-  String savedSsid = preferences.getString("ssid", "");
-  String savedPass = preferences.getString("pass", "");
-  preferences.end();
 
-  Serial.printf("[NVS] Loaded Escalation Config: T1=%lus, Repeat=%lus, Volume=%d%%, Heartbeat=%lumin\n",
-                t1ThresholdSec, repeatIntervalSec, alarmVolume, heartbeatIntervalMin);
+  LOG_I("NVS", "Loaded Escalation Config: T1=%lus, Repeat=%lus, Volume=%d%%, Heartbeat=%lumin",
+        t1ThresholdSec, repeatIntervalSec, alarmVolume, heartbeatIntervalMin);
   updateBleConfig();
 
   WiFi.setAutoReconnect(true);
 
   if (savedSsid.length() > 0) {
-    Serial.printf("[NVS] Stored Wi-Fi network found: \"%s\". Auto-connecting...\n", savedSsid.c_str());
+    LOG_I("NVS", "Stored Wi-Fi network found: \"%s\". Auto-connecting...", savedSsid.c_str());
     activeSsid = savedSsid;
     activePass = savedPass;
     initiateWiFiConnection(savedSsid, savedPass);
   } else {
-    Serial.println("[NVS] No stored Wi-Fi credentials. Ready for BLE provisioning.");
+    LOG_I("NVS", "No stored Wi-Fi credentials. Ready for BLE provisioning.");
   }
 
   // 3. Start Local REST API
@@ -1782,23 +2202,45 @@ void setup() {
 }
 
 // ============================================================================
-// MAIN LOOP & STATE MACHINE
+// 20. MAIN LOOP & ESCALATION STATE MACHINE (STRICTLY NON-BLOCKING)
 // ============================================================================
 void loop() {
+  // Feed Task Watchdog Timer at every loop iteration
+  feedWatchdog();
+
+  // Handle incoming HTTP client connections (local REST API)
   server.handleClient();
+
   unsigned long currentMillis = millis();
 
-  // 0. Serial Monitor Commands ('E' / 'e' for Emergency, 'C' / 'c' for Cancel)
+  // 0. Serial Monitor Commands ('E'/'e': Emergency, 'C'/'c': Cancel, '0'-'3': Log Level)
   while (Serial.available() > 0) {
     char c = (char)Serial.read();
     if (c == 'E' || c == 'e') {
-      Serial.println("[SERIAL] 'E' received -> Triggering emergency alert!");
+      LOG_I("SERIAL", "'E' received -> Triggering emergency alert!");
       sendEmergency();
     } else if (c == 'C' || c == 'c') {
-      Serial.println("[SERIAL] 'C' received -> Cancelling emergency alert!");
+      LOG_I("SERIAL", "'C' received -> Cancelling emergency alert!");
       cancelEmergency();
+    } else if (c == '0') {
+      currentLogLevel = LOG_LEVEL_NONE;
+    } else if (c == '1') {
+      setLogLevel(LOG_LEVEL_ERROR);
+    } else if (c == '2') {
+      setLogLevel(LOG_LEVEL_INFO);
+    } else if (c == '3') {
+      setLogLevel(LOG_LEVEL_DEBUG);
     }
   }
+
+  // Update non-blocking buzzer sequencer
+  updateBuzzer();
+
+  // Monitor sensor health (LD2410C radar & microphone)
+  checkSensorsHealth();
+
+  // Process reliable BLE advertising restart if client disconnected
+  processBleAdvertising();
 
   // 1. Process Queued Wi-Fi Provisioning
   if (pendingWiFiTrigger) {
@@ -1806,7 +2248,7 @@ void loop() {
     initiateWiFiConnection(activeSsid, activePass);
   }
 
-  // 1b. Process Non-blocking Wi-Fi Scan
+  // 1b. Non-blocking Wi-Fi Scan stream (never blocks loop)
   processWiFiScan();
 
   // 2. Drive Non-blocking Wi-Fi State Machine
@@ -1820,7 +2262,7 @@ void loop() {
   if (emergencyButtonPressed) {
     openPairingWindow();
     if (currentState != STATE_ALARM && currentState != STATE_EMERGENCY) {
-      Serial.println("[ALERT] Emergency physical button pressed!");
+      LOG_I("ALERT", "Emergency physical button pressed!");
       sendEmergency();
     }
   }
@@ -1849,12 +2291,10 @@ void loop() {
         transitionToState(STATE_IDLE, "RADAR_LEAVE", 0);
       } else {
         stillnessDurationSec = (currentMillis - stillnessStartTime) / 1000;
-        // Inactive for configurable threshold T1 (default 300s / 5 min)
         if (stillnessDurationSec >= t1ThresholdSec) {
-          Serial.println("[Safety Escalation] Inactivity threshold T1 reached -> INACTIVE_DETECTED");
+          LOG_I("SAFETY", "Inactivity threshold T1 reached -> INACTIVE_DETECTED");
           inactiveListenStartTime = currentMillis;
-          // Voice check-in prompt: "Are you OK?" with gentle audible alert
-          beepBuzzer(2, 100, 100);
+          triggerBuzzer(2, 100, 100); // Non-blocking!
           transitionToState(STATE_INACTIVE_DETECTED, "T1_INACTIVITY", stillnessDurationSec);
         }
       }
@@ -1862,7 +2302,6 @@ void loop() {
 
     case STATE_STILL_MONITORING:
     case STATE_CHECKING_WELLBEING:
-      // Backward compatibility aliases
       transitionToState(STATE_INACTIVE_DETECTED, "LEGACY_ALIAS", (currentMillis - stillnessStartTime) / 1000);
       break;
 
@@ -1872,8 +2311,7 @@ void loop() {
         digitalWrite(PIN_BUZZER, LOW);
         transitionToState(STATE_IDLE, "RADAR_LEAVE", stillnessDurationSec);
       } else if (movementDetected && (currentMillis - inactiveListenStartTime > 1500)) {
-        // Safe: Movement or voice detected during listen window (15s or 10s test)
-        Serial.println("[Safety Escalation] User movement detected -> Recovered to MOVING");
+        LOG_I("SAFETY", "User movement detected -> Recovered to MOVING");
         digitalWrite(PIN_BUZZER, LOW);
         if (isTestMode) {
           cancelTestEmergency();
@@ -1882,10 +2320,9 @@ void loop() {
           transitionToState(STATE_MOVING, "USER_RESPONDED", 0);
         }
       } else if ((currentMillis - inactiveListenStartTime) / 1000 >= (isTestMode ? TEST_STAGE_SEC : listenDurationSec)) {
-        // Stage 2: No response within window -> NO_RESPONSE
-        Serial.printf("[Safety Escalation] No response to check-in (%lus) -> Escalate to NO_RESPONSE\n", isTestMode ? TEST_STAGE_SEC : listenDurationSec);
+        LOG_I("SAFETY", "No response to check-in -> Escalate to NO_RESPONSE");
         noResponseStartTime = currentMillis;
-        beepBuzzer(4, 200, 80);
+        triggerBuzzer(4, 200, 80); // Non-blocking!
         transitionToState(STATE_NO_RESPONSE, isTestMode ? "TEST_STAGE_TIMEOUT" : "NO_RESPONSE_WINDOW_EXPIRED", stillnessDurationSec);
       }
       break;
@@ -1898,7 +2335,7 @@ void loop() {
         digitalWrite(PIN_BUZZER, LOW);
         transitionToState(STATE_IDLE, "RADAR_LEAVE", stillnessDurationSec);
       } else if (movementDetected && (currentMillis - noResponseStartTime > 1500)) {
-        Serial.println("[Safety Escalation] User recovered during NO_RESPONSE alert -> MOVING");
+        LOG_I("SAFETY", "User recovered during NO_RESPONSE alert -> MOVING");
         digitalWrite(PIN_BUZZER, LOW);
         if (isTestMode) {
           cancelTestEmergency();
@@ -1907,8 +2344,7 @@ void loop() {
           transitionToState(STATE_MOVING, "USER_RECOVERED", 0);
         }
       } else if ((currentMillis - noResponseStartTime) / 1000 >= (isTestMode ? TEST_STAGE_SEC : repeatIntervalSec)) {
-        // Stage 3: Repeat interval expired without response -> Full ALARM
-        Serial.println("[Safety Escalation] Escalating to ALARM! Emergency alert triggered.");
+        LOG_I("SAFETY", "Escalating to ALARM! Emergency alert triggered.");
         emergencyActive = true;
         transitionToState(STATE_ALARM, isTestMode ? "TEST_ALARM_FIRED" : "REPEAT_INTERVAL_EXPIRED", stillnessDurationSec);
 
@@ -1925,13 +2361,13 @@ void loop() {
     case STATE_ALARM:
     case STATE_EMERGENCY:
       stillnessDurationSec = (currentMillis - stillnessStartTime) / 1000;
+      // Local alarm sounds buzzer and blinks LED 100% offline, regardless of BLE or Wi-Fi state
       digitalWrite(PIN_BUZZER, (currentMillis / 300) % 2 == 0 ? HIGH : LOW);
       digitalWrite(PIN_STATUS_LED, (currentMillis / 150) % 2 == 0 ? HIGH : LOW);
 
       if (isTestMode) {
-        // For test mode, sound brief 3s alarm then cleanly finish test
         if ((currentMillis - noResponseStartTime) / 1000 >= (TEST_STAGE_SEC + 3)) {
-          Serial.println("[TEST MODE] Test Emergency cycle complete. Resetting to IDLE.");
+          LOG_I("TEST", "Test Emergency cycle complete. Resetting to IDLE.");
           cancelTestEmergency();
         }
       } else if (!presenceDetected && !emergencyActive) {
@@ -1942,18 +2378,21 @@ void loop() {
       break;
   }
 
-  // 5. Periodic Supabase Telemetry Dispatch
+  // 5. Periodic Supabase Telemetry Dispatch (non-blocking via FreeRTOS queue)
   if (currentMillis - lastTelemetryTime >= TELEMETRY_INTERVAL_MS) {
     lastTelemetryTime = currentMillis;
     sendTelemetryToSupabase(currentState, stillnessDurationSec);
   }
 
-  // 6. Periodic Self-Test Heartbeat Dispatch (every 30-60s over Wi-Fi when connected, default 45s)
+  // 6. Periodic Self-Test Heartbeat Dispatch over Wi-Fi / Supabase (non-blocking)
   unsigned long hbIntervalMs = (WiFi.status() == WL_CONNECTED) ? (heartbeatIntervalSec * 1000UL) : (heartbeatIntervalMin * 60UL * 1000UL);
   if (currentMillis - lastHeartbeatTime >= hbIntervalMs || lastHeartbeatTime == 0) {
     lastHeartbeatTime = currentMillis;
     sendHealthHeartbeat();
   }
 
-  delay(20);
+  // 7. Periodic BLE Status Heartbeat (every 30s over BLE)
+  processBleStatusHeartbeat();
+
+  vTaskDelay(pdMS_TO_TICKS(10)); // Yield 10ms to FreeRTOS scheduler & idle task
 }

@@ -9,7 +9,11 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSBluetoothAlwaysUsageDescription": "Washroom Safety Gadget uses Bluetooth to discover and connect to your WSG-01 device during setup.",
+        "UIBackgroundModes": [
+          "bluetooth-central"
+        ],
+        "NSBluetoothAlwaysUsageDescription": "Washroom Safety Gadget uses Bluetooth to discover, connect, and maintain life-safety monitoring with your WSG-01 device in the background.",
+        "NSBluetoothPeripheralUsageDescription": "Washroom Safety Gadget uses Bluetooth to communicate with your WSG-01 safety device.",
         "NSLocationWhenInUseUsageDescription": "Location access is used only to enable Bluetooth device scanning, as required by iOS. Your location is never stored or transmitted."
       }
     },
@@ -35,7 +39,11 @@
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.USE_FULL_SCREEN_INTENT",
         "android.permission.VIBRATE",
-        "android.permission.WAKE_LOCK"
+        "android.permission.WAKE_LOCK",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
       ],
       "package": "com.sanjuamazing.app"
     },
@@ -50,12 +58,11 @@
       [
         "react-native-ble-plx",
         {
-          "isBackgroundEnabled": false,
+          "isBackgroundEnabled": true,
           "modes": [
-            "peripheral",
             "central"
           ],
-          "bluetoothAlwaysPermission": "Allow Washroom Safety Gadget to connect to WSG-01 via Bluetooth."
+          "bluetoothAlwaysPermission": "Allow Washroom Safety Gadget to connect to WSG-01 via Bluetooth in the background."
         }
       ],
       [
