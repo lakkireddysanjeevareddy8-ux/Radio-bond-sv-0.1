@@ -15,6 +15,8 @@ import { ContactsScreen } from '../screens/ContactsScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
 import { DemoScreen } from '../screens/DemoScreen';
 import { DebugLogsScreen } from '../screens/DebugLogsScreen';
+import { TroubleshootingScreen } from '../screens/TroubleshootingScreen';
+import { AboutDeviceScreen } from '../screens/AboutDeviceScreen';
 import { SafetySetupScreen } from '../screens/SafetySetupScreen';
 import { colors } from '../utils/theme';
 
@@ -173,6 +175,24 @@ export const AppNavigator = () => {
                 headerShown: false,
                 title: 'Debug Logs',
                 headerTitle: 'Debug Logs',
+              }}
+            />
+            <Stack.Screen
+              name="Troubleshooting"
+              component={TroubleshootingScreen}
+              options={{
+                headerShown: true,
+                title: 'Troubleshooting Guide',
+                headerTitle: 'Troubleshooting Guide',
+              }}
+            />
+            <Stack.Screen
+              name="AboutDevice"
+              component={AboutDeviceScreen}
+              options={{
+                headerShown: true,
+                title: 'About Device',
+                headerTitle: 'About Device',
               }}
             />
           </>

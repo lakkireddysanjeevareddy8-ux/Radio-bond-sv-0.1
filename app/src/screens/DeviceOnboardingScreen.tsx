@@ -22,6 +22,9 @@ import { useDeviceStore } from '../store/useDeviceStore';
 import { useAppStore } from '../store/useAppStore';
 import { useConnectionStore } from '../store/useConnectionStore';
 import { ConnectionManager } from '../services/ConnectionManager';
+import { OnboardingStepIndicator, OnboardingPhase } from '../components/OnboardingStepIndicator';
+import { FriendlyErrorCard, FriendlyErrorKey } from '../components/FriendlyErrorCard';
+import { strings } from '../constants/strings';
 import {
   ArrowLeft,
   ArrowRight,
@@ -103,6 +106,51 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
   const [verifiedModel, setVerifiedModel] = useState<string>('');
   const [customRoomName, setCustomRoomName] = useState<string>('Master Bathroom');
   const [errorMessage, setErrorMessage] = useState<string>('');
+
+  const getCurrentPhase = (): OnboardingPhase => {
+    switch (currentStep) {
+      case 'PRODUCT_SELECTION':
+      case 'PRODUCT_DETAILS':
+        return 'bluetooth';
+      case 'BLUETOOTH_DISCOVERY':
+      case 'BLE_CONNECTING':
+        return 'find_device';
+      case 'WIFI_SCANNING':
+      case 'WIFI_SETUP':
+      case 'PROVISIONING':
+        return 'wifi';
+      case 'DEVICE_VERIFICATION':
+        return 'verify';
+      case 'SETUP_COMPLETE':
+        return 'done';
+      case 'ERROR_STATE':
+      default:
+        if (selectedSsid) return 'wifi';
+        if (discoveredDevice) return 'find_device';
+        return 'bluetooth';
+    }
+  };
+
+  const getFriendlyErrorKey = (msg: string): FriendlyErrorKey => {
+    const m = (msg || '').toLowerCase();
+    if (m.includes('password') || m.includes('auth_failed') || m.includes('auth failed') || m.includes('key'))
+      return 'wrongPassword';
+    if (m.includes('5 ghz') || m.includes('5ghz') || m.includes('5g'))
+      return 'fiveGhzNetwork';
+    if (m.includes('not found') || m.includes('no device') || m.includes('no_ssid'))
+      return 'deviceNotFound';
+    if (m.includes('bluetooth') && (m.includes('off') || m.includes('disabled')))
+      return 'bluetoothOff';
+    if (m.includes('permission'))
+      return 'permissionDenied';
+    if (m.includes('range') || m.includes('disconnected') || m.includes('lost'))
+      return 'deviceOutOfRange';
+    if (m.includes('wpa3') || m.includes('hotspot'))
+      return 'hotspotWpa3';
+    if (m.includes('timeout'))
+      return 'wifiTimeout';
+    return 'generalError';
+  };
 
   // Radar animation
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -567,33 +615,8 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
         </TouchableOpacity>
       </View>
 
-      {/* Progress Dots */}
-      <View style={styles.stepProgressRow}>
-        <View
-          style={[
-            styles.stepDot,
-            (currentStep === 'PRODUCT_SELECTION' || currentStep === 'PRODUCT_DETAILS') && styles.stepDotActive,
-          ]}
-        />
-        <View style={styles.stepConnector} />
-        <View
-          style={[
-            styles.stepDot,
-            (currentStep === 'BLUETOOTH_DISCOVERY' || currentStep === 'BLE_CONNECTING' || currentStep === 'WIFI_SCANNING') &&
-              styles.stepDotActive,
-          ]}
-        />
-        <View style={styles.stepConnector} />
-        <View
-          style={[
-            styles.stepDot,
-            (currentStep === 'WIFI_SETUP' || currentStep === 'PROVISIONING' || currentStep === 'DEVICE_VERIFICATION') &&
-              styles.stepDotActive,
-          ]}
-        />
-        <View style={styles.stepConnector} />
-        <View style={[styles.stepDot, currentStep === 'SETUP_COMPLETE' && styles.stepDotActive]} />
-      </View>
+      {/* 5-Step Clear Visual Progress Indicator */}
+      <OnboardingStepIndicator currentPhase={getCurrentPhase()} />
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {/* ========================================================================= */}
@@ -1331,39 +1354,25 @@ export const DeviceOnboardingScreen: React.FC<DeviceOnboardingScreenProps> = ({
         {/* ERROR STATE */}
         {/* ========================================================================= */}
         {currentStep === 'ERROR_STATE' && (
-          <View style={styles.centerContainer}>
-            <View style={[styles.iconCircle, { backgroundColor: '#FEE2E2' }]}>
-              <AlertTriangle size={48} color="#DC2626" />
-            </View>
-            <Text style={styles.errorTitle}>Connection Issue</Text>
-            <Text style={styles.errorDesc}>{errorMessage || 'An error occurred during setup.'}</Text>
-
-            <View style={styles.retryBtnRow}>
-              <TouchableOpacity
-                style={[styles.connectPrimaryBtn, { flex: 1, marginRight: 8 }]}
-                onPress={() => {
-                  if (selectedSsid) {
-                    handleProvisionDeviceDirect(selectedSsid, wifiPassword);
-                  } else {
-                    handleStartWifiFlow();
-                  }
-                }}
-              >
-                <RefreshCw size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-                <Text style={styles.connectPrimaryBtnText}>Try Again</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.secondaryActionBtn}
-                onPress={() => {
-                  setPasswordModalVisible(false);
-                  setCurrentStep('WIFI_SCANNING');
-                  startWifiScan();
-                }}
-              >
-                <Text style={styles.secondaryActionBtnText}>Choose Another Network</Text>
-              </TouchableOpacity>
-            </View>
+          <View style={{ paddingHorizontal: spacing.md, paddingVertical: spacing.md }}>
+            <FriendlyErrorCard
+              errorKey={getFriendlyErrorKey(errorMessage)}
+              customDescription={errorMessage || undefined}
+              onAction={() => {
+                if (selectedSsid) {
+                  handleProvisionDeviceDirect(selectedSsid, wifiPassword);
+                } else {
+                  handleStartWifiFlow();
+                }
+              }}
+              actionLabel="Try Again"
+              onSecondaryAction={() => {
+                setPasswordModalVisible(false);
+                setCurrentStep('WIFI_SCANNING');
+                startWifiScan();
+              }}
+              secondaryActionLabel="Choose Another Network"
+            />
           </View>
         )}
       </ScrollView>

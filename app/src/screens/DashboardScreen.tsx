@@ -8,12 +8,16 @@ import {
   Modal,
   Platform,
   ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import { useAppStore } from '../store/useAppStore';
 import { useDeviceStore } from '../store/useDeviceStore';
 import { useConnectionStore } from '../store/useConnectionStore';
 import { DeviceConnectionService } from '../services/deviceConnectionService';
+import { DeviceCommunicationService } from '../services/DeviceCommunicationService';
+import { strings } from '../constants/strings';
 import { colors, typography, spacing, borderRadius, TOUCH_TARGET } from '../utils/theme';
 import { APP_VERSION_STRING } from '../utils/version';
 import { SafetyStatusCard } from '../components/SafetyStatusCard';
@@ -48,11 +52,13 @@ import {
   RefreshCw,
 } from 'lucide-react-native';
 import { ConnectionManager } from '../services/ConnectionManager';
+import { BluetoothService } from '../services/bluetoothService';
 import { PermissionPrimerModal } from '../components/PermissionPrimerModal';
 import { BatteryOptimizationService } from '../services/BatteryOptimizationService';
 
 export const DashboardScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation<any>();
 
   const {
     deviceConfig,
@@ -87,6 +93,25 @@ export const DashboardScreen: React.FC = () => {
   const [showDeviceDropdown, setShowDeviceDropdown] = useState<boolean>(false);
   const [showCaregiversModal, setShowCaregiversModal] = useState<boolean>(false);
   const [showBatteryOptModal, setShowBatteryOptModal] = useState<boolean>(false);
+  const [isPullRefreshing, setIsPullRefreshing] = useState<boolean>(false);
+
+  const handleDashboardRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      if (connStatus === 'connected' || isBleConnected) {
+        const session = ConnectionManager.getActiveSession();
+        if (session) {
+          await BluetoothService.sendCommand(session, { cmd: 'GET_STATUS' });
+        }
+      } else {
+        await ConnectionManager.retry();
+      }
+    } catch {
+      // Ignored
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
 
   // Prompt once to disable battery optimization on Android when a device is connected
   useEffect(() => {
@@ -322,6 +347,15 @@ export const DashboardScreen: React.FC = () => {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isPullRefreshing}
+            onRefresh={handleDashboardRefresh}
+            tintColor={colors.primary}
+            colors={[colors.primary]}
+            accessibilityLabel={strings.common.pullToRefresh}
+          />
+        }
       >
         {/* 2-Way Segmented Control */}
         <View style={styles.segmentedControl}>
@@ -423,26 +457,38 @@ export const DashboardScreen: React.FC = () => {
                   We cannot communicate with the washroom unit right now over the network, but its
                   built-in millimeter-wave radar sensor and local siren remain completely active.
                 </Text>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  loading={isReconnecting || connectionManagerState === 'RECONNECTING'}
-                  title={
-                    isReconnecting || connectionManagerState === 'RECONNECTING'
-                      ? 'Reconnecting...'
-                      : 'Try again'
-                  }
-                  onPress={async () => {
-                    if (activeDevice?.ipAddress) {
-                      await handleManualReconnect();
-                    } else {
-                      try {
-                        await ConnectionManager.retry();
-                      } catch {}
+                <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.xs, alignItems: 'center' }}>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    loading={isReconnecting || connectionManagerState === 'RECONNECTING'}
+                    title={
+                      isReconnecting || connectionManagerState === 'RECONNECTING'
+                        ? 'Reconnecting...'
+                        : 'Try again'
                     }
-                  }}
-                  style={{ alignSelf: 'flex-start', marginTop: spacing.xs }}
-                />
+                    onPress={async () => {
+                      if (activeDevice?.ipAddress) {
+                        await handleManualReconnect();
+                      } else {
+                        try {
+                          await ConnectionManager.retry();
+                        } catch {}
+                      }
+                    }}
+                  />
+                  <TouchableOpacity
+                    style={{ minHeight: 44, justifyContent: 'center', paddingHorizontal: spacing.sm }}
+                    onPress={() => navigation.navigate('Troubleshooting')}
+                    accessible={true}
+                    accessibilityRole="button"
+                    accessibilityLabel="Open troubleshooting guide"
+                  >
+                    <Text style={{ fontSize: 13, fontWeight: '600', color: colors.primaryDark }}>
+                      Troubleshooting Guide →
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </Card>
             )}
 

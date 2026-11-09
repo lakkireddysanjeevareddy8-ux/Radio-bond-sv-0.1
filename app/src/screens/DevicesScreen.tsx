@@ -14,6 +14,7 @@ import {
   Platform,
   Linking,
   Image,
+  RefreshControl,
 } from 'react-native';
 import { colors, typography, spacing, borderRadius } from '../utils/theme';
 import { useAppStore } from '../store/useAppStore';
@@ -140,6 +141,26 @@ export const DevicesScreen: React.FC = () => {
   const [showBluetoothOffScreen, setShowBluetoothOffScreen] = useState(false);
   const [showAddDeviceSearchScreen, setShowAddDeviceSearchScreen] = useState(false);
   const [fakeBtOffDev, setFakeBtOffDev] = useState(BluetoothService.isFakeBluetoothOff());
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handleDevicesRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await useDeviceStore.getState().initDeviceStore();
+      if (connectionManagerState === 'CONNECTED') {
+        const session = ConnectionManager.getActiveSession();
+        if (session) {
+          await BluetoothService.sendCommand(session, { cmd: 'GET_STATUS' });
+        }
+      } else {
+        await ConnectionManager.retry().catch(() => {});
+      }
+    } catch {
+      // Ignored
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     const unsub = BluetoothService.addBluetoothStateListener(() => {
@@ -790,7 +811,18 @@ export const DevicesScreen: React.FC = () => {
   );
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      refreshControl={
+        <RefreshControl
+          refreshing={isPullRefreshing}
+          onRefresh={handleDevicesRefresh}
+          tintColor={colors.primary}
+          colors={[colors.primary]}
+        />
+      }
+    >
       {/* ========================================================================= */}
       {/* SCREENSHOT 3: "My devices" Primary View */}
       {/* ========================================================================= */}

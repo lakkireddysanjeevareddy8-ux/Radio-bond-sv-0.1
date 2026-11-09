@@ -67,6 +67,7 @@ import {
   FlaskConical,
   Wrench,
   Terminal,
+  Radio,
 } from 'lucide-react-native';
 import { QuietHoursService, BypassPermissionStatus } from '../services/QuietHoursService';
 
@@ -1163,11 +1164,35 @@ export const SettingsScreen: React.FC = () => {
         {/* GROUP 4: Developer & About */}
         <Collapsible
           title="Developer & about"
-          subtitle="Hardware/runtime mode, testing, and app version"
+          subtitle="Hardware specs, troubleshooting, diagnostics and app version"
           icon={<IconBadge icon={<Wrench size={18} color={colors.primaryDark} />} tone="primary" size={36} />}
-          defaultOpen={false}
+          defaultOpen={true}
           style={{ marginTop: spacing.sm }}
         >
+          {/* About Safety Device Navigation Row */}
+          <ListRow
+            title="About safety device"
+            subtitle="Connection state, Wi-Fi network, signal RSSI, firmware and uptime"
+            leftIcon={<Radio size={18} color={colors.primaryDark} />}
+            leftBadgeTone="primary"
+            showChevron={true}
+            onPress={() => navigation.navigate('AboutDevice')}
+            accessibilityLabel="Open about safety device specifications"
+            style={{ marginBottom: spacing.md, paddingHorizontal: 0 }}
+          />
+
+          {/* Troubleshooting Guide Navigation Row */}
+          <ListRow
+            title="Troubleshooting & diagnostics"
+            subtitle="Step-by-step solutions for Wi-Fi, Bluetooth, radar and power issues"
+            leftIcon={<Wrench size={18} color={colors.primaryDark} />}
+            leftBadgeTone="primary"
+            showChevron={true}
+            onPress={() => navigation.navigate('Troubleshooting')}
+            accessibilityLabel="Open troubleshooting guide"
+            style={{ marginBottom: spacing.md, paddingHorizontal: 0 }}
+          />
+
           {/* Demo & Testing Navigation Row */}
           <ListRow
             title="Demo & testing"

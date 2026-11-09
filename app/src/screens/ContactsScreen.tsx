@@ -12,6 +12,7 @@ import {
   Switch,
   Platform,
   ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
 import { colors, typography, spacing, borderRadius } from '../utils/theme';
 import {
@@ -90,10 +91,20 @@ export const ContactsScreen: React.FC = () => {
   // Delete Confirmation Modal State
   const [contactToDelete, setContactToDelete] = useState<Contact | null>(null);
   const [trustedToDelete, setTrustedToDelete] = useState<EmergencyContact | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   useEffect(() => {
     loadTrustedContacts();
   }, []);
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      await loadTrustedContacts();
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   const resetTrustedForm = () => {
     setEditingContactId(null);
@@ -246,7 +257,18 @@ export const ContactsScreen: React.FC = () => {
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      refreshControl={
+        <RefreshControl
+          refreshing={isRefreshing}
+          onRefresh={handleRefresh}
+          tintColor={colors.primary}
+          colors={[colors.primary]}
+        />
+      }
+    >
       <View style={styles.pageHeader}>
         <Text style={styles.pageTitle}>Emergency Contacts</Text>
         <Text style={styles.pageSubtitle}>People who will be alerted if you don't respond to a safety check</Text>

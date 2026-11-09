@@ -6,6 +6,7 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
 import {
   colors,
@@ -151,75 +152,76 @@ export const EventsScreen: React.FC = () => {
   const [hideTests, setHideTests] = useState<boolean>(true);
   const [liveEvents, setLiveEvents] = useState<SafetyEvent[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
   const filters: EventCategory[] = ['ALL', 'EMERGENCY', 'WELLBEING', 'PRESENCE', 'MOVEMENT', 'DEVICE'];
 
-  useEffect(() => {
-    let isMounted = true;
-    const fetchLiveHistory = async () => {
-      setIsLoading(true);
-      try {
-        const data = await EmergencyContactService.getEmergencyHistory();
-        if (isMounted && data && data.length > 0) {
-          const mapped: SafetyEvent[] = data.map((ev) => {
-            const date = new Date(ev.detectedAt);
-            const timeStr = !isNaN(date.getTime())
-              ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              : 'Recent';
-            const dateStr = !isNaN(date.getTime())
-              ? date.toLocaleDateString([], { month: 'short', day: 'numeric' })
-              : undefined;
+  const fetchLiveHistory = async () => {
+    try {
+      const data = await EmergencyContactService.getEmergencyHistory();
+      if (data && data.length > 0) {
+        const mapped: SafetyEvent[] = data.map((ev) => {
+          const date = new Date(ev.detectedAt);
+          const timeStr = !isNaN(date.getTime())
+            ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : 'Recent';
+          const dateStr = !isNaN(date.getTime())
+            ? date.toLocaleDateString([], { month: 'short', day: 'numeric' })
+            : undefined;
 
-            const formatIso = (iso?: string) => {
-              if (!iso) return undefined;
-              const d = new Date(iso);
-              return !isNaN(d.getTime()) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : undefined;
-            };
+          const formatIso = (iso?: string) => {
+            if (!iso) return undefined;
+            const d = new Date(iso);
+            return !isNaN(d.getTime()) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : undefined;
+          };
 
-            const triggerName = ev.trigger || ev.source || 'Emergency Trigger';
-            const title = triggerName === 'MANUAL_EMERGENCY'
-              ? 'Manual SOS Button'
-              : triggerName.includes('INACTIVITY') || triggerName.includes('STILL') || triggerName === 'NO_RESPONSE'
-              ? 'Stillness Inactivity Alert'
-              : (ev.eventType || 'Emergency Alert');
+          const triggerName = ev.trigger || ev.source || 'Emergency Trigger';
+          const title = triggerName === 'MANUAL_EMERGENCY'
+            ? 'Manual SOS Button'
+            : triggerName.includes('INACTIVITY') || triggerName.includes('STILL') || triggerName === 'NO_RESPONSE'
+            ? 'Stillness Inactivity Alert'
+            : (ev.eventType || 'Emergency Alert');
 
-            return {
-              id: ev.id,
-              time: timeStr,
-              dateStr,
-              title,
-              detail: `Device: ${ev.deviceId} • Trigger: ${triggerName}`,
-              category: 'EMERGENCY' as EventCategory,
-              severity: (ev.severity === 'HIGH' || ev.severity === 'CRITICAL'
-                ? 'HIGH'
-                : ev.severity === 'MEDIUM'
-                ? 'MEDIUM'
-                : 'LOW') as any,
-              isLive: true,
-              isTest: ev.eventType?.toLowerCase().includes('test') || triggerName.toLowerCase().includes('test') || false,
-              deviceId: ev.deviceId,
-              trigger: triggerName,
-              status: ev.status,
-              acknowledgedAt: formatIso(ev.acknowledgedAt),
-              resolvedAt: formatIso(ev.resolvedAt),
-            };
-          });
-          setLiveEvents(mapped);
-        }
-      } catch (err) {
-        console.warn('[EventsScreen] Failed to fetch live emergency history:', err);
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
+          return {
+            id: ev.id,
+            time: timeStr,
+            dateStr,
+            title,
+            detail: `Device: ${ev.deviceId} • Trigger: ${triggerName}`,
+            category: 'EMERGENCY' as EventCategory,
+            severity: (ev.severity === 'HIGH' || ev.severity === 'CRITICAL'
+              ? 'HIGH'
+              : ev.severity === 'MEDIUM'
+              ? 'MEDIUM'
+              : 'LOW') as any,
+            isLive: true,
+            isTest: ev.eventType?.toLowerCase().includes('test') || triggerName.toLowerCase().includes('test') || false,
+            deviceId: ev.deviceId,
+            trigger: triggerName,
+            status: ev.status,
+            acknowledgedAt: formatIso(ev.acknowledgedAt),
+            resolvedAt: formatIso(ev.resolvedAt),
+          };
+        });
+        setLiveEvents(mapped);
       }
-    };
+    } catch (err) {
+      console.warn('[EventsScreen] Failed to fetch live emergency history:', err);
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+    }
+  };
 
+  useEffect(() => {
+    setIsLoading(true);
     fetchLiveHistory();
-    return () => {
-      isMounted = false;
-    };
   }, []);
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await fetchLiveHistory();
+  };
 
   const isUsingMock = liveEvents.length === 0;
   const currentEvents = isUsingMock ? MOCK_EVENTS : liveEvents;
@@ -331,6 +333,14 @@ export const EventsScreen: React.FC = () => {
         style={styles.list}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={handleRefresh}
+            tintColor={colors.primary}
+            colors={[colors.primary]}
+          />
+        }
       >
         {isLoading ? (
           <View style={styles.loadingContainer}>
