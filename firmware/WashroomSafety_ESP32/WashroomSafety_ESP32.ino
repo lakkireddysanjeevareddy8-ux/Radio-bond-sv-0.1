@@ -193,9 +193,19 @@ void saveEscalationConfig() {
                 t1ThresholdSec, repeatIntervalSec, alarmVolume, heartbeatIntervalMin);
 }
 
+String currentEmergencyEventId = "";
+unsigned long heartbeatIntervalSec = 45; // 30-60s over Wi-Fi when connected
+
+String generateEmergencyEventId() {
+  char buf[48];
+  String devSuffix = (deviceId.length() >= 4) ? deviceId.substring(deviceId.length() - 4) : "0001";
+  snprintf(buf, sizeof(buf), "emg_%s_%lu_%04x", devSuffix.c_str(), millis(), (uint16_t)(esp_random() & 0xFFFF));
+  return String(buf);
+}
+
 void updateBleConfig(); // Forward declaration
 void reportCurrentStatus(); // Forward declaration
-void sendEmergencyAlert(const char* trigger, bool isTest); // Forward declaration
+void sendEmergencyAlert(const char* trigger, bool isTest, const String& eventId); // Forward declaration
 
 void notifyChar(BLECharacteristic* pChar, const String& val) {
   if (!pChar || !bleClientConnected) {
@@ -213,13 +223,54 @@ void sendEmergency() {
   beepBuzzer(3, 100, 80);
   transitionToState(STATE_ALARM, "EMERGENCY_TRIGGERED", 0);
 
-  String devIdShort = (deviceId.length() >= 4) ? ("WSG-01-" + deviceId.substring(deviceId.length() - 4)) : "WSG-01-001";
-  String payload = "{\"type\":\"EMERGENCY\",\"id\":\"" + devIdShort + "\",\"msg\":\"Emergency triggered\"}";
+  String uniqueId = generateEmergencyEventId();
+  currentEmergencyEventId = uniqueId;
+
+  String payload = "{\"type\":\"EMERGENCY\",\"id\":\"" + uniqueId + "\",\"eventId\":\"" + uniqueId + "\",\"deviceId\":\"" + deviceId + "\",\"trigger\":\"MANUAL_EMERGENCY\",\"status\":\"ACTIVE\",\"timestamp\":" + String(millis()) + "}";
   Serial.printf("[BLE] Sending emergency alert: %s\n", payload.c_str());
   notifyChar(pEventLogChar, payload);
   notifyChar(pStatusChar, payload);
 
-  sendEmergencyAlert("MANUAL_EMERGENCY", false);
+  sendEmergencyAlert("MANUAL_EMERGENCY", false, uniqueId);
+}
+
+void acknowledgeEmergency(const String& ackId) {
+  emergencyActive = false;
+  digitalWrite(PIN_BUZZER, LOW);
+  if (currentState == STATE_ALARM || currentState == STATE_EMERGENCY) {
+    transitionToState(STATE_IDLE, "EMERGENCY_ACKNOWLEDGED", 0);
+  }
+  Serial.printf("[SECURITY] Emergency acknowledged: %s\n", ackId.c_str());
+  if (pStatusChar) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+    JsonDocument ackDoc;
+#else
+    StaticJsonDocument<256> ackDoc;
+#endif
+    ackDoc["type"] = "status";
+    ackDoc["status"] = "ACKNOWLEDGED";
+    ackDoc["state"] = "ACKNOWLEDGED";
+    ackDoc["eventId"] = ackId;
+    ackDoc["id"] = ackId;
+    ackDoc["model"] = MODEL_NUMBER;
+    String out;
+    serializeJson(ackDoc, out);
+    notifyChar(pStatusChar, out);
+  }
+  if (pEventLogChar) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+    JsonDocument evDoc;
+#else
+    StaticJsonDocument<256> evDoc;
+#endif
+    evDoc["type"] = "event";
+    evDoc["event"] = "ACKNOWLEDGED";
+    evDoc["eventId"] = ackId;
+    evDoc["timestamp"] = millis();
+    String out;
+    serializeJson(evDoc, out);
+    notifyChar(pEventLogChar, out);
+  }
 }
 
 void cancelEmergency() {
@@ -228,8 +279,8 @@ void cancelEmergency() {
   digitalWrite(PIN_STATUS_LED, LOW);
   transitionToState(STATE_IDLE, "EMERGENCY_CANCELLED", 0);
 
-  String devIdShort = (deviceId.length() >= 4) ? ("WSG-01-" + deviceId.substring(deviceId.length() - 4)) : "WSG-01-001";
-  String payload = "{\"type\":\"WSG01_CANCEL\",\"id\":\"" + devIdShort + "\",\"msg\":\"Emergency cancelled\"}";
+  String uniqueId = (currentEmergencyEventId.length() > 0) ? currentEmergencyEventId : generateEmergencyEventId();
+  String payload = "{\"type\":\"WSG01_CANCEL\",\"id\":\"" + uniqueId + "\",\"eventId\":\"" + uniqueId + "\",\"deviceId\":\"" + deviceId + "\",\"status\":\"CANCELLED\"}";
   Serial.printf("[BLE] Sending cancel emergency: %s\n", payload.c_str());
   notifyChar(pEventLogChar, payload);
   notifyChar(pStatusChar, payload);
@@ -775,6 +826,10 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
         Serial.println("[BLE] GET_PAIRING_TOKEN rejected: Pairing window closed");
         sendAuthError(pStatusChar, "PAIRING_WINDOW_CLOSED");
       }
+    } else if (strcmp(cmd, "ACK_EMERGENCY") == 0 || strcmp(cmd, "ACK") == 0) {
+      const char* ackId = doc["id"] | doc["eventId"] | currentEmergencyEventId.c_str();
+      Serial.printf("[BLE] ACK_EMERGENCY command received for event: %s\n", ackId);
+      acknowledgeEmergency(String(ackId));
     } else {
       Serial.printf("[BLE] Unknown command: %s\n", cmd);
       if (pStatusChar) {
@@ -1379,6 +1434,24 @@ void setupRestApi() {
     server.send(200, "application/json", "{\"status\":\"OK\",\"test_cancelled\":true}");
   });
 
+  // 8. Acknowledge Emergency Endpoint
+  server.on("/api/device/ack-emergency", HTTP_POST, []() {
+    String ackId = currentEmergencyEventId;
+    if (server.hasArg("plain")) {
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+      JsonDocument doc;
+#else
+      StaticJsonDocument<256> doc;
+#endif
+      if (deserializeJson(doc, server.arg("plain")) == DeserializationError::Ok) {
+        if (doc.containsKey("id")) ackId = doc["id"].as<String>();
+        else if (doc.containsKey("eventId")) ackId = doc["eventId"].as<String>();
+      }
+    }
+    acknowledgeEmergency(ackId);
+    server.send(200, "application/json", "{\"status\":\"OK\",\"acknowledged\":true,\"eventId\":\"" + ackId + "\"}");
+  });
+
   server.begin();
   Serial.println("[HTTP] REST API server listening on port 80");
 }
@@ -1427,43 +1500,87 @@ void sendTelemetryToSupabase(SafetyState state, unsigned long stillnessSec) {
   }
 }
 
-void sendEmergencyAlert(const char* trigger, bool isTest = false) {
-  if (WiFi.status() != WL_CONNECTED) return;
+void sendEmergencyAlert(const char* trigger, bool isTest = false, const String& eventId = "") {
+  String finalEventId = (eventId.length() > 0) ? eventId : generateEmergencyEventId();
+  currentEmergencyEventId = finalEventId;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.printf("[Emergency] Wi-Fi not connected. Event broadcasted locally over BLE: %s\n", finalEventId.c_str());
+    return;
+  }
+
+  if (!bleClientConnected) {
+    Serial.printf("[Wi-Fi Fallback] Phone unreachable over BLE! Dispatching emergency via Wi-Fi backend: %s\n", finalEventId.c_str());
+  }
 
   WiFiClientSecure client;
   client.setInsecure();
 
-  HTTPClient https;
-  String endpoint = String(SUPABASE_URL) + "/rest/v1/emergencies";
-
-  if (https.begin(client, endpoint)) {
-    https.addHeader("Content-Type", "application/json");
-    https.addHeader("apikey", SUPABASE_ANON_KEY);
-    https.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
-    https.addHeader("Prefer", "return=minimal");
+  // 1. Post to /rest/v1/emergency_events (triggers edge functions & realtime)
+  {
+    HTTPClient https;
+    String endpoint = String(SUPABASE_URL) + "/rest/v1/emergency_events";
+    if (https.begin(client, endpoint)) {
+      https.addHeader("Content-Type", "application/json");
+      https.addHeader("apikey", SUPABASE_ANON_KEY);
+      https.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
+      https.addHeader("Prefer", "return=minimal");
 
 #if ARDUINOJSON_VERSION_MAJOR >= 7
-    JsonDocument doc;
+      JsonDocument doc;
 #else
-    StaticJsonDocument<256> doc;
+      StaticJsonDocument<384> doc;
 #endif
-    doc["device_id"] = deviceId;
-    doc["trigger"]   = trigger;
-    doc["status"]    = "ACTIVE";
-    doc["is_test"]   = isTest;
+      doc["id"]         = finalEventId;
+      doc["device_id"]  = deviceId;
+      doc["event_type"] = "emergency";
+      doc["trigger"]    = trigger;
+      doc["status"]     = "active";
+      doc["severity"]   = "critical";
+      doc["source"]     = isTest ? "test" : (strcmp(trigger, "MANUAL_EMERGENCY") == 0 ? "manual_device_trigger" : "sensor");
 
-    String requestBody;
-    serializeJson(doc, requestBody);
+      String requestBody;
+      serializeJson(doc, requestBody);
+      int httpCode = https.POST(requestBody);
+      Serial.printf("[Supabase emergency_events] EventId: %s | HTTP: %d\n", finalEventId.c_str(), httpCode);
+      https.end();
+    }
+  }
 
-    int httpCode = https.POST(requestBody);
-    Serial.printf("[Supabase Emergency] Trigger: %s | IsTest: %d | HTTP: %d\n", trigger, isTest ? 1 : 0, httpCode);
-    https.end();
+  // 2. Post to legacy /rest/v1/emergencies table
+  {
+    HTTPClient https;
+    String endpoint = String(SUPABASE_URL) + "/rest/v1/emergencies";
+    if (https.begin(client, endpoint)) {
+      https.addHeader("Content-Type", "application/json");
+      https.addHeader("apikey", SUPABASE_ANON_KEY);
+      https.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
+      https.addHeader("Prefer", "return=minimal");
+
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+      JsonDocument doc;
+#else
+      StaticJsonDocument<256> doc;
+#endif
+      doc["device_id"] = deviceId;
+      doc["trigger"]   = trigger;
+      doc["status"]    = "ACTIVE";
+      doc["is_test"]   = isTest;
+
+      String requestBody;
+      serializeJson(doc, requestBody);
+
+      int httpCode = https.POST(requestBody);
+      Serial.printf("[Supabase emergencies] Trigger: %s | HTTP: %d\n", trigger, httpCode);
+      https.end();
+    }
   }
 }
 
 // ============================================================================
 // SELF-TEST HEARTBEAT & HARDWARE DIAGNOSTICS (FEATURE 2)
 // Checks LD2410C radar, mic level, speaker, WiFi/BLE status, power/battery
+// Heartbeat runs every 30-60s (default 45s) over Wi-Fi when connected
 // ============================================================================
 void sendHealthHeartbeat() {
   // 1. Hardware self-test diagnostics
@@ -1495,7 +1612,8 @@ void sendHealthHeartbeat() {
   doc["battery_pct"]            = batteryPct;
   doc["is_charging"]            = isCharging;
   doc["rssi"]                   = currentRssi;
-  doc["heartbeat_interval_min"] = heartbeatIntervalMin;
+  doc["heartbeat_interval_sec"] = heartbeatIntervalSec;
+  doc["heartbeat_interval_min"] = (heartbeatIntervalSec + 59) / 60;
   doc["uptime"]                 = (millis() - bootTime) / 1000;
 
   String jsonPayload;
@@ -1793,7 +1911,14 @@ void loop() {
         Serial.println("[Safety Escalation] Escalating to ALARM! Emergency alert triggered.");
         emergencyActive = true;
         transitionToState(STATE_ALARM, isTestMode ? "TEST_ALARM_FIRED" : "REPEAT_INTERVAL_EXPIRED", stillnessDurationSec);
-        sendEmergencyAlert(isTestMode ? "TEST" : "NO_RESPONSE", isTestMode);
+
+        String uniqueId = generateEmergencyEventId();
+        currentEmergencyEventId = uniqueId;
+        String payload = "{\"type\":\"EMERGENCY\",\"id\":\"" + uniqueId + "\",\"eventId\":\"" + uniqueId + "\",\"deviceId\":\"" + deviceId + "\",\"trigger\":\"" + (isTestMode ? "TEST" : "NO_RESPONSE") + "\",\"status\":\"ACTIVE\",\"timestamp\":" + String(millis()) + "}";
+        notifyChar(pEventLogChar, payload);
+        notifyChar(pStatusChar, payload);
+
+        sendEmergencyAlert(isTestMode ? "TEST" : "NO_RESPONSE", isTestMode, uniqueId);
       }
       break;
 
@@ -1823,8 +1948,9 @@ void loop() {
     sendTelemetryToSupabase(currentState, stillnessDurationSec);
   }
 
-  // 6. Periodic Self-Test Heartbeat Dispatch (every N minutes, default 10)
-  if (currentMillis - lastHeartbeatTime >= (heartbeatIntervalMin * 60UL * 1000UL) || lastHeartbeatTime == 0) {
+  // 6. Periodic Self-Test Heartbeat Dispatch (every 30-60s over Wi-Fi when connected, default 45s)
+  unsigned long hbIntervalMs = (WiFi.status() == WL_CONNECTED) ? (heartbeatIntervalSec * 1000UL) : (heartbeatIntervalMin * 60UL * 1000UL);
+  if (currentMillis - lastHeartbeatTime >= hbIntervalMs || lastHeartbeatTime == 0) {
     lastHeartbeatTime = currentMillis;
     sendHealthHeartbeat();
   }

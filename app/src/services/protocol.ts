@@ -148,6 +148,18 @@ export const BleProtocol = {
   },
 
   /**
+   * Builds ACK_EMERGENCY command JSON string.
+   */
+  formatAckEmergency(eventId: string, token?: string): string {
+    return JSON.stringify({
+      cmd: 'ACK_EMERGENCY',
+      id: eventId,
+      eventId,
+      ...(token ? { token } : {}),
+    });
+  },
+
+  /**
    * Builds SET_PAIRING_TOKEN command JSON string.
    * Requires currentToken to authenticate the change, and newToken.
    */
@@ -220,6 +232,8 @@ export interface TestCancelledStatusPayload {
 }
 
 export interface EmergencyEventPayload {
+  id?: string;
+  eventId?: string;
   event: 'EMERGENCY' | 'TEST_EMERGENCY' | string;
   trigger?: string;
   source?: string;
@@ -227,6 +241,13 @@ export interface EmergencyEventPayload {
   deviceId?: string;
   deviceName?: string;
   is_test?: boolean;
+}
+
+export interface EmergencyAckPayload {
+  status: 'ACKNOWLEDGED';
+  eventId?: string;
+  id?: string;
+  timestamp?: number | string;
 }
 
 export interface EscalationLogEntry {
@@ -260,6 +281,7 @@ export type ParsedBleMessage =
   | { kind: 'pong'; data: PongPayload; raw: any }
   | { kind: 'test_emergency_status'; data: TestEmergencyStatusPayload; raw: any }
   | { kind: 'test_cancelled_status'; data: TestCancelledStatusPayload; raw: any }
+  | { kind: 'emergency_ack'; data: EmergencyAckPayload; raw: any }
   | { kind: 'emergency_event'; data: EmergencyEventPayload; raw: any }
   | { kind: 'escalation_logs'; data: EscalationLogEntry[]; raw: any }
   | { kind: 'device_error'; data: DeviceErrorPayload; raw: any }
@@ -434,12 +456,28 @@ function categorizeParsedData(parsed: any): ParsedBleMessage {
     };
   }
 
+  // 6b. Emergency acknowledgment confirmation
+  if (status === 'ACKNOWLEDGED' || event === 'ACKNOWLEDGED') {
+    return {
+      kind: 'emergency_ack',
+      data: {
+        status: 'ACKNOWLEDGED',
+        eventId: parsed.eventId || parsed.id,
+        id: parsed.id || parsed.eventId,
+        timestamp: parsed.timestamp,
+      },
+      raw: parsed,
+    };
+  }
+
   // 7. Test Emergency status / Event
   if (status === 'TEST_EMERGENCY' || event === 'TEST_EMERGENCY') {
     if (type === 'event' || event === 'TEST_EMERGENCY') {
       return {
         kind: 'emergency_event',
         data: {
+          id: parsed.id || parsed.eventId,
+          eventId: parsed.eventId || parsed.id,
           event: 'TEST_EMERGENCY',
           trigger: parsed.trigger || 'test',
           source: parsed.source || 'app',
@@ -470,6 +508,8 @@ function categorizeParsedData(parsed: any): ParsedBleMessage {
     return {
       kind: 'emergency_event',
       data: {
+        id: parsed.id || parsed.eventId,
+        eventId: parsed.eventId || parsed.id,
         event: (parsed.event || 'EMERGENCY') as 'EMERGENCY' | string,
         trigger: parsed.trigger || (parsed.state === 'EMERGENCY' ? 'VOICE' : 'OTHER'),
         source: parsed.source || 'manual_device_trigger',

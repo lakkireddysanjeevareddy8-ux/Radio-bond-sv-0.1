@@ -593,6 +593,7 @@ class EmergencyContactServiceClass {
     eventType: string;
     severity: string;
     status: string;
+    trigger?: string;
     detectedAt: string;
     acknowledgedAt?: string;
     resolvedAt?: string;
@@ -621,6 +622,7 @@ class EmergencyContactServiceClass {
           event_type,
           severity,
           status,
+          trigger,
           detected_at,
           acknowledged_at,
           resolved_at,
@@ -651,6 +653,7 @@ class EmergencyContactServiceClass {
         eventType: ev.event_type,
         severity: ev.severity,
         status: ev.status,
+        trigger: ev.trigger || ev.source || 'Emergency',
         detectedAt: ev.detected_at,
         acknowledgedAt: ev.acknowledged_at,
         resolvedAt: ev.resolved_at,

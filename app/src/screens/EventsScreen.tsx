@@ -36,6 +36,7 @@ type EventCategory = 'ALL' | 'EMERGENCY' | 'WELLBEING' | 'PRESENCE' | 'MOVEMENT'
 interface SafetyEvent {
   id: string;
   time: string;
+  dateStr?: string;
   title: string;
   detail: string;
   category: EventCategory;
@@ -43,17 +44,28 @@ interface SafetyEvent {
   feedbackStatus?: 'CONFIRMED_REAL' | 'FALSE_ALARM' | 'NOT_SURE';
   isTest?: boolean;
   isLive?: boolean;
+  deviceId?: string;
+  trigger?: string;
+  status?: string;
+  acknowledgedAt?: string;
+  resolvedAt?: string;
 }
 
 const MOCK_EVENTS: SafetyEvent[] = [
   {
     id: '1',
     time: '16:42',
+    dateStr: 'Today',
     title: 'Emergency voice detected',
     detail: '"HELP" keyword — 92% confidence',
     category: 'EMERGENCY',
     severity: 'HIGH',
     feedbackStatus: 'CONFIRMED_REAL',
+    deviceId: 'WSG-01-A482',
+    trigger: 'VOICE_KEYWORD ("HELP")',
+    status: 'resolved',
+    acknowledgedAt: '16:43',
+    resolvedAt: '16:45',
   },
   {
     id: '2',
@@ -82,29 +94,47 @@ const MOCK_EVENTS: SafetyEvent[] = [
   {
     id: 'test_1',
     time: '15:10',
+    dateStr: 'Today',
     title: 'Safety System Test',
     detail: 'Self-test check-in & alarm sequence',
     category: 'EMERGENCY',
     severity: 'MEDIUM',
     isTest: true,
+    deviceId: 'WSG-01-A482',
+    trigger: 'TEST_EMERGENCY',
+    status: 'resolved',
+    acknowledgedAt: '15:10',
+    resolvedAt: '15:11',
   },
   {
     id: '5',
     time: '14:20',
+    dateStr: 'Today',
     title: 'Stillness emergency resolved',
     detail: 'Inactivity alarm triggered',
     category: 'EMERGENCY',
     severity: 'HIGH',
     feedbackStatus: 'FALSE_ALARM',
+    deviceId: 'WSG-01-A482',
+    trigger: 'INACTIVITY_STILLNESS',
+    status: 'cancelled',
+    acknowledgedAt: '14:21',
+    resolvedAt: '14:22',
   },
   {
     id: '6',
     time: '12:15',
+    dateStr: 'Today',
     title: 'Manual SOS button pressed',
     detail: 'Wall button triggered by occupant',
     category: 'EMERGENCY',
     severity: 'HIGH',
     feedbackStatus: 'CONFIRMED_REAL',
+    deviceId: 'WSG-01-A482',
+    trigger: 'MANUAL_EMERGENCY',
+    status: 'resolved',
+    acknowledgedAt: '12:16',
+    resolvedAt: '12:20',
   },
   {
     id: '7',
@@ -136,11 +166,29 @@ export const EventsScreen: React.FC = () => {
             const timeStr = !isNaN(date.getTime())
               ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
               : 'Recent';
+            const dateStr = !isNaN(date.getTime())
+              ? date.toLocaleDateString([], { month: 'short', day: 'numeric' })
+              : undefined;
+
+            const formatIso = (iso?: string) => {
+              if (!iso) return undefined;
+              const d = new Date(iso);
+              return !isNaN(d.getTime()) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : undefined;
+            };
+
+            const triggerName = ev.trigger || ev.source || 'Emergency Trigger';
+            const title = triggerName === 'MANUAL_EMERGENCY'
+              ? 'Manual SOS Button'
+              : triggerName.includes('INACTIVITY') || triggerName.includes('STILL') || triggerName === 'NO_RESPONSE'
+              ? 'Stillness Inactivity Alert'
+              : (ev.eventType || 'Emergency Alert');
+
             return {
               id: ev.id,
               time: timeStr,
-              title: ev.eventType || 'Emergency Alert',
-              detail: `Trigger: ${ev.source || 'voice_keyword'} • Status: ${ev.status}`,
+              dateStr,
+              title,
+              detail: `Device: ${ev.deviceId} • Trigger: ${triggerName}`,
               category: 'EMERGENCY' as EventCategory,
               severity: (ev.severity === 'HIGH' || ev.severity === 'CRITICAL'
                 ? 'HIGH'
@@ -148,7 +196,12 @@ export const EventsScreen: React.FC = () => {
                 ? 'MEDIUM'
                 : 'LOW') as any,
               isLive: true,
-              isTest: ev.eventType?.toLowerCase().includes('test') || false,
+              isTest: ev.eventType?.toLowerCase().includes('test') || triggerName.toLowerCase().includes('test') || false,
+              deviceId: ev.deviceId,
+              trigger: triggerName,
+              status: ev.status,
+              acknowledgedAt: formatIso(ev.acknowledgedAt),
+              resolvedAt: formatIso(ev.resolvedAt),
             };
           });
           setLiveEvents(mapped);
@@ -344,6 +397,38 @@ export const EventsScreen: React.FC = () => {
                     <View style={[styles.severityDot, { backgroundColor: toneSet.solid }]} />
                   </View>
                 </View>
+
+                {/* Emergency Audit Details: Time, Device, Trigger, Acknowledgment, Resolution */}
+                {event.category === 'EMERGENCY' && (event.deviceId || event.trigger) && (
+                  <View style={styles.emergencyAuditBox}>
+                    <View style={styles.auditRow}>
+                      <Text style={styles.auditLabel}>Device:</Text>
+                      <Text style={styles.auditValue}>{event.deviceId || 'WSG-000001'}</Text>
+                    </View>
+                    <View style={styles.auditRow}>
+                      <Text style={styles.auditLabel}>Trigger:</Text>
+                      <Text style={styles.auditValue}>{event.trigger || 'Manual / Sensor'}</Text>
+                    </View>
+                    <View style={styles.auditRow}>
+                      <Text style={styles.auditLabel}>Acknowledgment:</Text>
+                      <Text style={[styles.auditValue, event.acknowledgedAt ? styles.auditSuccess : styles.auditPending]}>
+                        {event.acknowledgedAt ? `Acknowledged (${event.acknowledgedAt})` : 'Unacknowledged'}
+                      </Text>
+                    </View>
+                    <View style={styles.auditRow}>
+                      <Text style={styles.auditLabel}>Resolution:</Text>
+                      <Text style={[styles.auditValue, event.resolvedAt ? styles.auditResolved : (event.status === 'cancelled' ? styles.auditCancelled : styles.auditActive)]}>
+                        {event.resolvedAt
+                          ? `Resolved (${event.resolvedAt})`
+                          : event.status === 'cancelled'
+                          ? 'Cancelled (False Alarm)'
+                          : event.status === 'acknowledged'
+                          ? 'Acknowledged (Attending)'
+                          : 'Active Alarm'}
+                      </Text>
+                    </View>
+                  </View>
+                )}
               </Card>
             );
           })
@@ -492,6 +577,44 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
+  },
+  emergencyAuditBox: {
+    marginTop: spacing.sm,
+    paddingTop: spacing.xs,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    gap: 4,
+  },
+  auditRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  auditLabel: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    fontSize: 12,
+  },
+  auditValue: {
+    ...typography.caption,
+    color: colors.textPrimary,
+    fontWeight: '600',
+    fontSize: 12,
+  },
+  auditSuccess: {
+    color: colors.safeText,
+  },
+  auditPending: {
+    color: colors.warningText,
+  },
+  auditResolved: {
+    color: colors.safeText,
+  },
+  auditCancelled: {
+    color: colors.textMuted,
+  },
+  auditActive: {
+    color: colors.emergency,
   },
   loadingContainer: {
     padding: spacing.xxl,

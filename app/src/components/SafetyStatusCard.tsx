@@ -25,7 +25,8 @@ export type SafetyStatusType =
   | 'NO_RESPONSE'
   | 'ALARM'
   | 'EMERGENCY'
-  | 'OFFLINE';
+  | 'OFFLINE'
+  | 'NOT_RESPONDING';
 
 interface Props {
   status: SafetyStatusType;
@@ -66,8 +67,14 @@ export const SafetyStatusCard: React.FC<Props> = ({ status }) => {
       isSolidEmergency = true;
       IconComponent = ShieldAlert;
       break;
+    case 'NOT_RESPONDING':
+      title = 'Device not responding';
+      subtitle = 'Missed 3 heartbeats over Wi-Fi. Check power and router connection.';
+      tone = 'offline';
+      IconComponent = WifiOff;
+      break;
     case 'OFFLINE':
-      title = "Can't reach the device";
+      title = 'Device offline / not heard from';
       subtitle = 'The device still sounds its own alarm locally in the washroom.';
       tone = 'offline';
       IconComponent = WifiOff;

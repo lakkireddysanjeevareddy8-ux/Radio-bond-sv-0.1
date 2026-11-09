@@ -287,7 +287,43 @@ Silences and cancels an active emergency test drill.
 
 ---
 
-### 4.8. `SET_ESCALATION_CONFIG` (or `SET_CONFIG`)
+### 4.8. `ACK_EMERGENCY` (or `ACK`)
+Acknowledges an active emergency alert from the mobile client. Immediately silences the hardware piezo buzzer (`digitalWrite(PIN_BUZZER, LOW)`), resets `emergencyActive = false`, transitions the device state to `STATE_IDLE`, and notifies connected clients via the STATUS and EVENT characteristics.
+
+- **Request Payload (COMMAND):**
+  ```json
+  {
+    "cmd": "ACK_EMERGENCY",
+    "id": "emg_A482_125400_3a8f",
+    "eventId": "emg_A482_125400_3a8f"
+  }
+  ```
+
+- **Replies:**
+  - **EVENT notification (`...26aa`):**
+    ```json
+    {
+      "type": "event",
+      "event": "ACKNOWLEDGED",
+      "eventId": "emg_A482_125400_3a8f",
+      "timestamp": 125500
+    }
+    ```
+  - **STATUS notification (`...26a9`):**
+    ```json
+    {
+      "type": "status",
+      "status": "ACKNOWLEDGED",
+      "state": "ACKNOWLEDGED",
+      "eventId": "emg_A482_125400_3a8f",
+      "id": "emg_A482_125400_3a8f",
+      "model": "WSG-01"
+    }
+    ```
+
+---
+
+### 4.9. `SET_ESCALATION_CONFIG` (or `SET_CONFIG`)
 Sets the hardware escalation timing, alarm volume, and heartbeat intervals.
 
 - **Request Payload (COMMAND):**
@@ -310,7 +346,7 @@ Sets the hardware escalation timing, alarm volume, and heartbeat intervals.
 
 ---
 
-### 4.9. `GET_ESCALATION_CONFIG` (or `GET_CONFIG`)
+### 4.10. `GET_ESCALATION_CONFIG` (or `GET_CONFIG`)
 Instructs device to refresh the **CONFIG** characteristic (`...26ab`) with current settings.
 
 - **Request Payload (COMMAND):**
@@ -330,7 +366,7 @@ Instructs device to refresh the **CONFIG** characteristic (`...26ab`) with curre
 
 ---
 
-### 4.10. `SET_PAIRING_TOKEN`
+### 4.11. `SET_PAIRING_TOKEN`
 Updates the authorized pairing token in NVS. Requires the current pairing token (or an active first-pairing window) to authenticate the change, preventing unauthorized hijacking.
 
 - **Request Payload (COMMAND):**
@@ -354,7 +390,7 @@ Updates the authorized pairing token in NVS. Requires the current pairing token 
 
 ---
 
-### 4.11. `GET_PAIRING_TOKEN`
+### 4.12. `GET_PAIRING_TOKEN`
 Requests the device pairing token during the first-pairing window (first 5 minutes after first boot / factory reset, or re-armed by physical emergency button press). Outside the window, this command is rejected with `PAIRING_WINDOW_CLOSED`.
 
 - **Request Payload (COMMAND):**

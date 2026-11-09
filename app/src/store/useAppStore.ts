@@ -36,6 +36,8 @@ interface AppState {
   // Connection
   isOnline: boolean;
   setIsOnline: (isOnline: boolean) => void;
+  deviceNotResponding: boolean;
+  setDeviceNotResponding: (notResponding: boolean) => void;
   bluetoothStatus: 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'RECONNECTING' | 'FAILED' | 'BLUETOOTH_OFF';
   setBluetoothStatus: (status: 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'RECONNECTING' | 'FAILED' | 'BLUETOOTH_OFF') => void;
   wifiStatus: 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'FAILED';
@@ -240,6 +242,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Connection status: strictly independent
   isOnline: initialHardwareMode === 'DEMO_SIMULATOR',
   setIsOnline: (isOnline) => set({ isOnline }),
+  deviceNotResponding: false,
+  setDeviceNotResponding: (deviceNotResponding) => set({ deviceNotResponding }),
   bluetoothStatus: 'DISCONNECTED',
   setBluetoothStatus: (bluetoothStatus) => set({ bluetoothStatus }),
   wifiStatus: 'DISCONNECTED',

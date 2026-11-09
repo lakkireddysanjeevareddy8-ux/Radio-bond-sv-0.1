@@ -66,6 +66,7 @@ export const DashboardScreen: React.FC = () => {
     hardwareMode,
     deviceHealth,
     deviceError,
+    deviceNotResponding,
   } = useAppStore();
 
   const { devices, activeDeviceId, setActiveDeviceId, getActiveDevice } = useDeviceStore();
@@ -164,10 +165,11 @@ export const DashboardScreen: React.FC = () => {
     | 'NO_RESPONSE'
     | 'ALARM'
     | 'EMERGENCY'
-    | 'OFFLINE' = 'SAFE';
+    | 'OFFLINE'
+    | 'NOT_RESPONDING' = 'SAFE';
 
   if (!isDeviceConnected && !isBleConnected) {
-    safetyStatus = 'OFFLINE';
+    safetyStatus = deviceNotResponding ? 'NOT_RESPONDING' : 'OFFLINE';
   } else if (
     telemetry?.state === 'ALARM' ||
     telemetry?.state === 'EMERGENCY' ||

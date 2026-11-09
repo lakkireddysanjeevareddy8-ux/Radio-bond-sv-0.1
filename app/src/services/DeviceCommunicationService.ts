@@ -18,7 +18,7 @@ export class DeviceCommunicationService {
   // Hardware Diagnostics & Heartbeat Watchdog
   private currentDeviceId: string = '';
   private lastHealthHeartbeatTime: number = 0;
-  private expectedHeartbeatIntervalMs: number = 10 * 60 * 1000; // 10 min default
+  private expectedHeartbeatIntervalMs: number = 45 * 1000; // 45s default (30-60s over Wi-Fi)
   private offlineNotificationDispatched: boolean = false;
   
   private onTelemetryUpdate?: (telemetry: Telemetry) => void;
@@ -191,9 +191,11 @@ export class DeviceCommunicationService {
         }
       }
 
-      // 2. Self-test Heartbeat staleness (> 2x expected heartbeat interval)
-      const timeoutMs = 2 * this.expectedHeartbeatIntervalMs;
+      // 2. Self-test Heartbeat staleness (3 missed heartbeats = 3 * expectedHeartbeatIntervalMs)
+      const timeoutMs = 3 * this.expectedHeartbeatIntervalMs;
       if (this.lastHealthHeartbeatTime > 0 && Date.now() - this.lastHealthHeartbeatTime > timeoutMs) {
+        useAppStore.getState().setIsOnline(false);
+        useAppStore.getState().setDeviceNotResponding(true);
         if (!this.offlineNotificationDispatched) {
           try {
             const { useConnectionStore } = require('../store/useConnectionStore');
@@ -206,13 +208,16 @@ export class DeviceCommunicationService {
           } catch {}
 
           this.offlineNotificationDispatched = true;
-          useAppStore.getState().setIsOnline(false);
           const minutesOffline = Math.round((Date.now() - this.lastHealthHeartbeatTime) / 60000);
           EmergencyPushService.dispatchLowPriorityOfflineNotification(
             this.currentDeviceId || 'WSG-000001',
             useAppStore.getState().deviceConfig?.deviceName || 'Washroom Safety Guardian',
             minutesOffline
           );
+        }
+      } else {
+        if (this.lastHealthHeartbeatTime > 0) {
+          useAppStore.getState().setDeviceNotResponding(false);
         }
       }
     }, 4000);
@@ -229,7 +234,11 @@ export class DeviceCommunicationService {
     if (!row) return;
     this.lastHealthHeartbeatTime = Date.now();
     this.offlineNotificationDispatched = false;
-    if (row.heartbeat_interval_min) {
+    useAppStore.getState().setIsOnline(true);
+    useAppStore.getState().setDeviceNotResponding(false);
+    if (row.heartbeat_interval_sec) {
+      this.expectedHeartbeatIntervalMs = Number(row.heartbeat_interval_sec) * 1000;
+    } else if (row.heartbeat_interval_min) {
       this.expectedHeartbeatIntervalMs = Number(row.heartbeat_interval_min) * 60 * 1000;
     }
     const health: DeviceHealth = {
@@ -420,20 +429,52 @@ export class DeviceCommunicationService {
       const { EscalationEngineService } = require('./EscalationEngineService');
       EscalationEngineService.stopEscalation();
 
+      const { EmergencySoundService } = require('./EmergencySoundService');
+      EmergencySoundService.acknowledgeAlert();
+
+      // 1. Send bi-directional acknowledgment to hardware device over BLE
+      try {
+        const { BluetoothService } = require('./bluetoothService');
+        const { BleProtocol } = require('./protocol');
+        const ackPayload = BleProtocol.formatAckEmergency(eventId);
+        await BluetoothService.sendCommand(null, JSON.parse(ackPayload));
+      } catch (bleErr) {
+        console.log('[DeviceCommunicationService] BLE ack send note (may be offline/Wi-Fi):', bleErr);
+      }
+
+      // 2. Send local HTTP POST to hardware device REST API if reachable
+      try {
+        const { useConnectionStore } = require('../store/useConnectionStore');
+        const connDevice = useConnectionStore.getState().connectedDevice;
+        const ip = connDevice?.ipAddress;
+        if (ip) {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 2000);
+          fetch(`http://${ip}/api/device/ack-emergency`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: eventId, eventId }),
+            signal: controller.signal,
+          }).catch(() => {}).finally(() => clearTimeout(timer));
+        }
+      } catch {}
+
       if (this.simulator) {
         return true;
       }
 
-      // Update emergency_events
+      // 3. Update Supabase emergency_events
+      const user = useAppStore.getState().user;
       await supabase
         .from('emergency_events')
         .update({
           status: 'acknowledged',
           acknowledged_at: new Date().toISOString(),
+          ...(user?.id ? { acknowledged_by: user.id } : {}),
         })
         .eq('id', eventId);
 
-      // Update legacy emergencies
+      // 4. Update legacy emergencies
       const numId = Number(eventId);
       const query = supabase.from('emergencies').update({
         status: 'ACKNOWLEDGED',
@@ -463,6 +504,20 @@ export class DeviceCommunicationService {
 
       const { EmergencySoundService } = require('./EmergencySoundService');
       EmergencySoundService.stopAll();
+
+      // Send cancel to device over BLE
+      try {
+        const { BluetoothService } = require('./bluetoothService');
+        await BluetoothService.sendCommand(null, { cmd: 'CANCEL_TEST' });
+      } catch {}
+      try {
+        const { useConnectionStore } = require('../store/useConnectionStore');
+        const connDevice = useConnectionStore.getState().connectedDevice;
+        const ip = connDevice?.ipAddress;
+        if (ip) {
+          fetch(`http://${ip}/api/device/cancel-test`, { method: 'POST' }).catch(() => {});
+        }
+      } catch {}
 
       if (this.simulator) {
         this.onEmergencyResolved?.();
