@@ -1,5 +1,8 @@
 {
   "buildCommand": "cd app && npm install && npm run build",
   "outputDirectory": "app/dist",
-  "framework": null
+  "framework": null,
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
 }

@@ -2305,9 +2305,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   conicSweepView: {
-    // @ts-ignore
-    background:
-      'conic-gradient(from 0deg at 50% 50%, #94A3B8 0deg, #CBD5E1 80deg, #E2E8F0 160deg, rgba(241, 245, 249, 0.3) 260deg, transparent 350deg, #94A3B8 360deg)',
+    ...Platform.select({
+      web: {
+        backgroundImage:
+          'conic-gradient(from 0deg at 50% 50%, #94A3B8 0deg, #CBD5E1 80deg, #E2E8F0 160deg, rgba(241, 245, 249, 0.3) 260deg, transparent 350deg, #94A3B8 360deg)',
+      } as any,
+      default: {},
+    }),
   },
   darkSearchDisc: {
     backgroundColor: '#1E232B',

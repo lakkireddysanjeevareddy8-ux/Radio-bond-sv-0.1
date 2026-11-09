@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import * as Clipboard from 'expo-clipboard';
+import { Clipboard } from '../utils/clipboard';
 import {
   ArrowLeft,
   Copy,

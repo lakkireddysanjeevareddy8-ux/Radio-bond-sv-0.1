@@ -13,7 +13,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import { colors, typography, spacing, borderRadius } from '../utils/theme';
+import { colors, typography, spacing, borderRadius, shadows } from '../utils/theme';
 import {
   Card,
   Button,
@@ -1738,11 +1738,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: 10,
     borderRadius: borderRadius.md,
-    shadowColor: colors.primary,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 3,
-    elevation: 2,
+    ...Platform.select({
+      web: { boxShadow: '0 2px 3px 0 rgba(14, 116, 144, 0.2)' } as any,
+      default: {
+        shadowColor: colors.primary,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.2,
+        shadowRadius: 3,
+        elevation: 2,
+      },
+    }),
   },
   editBtnText: {
     color: colors.surface,
@@ -1778,11 +1783,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: 8,
     borderRadius: borderRadius.md,
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3,
-    elevation: 2,
+    ...Platform.select({
+      web: { boxShadow: '0 2px 3px 0 rgba(16, 185, 129, 0.25)' } as any,
+      default: {
+        shadowColor: '#10B981',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.25,
+        shadowRadius: 3,
+        elevation: 2,
+      },
+    }),
   },
   saveBtnMuted: {
     backgroundColor: '#6EE7B7',
@@ -1822,11 +1832,7 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.lg,
     padding: spacing.md,
     marginBottom: spacing.sm,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
+    ...shadows.sm,
     borderWidth: 1,
     borderColor: colors.border,
   },
@@ -2023,11 +2029,16 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
     paddingHorizontal: spacing.md,
     paddingVertical: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 6,
-    elevation: 8,
+    ...Platform.select({
+      web: { boxShadow: '0 -4px 6px 0 rgba(0, 0, 0, 0.1)' } as any,
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -4 },
+        shadowOpacity: 0.1,
+        shadowRadius: 6,
+        elevation: 8,
+      },
+    }),
   },
   floatingContent: {
     flexDirection: 'row',
@@ -2146,11 +2157,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#DC2626',
     paddingVertical: 12,
     borderRadius: borderRadius.md,
-    shadowColor: '#DC2626',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.25,
-    shadowRadius: 5,
-    elevation: 3,
+    ...Platform.select({
+      web: { boxShadow: '0 3px 5px 0 rgba(220, 38, 38, 0.25)' } as any,
+      default: {
+        shadowColor: '#DC2626',
+        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.25,
+        shadowRadius: 5,
+        elevation: 3,
+      },
+    }),
   },
   testAlertBtnText: {
     fontSize: 14,
@@ -2180,11 +2196,7 @@ const styles = StyleSheet.create({
     maxWidth: 440,
     borderWidth: 2,
     borderColor: '#EF4444',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.3,
-    shadowRadius: 16,
-    elevation: 10,
+    ...shadows.lg,
   },
   testModalHeader: {
     flexDirection: 'row',
@@ -2226,11 +2238,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 10,
     borderRadius: borderRadius.md,
-    shadowColor: '#DC2626',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 2,
+    ...Platform.select({
+      web: { boxShadow: '0 2px 4px 0 rgba(220, 38, 38, 0.3)' } as any,
+      default: {
+        shadowColor: '#DC2626',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        elevation: 2,
+      },
+    }),
   },
   testModalSendText: {
     fontSize: 14,

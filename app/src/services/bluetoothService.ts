@@ -3,13 +3,16 @@ import { ProductDefinition, PRODUCT_CATALOG } from './productCatalog';
 import { NativeBluetoothService, base64ToBytes, bytesToBase64 } from './nativeBluetoothService';
 import { EscalationLogEntry, EscalationConfig, EmergencyEvent } from '../types';
 import { useAppStore } from '../store/useAppStore';
-import { useConnectionStore } from '../store/useConnectionStore';
 import { EmergencyPushService } from './EmergencyPushService';
 import { storage } from '../utils/storage';
 import { logger } from '../utils/logger';
 import { BleProtocol, parseBleMessage, BLE_UUIDS, BLE_ERROR_CODES } from './protocol';
 import { SecureTokenStorage } from '../utils/secureTokenStorage';
-import { FirmwareUpdateService } from './FirmwareUpdateService';
+
+export interface BleOtaHandler {
+  handleOtaMessage: (data: any) => void;
+  setCurrentFirmware: (fw: string) => void;
+}
 
 export interface DiscoveredBleDevice {
   id: string;
@@ -98,6 +101,25 @@ export class BluetoothService {
   private static isInitialBufferBaseline: boolean = true;
   private static incomingBufferByChar: Map<string, string> = new Map();
   private static markerInitialized: boolean = false;
+  private static otaHandler: BleOtaHandler | null = null;
+  private static hardwareIdListeners: Set<(id: string) => void> = new Set();
+
+  /**
+   * Registers a handler for OTA progress and status updates.
+   */
+  public static registerOtaHandler(handler: BleOtaHandler | null): void {
+    this.otaHandler = handler;
+  }
+
+  /**
+   * Registers a callback invoked whenever the device reveals its real hardware ID.
+   */
+  public static onHardwareId(listener: (id: string) => void): () => void {
+    this.hardwareIdListeners.add(listener);
+    return () => {
+      this.hardwareIdListeners.delete(listener);
+    };
+  }
 
   /**
    * Registers a listener for all incoming parsed BLE notifications (Event and Status).
@@ -1224,12 +1246,12 @@ export class BluetoothService {
       });
     }
 
-    // Forward OTA progress and status notifications to FirmwareUpdateService
+    // Forward OTA progress and status notifications to registered OTA handler
     if (msg.kind === 'ota_progress' || msg.kind === 'ota_status') {
-      FirmwareUpdateService.handleOtaMessage(msg.data);
+      BluetoothService.otaHandler?.handleOtaMessage(msg.data);
     }
     if (parsed?.fw && typeof parsed.fw === 'string') {
-      FirmwareUpdateService.setCurrentFirmware(parsed.fw);
+      BluetoothService.otaHandler?.setCurrentFirmware(parsed.fw);
     }
 
     // Dispatch to registered notification listeners
@@ -1276,12 +1298,13 @@ export class BluetoothService {
           ...currentConfig,
           deviceId: reportedDevId,
         });
-        const conn = useConnectionStore.getState().connectedDevice;
-        if (conn && conn.id !== reportedDevId) {
-          useConnectionStore.setState({
-            connectedDevice: { ...conn, id: reportedDevId },
-          });
-        }
+        BluetoothService.hardwareIdListeners.forEach((fn) => {
+          try {
+            fn(reportedDevId);
+          } catch (e) {
+            console.warn('[BLE] Error in hardwareIdListener:', e);
+          }
+        });
       }
     }
 

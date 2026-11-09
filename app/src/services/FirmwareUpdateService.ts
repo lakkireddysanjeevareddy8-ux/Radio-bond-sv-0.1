@@ -382,4 +382,7 @@ class FirmwareUpdateServiceClass {
 }
 
 export const FirmwareUpdateService = new FirmwareUpdateServiceClass();
+if (typeof BluetoothService?.registerOtaHandler === 'function') {
+  BluetoothService.registerOtaHandler(FirmwareUpdateService);
+}
 

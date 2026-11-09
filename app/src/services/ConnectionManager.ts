@@ -1,11 +1,11 @@
 import { AppState, Platform } from 'react-native';
 import { BluetoothService, ConnectedBleSession, DiscoveredBleDevice } from './bluetoothService';
 import { NativeBluetoothService } from './nativeBluetoothService';
+import { useConnectionStore } from '../store/useConnectionStore';
 import {
-  useConnectionStore,
   ConnectedDeviceInfo,
   ConnectionManagerState,
-} from '../store/useConnectionStore';
+} from '../types/connection';
 import { useAppStore } from '../store/useAppStore';
 import { useDeviceStore } from '../store/useDeviceStore';
 import { storage } from '../utils/storage';

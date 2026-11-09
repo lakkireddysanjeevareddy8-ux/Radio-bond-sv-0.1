@@ -5,32 +5,13 @@ import { useDeviceStore, SavedDevice } from './useDeviceStore';
 import { BluetoothService } from '../services/bluetoothService';
 import { deviceService } from '../services/DeviceCommunicationService';
 import { logger, formatUserBleError } from '../utils/logger';
+import {
+  ConnectionStatus,
+  ConnectionManagerState,
+  ConnectedDeviceInfo,
+} from '../types/connection';
 
-export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error' | 'reconnecting';
-
-export type ConnectionManagerState =
-  | 'IDLE'
-  | 'SCANNING'
-  | 'CONNECTING'
-  | 'CONNECTED'
-  | 'RECONNECTING'
-  | 'FAILED'
-  | 'BLUETOOTH_OFF';
-
-export interface ConnectedDeviceInfo {
-  id: string;
-  name: string;
-  connectionType: 'BLE' | 'WIFI';
-  model?: string;
-  room?: string;
-  rssi?: number;
-  batteryLevel?: number;
-  firmwareVersion?: string;
-  ipAddress?: string;
-  ssid?: string;
-  rawDevice?: any;
-  isEarbuds?: boolean;
-}
+export type { ConnectionStatus, ConnectionManagerState, ConnectedDeviceInfo };
 
 interface ConnectionState {
   status: ConnectionStatus;
@@ -280,3 +261,15 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     }
   },
 }));
+
+// Dynamically synchronize reported real hardware ID into connection store without cyclic dependencies
+if (typeof BluetoothService?.onHardwareId === 'function') {
+  BluetoothService.onHardwareId((reportedDevId: string) => {
+    const conn = useConnectionStore.getState().connectedDevice;
+    if (conn && conn.id !== reportedDevId) {
+      useConnectionStore.setState({
+        connectedDevice: { ...conn, id: reportedDevId },
+      });
+    }
+  });
+}

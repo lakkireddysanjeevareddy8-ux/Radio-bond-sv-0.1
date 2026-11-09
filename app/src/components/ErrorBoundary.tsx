@@ -9,7 +9,7 @@ import {
   Share,
   Platform,
 } from 'react-native';
-import * as Clipboard from 'expo-clipboard';
+import { Clipboard } from '../utils/clipboard';
 import { AlertTriangle, Copy, RefreshCw, Share2, Check } from 'lucide-react-native';
 import { logger, formatUserError } from '../utils/logger';
 import { sentryService } from '../services/sentryService';

@@ -1,4 +1,7 @@
 import { ProductDefinition } from './productCatalog';
+import { bytesToBase64, base64ToBytes } from '../utils/base64';
+
+export { bytesToBase64, base64ToBytes };
 
 /**
  * Web stub for NativeBluetoothService.
