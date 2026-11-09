@@ -8,6 +8,7 @@ module.exports = {
     '^@react-native-async-storage/async-storage$': '<rootDir>/src/services/__tests__/__mocks__/asyncStorageMock.js',
     '^expo-clipboard$': '<rootDir>/src/services/__tests__/__mocks__/expoClipboardMock.js',
     '^expo-secure-store$': '<rootDir>/src/services/__tests__/__mocks__/expoSecureStoreMock.js',
+    '^react-native-ble-plx$': '<rootDir>/src/services/__tests__/__mocks__/blePlxMock.js',
     '^react-native$': '<rootDir>/src/services/__tests__/__mocks__/reactNativeMock.js',
     '\\.(jpg|jpeg|png|gif|webp|svg)$': '<rootDir>/src/services/__tests__/__mocks__/fileMock.js',
   },

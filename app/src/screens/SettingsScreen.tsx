@@ -68,6 +68,7 @@ import {
   Wrench,
   Terminal,
   Radio,
+  Cpu,
 } from 'lucide-react-native';
 import { QuietHoursService, BypassPermissionStatus } from '../services/QuietHoursService';
 
@@ -1178,6 +1179,18 @@ export const SettingsScreen: React.FC = () => {
             showChevron={true}
             onPress={() => navigation.navigate('AboutDevice')}
             accessibilityLabel="Open about safety device specifications"
+            style={{ marginBottom: spacing.md, paddingHorizontal: 0 }}
+          />
+
+          {/* Firmware Update (OTA) Navigation Row */}
+          <ListRow
+            title="Firmware update (OTA)"
+            subtitle="Check for updates, release notes, and install new device firmware"
+            leftIcon={<Cpu size={18} color={colors.primaryDark} />}
+            leftBadgeTone="primary"
+            showChevron={true}
+            onPress={() => navigation.navigate('FirmwareUpdate')}
+            accessibilityLabel="Open firmware update screen"
             style={{ marginBottom: spacing.md, paddingHorizontal: 0 }}
           />
 

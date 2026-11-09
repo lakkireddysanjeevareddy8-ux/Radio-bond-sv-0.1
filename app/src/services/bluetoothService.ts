@@ -9,6 +9,7 @@ import { storage } from '../utils/storage';
 import { logger } from '../utils/logger';
 import { BleProtocol, parseBleMessage, BLE_UUIDS, BLE_ERROR_CODES } from './protocol';
 import { SecureTokenStorage } from '../utils/secureTokenStorage';
+import { FirmwareUpdateService } from './FirmwareUpdateService';
 
 export interface DiscoveredBleDevice {
   id: string;
@@ -1221,6 +1222,14 @@ export class BluetoothService {
         message: 'Device firmware update needed',
         timestamp: new Date().toISOString(),
       });
+    }
+
+    // Forward OTA progress and status notifications to FirmwareUpdateService
+    if (msg.kind === 'ota_progress' || msg.kind === 'ota_status') {
+      FirmwareUpdateService.handleOtaMessage(msg.data);
+    }
+    if (parsed?.fw && typeof parsed.fw === 'string') {
+      FirmwareUpdateService.setCurrentFirmware(parsed.fw);
     }
 
     // Dispatch to registered notification listeners

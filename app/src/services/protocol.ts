@@ -59,6 +59,13 @@ export interface SetPairingTokenParams {
   newToken: string;
 }
 
+export interface StartOtaParams {
+  token: string;
+  url: string;
+  sha256: string;
+  fw: string;
+}
+
 export const BleProtocol = {
   /**
    * Builds PROV_WIFI command JSON string.
@@ -189,11 +196,42 @@ export const BleProtocol = {
       new_token: newTokenOrParams.newToken,
     });
   },
+
+  /**
+   * Builds START_OTA command JSON string.
+   * Token-protected, includes firmware binary URL, SHA-256 hash, and target firmware version.
+   */
+  formatStartOta(params: StartOtaParams): string {
+    return JSON.stringify({
+      cmd: 'START_OTA',
+      token: params.token,
+      url: params.url,
+      sha256: params.sha256,
+      fw: params.fw,
+    });
+  },
 };
 
 // ============================================================================
 // TYPED MESSAGE DEFINITIONS
 // ============================================================================
+
+export interface OtaProgressPayload {
+  type: 'ota_progress';
+  progress: number;
+  bytes?: number;
+  total?: number;
+}
+
+export interface OtaStatusPayload {
+  type: 'ota_status';
+  status: 'DOWNLOADING' | 'VERIFYING' | 'SUCCESS' | 'ERROR' | string;
+  progress?: number;
+  error?: string;
+  message?: string;
+  expected?: string;
+  actual?: string;
+}
 
 export interface WifiStatusPayload {
   status: 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'WIFI_TIMEOUT' | 'AUTH_FAILED' | 'NO_SSID' | string;
@@ -316,6 +354,8 @@ export type ParsedBleMessage =
   | { kind: 'emergency_event'; data: EmergencyEventPayload; raw: any }
   | { kind: 'escalation_logs'; data: EscalationLogEntry[]; raw: any }
   | { kind: 'device_error'; data: DeviceErrorPayload; raw: any }
+  | { kind: 'ota_progress'; data: OtaProgressPayload; raw: any }
+  | { kind: 'ota_status'; data: OtaStatusPayload; raw: any }
   | { kind: 'outdated_protocol'; protocol: number; fw?: string; minSupported: number; message: string; raw: any }
   | { kind: 'unknown'; data: any; raw: any }
   | { kind: 'malformed'; error: string; raw: string };
@@ -427,6 +467,37 @@ function categorizeParsedData(parsed: any): ParsedBleMessage {
   const status = String(parsed.status || '').toUpperCase();
   const event = String(parsed.event || '').toUpperCase();
   const error = parsed.error ? String(parsed.error).toUpperCase() : '';
+
+  // 2a. OTA Progress notification
+  if (type === 'ota_progress' || (parsed.progress !== undefined && parsed.bytes !== undefined)) {
+    return {
+      kind: 'ota_progress',
+      data: {
+        type: 'ota_progress',
+        progress: Number(parsed.progress) || 0,
+        bytes: typeof parsed.bytes === 'number' ? parsed.bytes : undefined,
+        total: typeof parsed.total === 'number' ? parsed.total : undefined,
+      },
+      raw: parsed,
+    };
+  }
+
+  // 2b. OTA Status notification
+  if (type === 'ota_status' || status === 'DOWNLOADING' || status === 'VERIFYING') {
+    return {
+      kind: 'ota_status',
+      data: {
+        type: 'ota_status',
+        status: parsed.status,
+        progress: parsed.progress,
+        error: parsed.error,
+        message: parsed.message,
+        expected: parsed.expected,
+        actual: parsed.actual,
+      },
+      raw: parsed,
+    };
+  }
 
   // 3. Error replies
   if (status === 'ERROR' || error || type === 'error') {

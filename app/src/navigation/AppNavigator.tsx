@@ -17,6 +17,7 @@ import { DemoScreen } from '../screens/DemoScreen';
 import { DebugLogsScreen } from '../screens/DebugLogsScreen';
 import { TroubleshootingScreen } from '../screens/TroubleshootingScreen';
 import { AboutDeviceScreen } from '../screens/AboutDeviceScreen';
+import { FirmwareUpdateScreen } from '../screens/FirmwareUpdateScreen';
 import { SafetySetupScreen } from '../screens/SafetySetupScreen';
 import { colors } from '../utils/theme';
 
@@ -193,6 +194,15 @@ export const AppNavigator = () => {
                 headerShown: true,
                 title: 'About Device',
                 headerTitle: 'About Device',
+              }}
+            />
+            <Stack.Screen
+              name="FirmwareUpdate"
+              component={FirmwareUpdateScreen}
+              options={{
+                headerShown: false,
+                title: 'Firmware Update',
+                headerTitle: 'Firmware Update',
               }}
             />
           </>

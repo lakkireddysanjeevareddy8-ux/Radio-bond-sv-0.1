@@ -32,6 +32,9 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <esp_task_wdt.h>
+#include <esp_ota_ops.h>
+#include <Update.h>
+#include <mbedtls/sha256.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
@@ -884,6 +887,247 @@ void processBleAdvertising() {
 }
 
 // ============================================================================
+// DUAL-PARTITION OTA & ROLLBACK GUARD (60s Health Confirmation)
+// ============================================================================
+bool otaPendingVerify = false;
+unsigned long otaBootTime = 0;
+const unsigned long OTA_HEALTH_WINDOW_MS = 60000; // 60 seconds
+
+void initOtaRollbackCheck() {
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  esp_ota_img_states_t ota_state;
+  if (running && esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
+    if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+      LOG_W("OTA", "New firmware partition pending verification! Running 60s health confirmation timer...");
+      otaPendingVerify = true;
+      otaBootTime = millis();
+    } else {
+      LOG_I("OTA", "Firmware running on validated partition: %s", running->label);
+    }
+  } else {
+    LOG_I("OTA", "Standard factory/app partition running.");
+  }
+}
+
+void checkOtaRollbackTimer() {
+  if (otaPendingVerify && (millis() - otaBootTime >= OTA_HEALTH_WINDOW_MS)) {
+    LOG_I("OTA", "60s health confirmation window elapsed cleanly without crash. Confirming firmware VALID.");
+    esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err == ESP_OK) {
+      LOG_I("OTA", "Firmware partition marked VALID permanently. Rollback cancelled.");
+    } else {
+      LOG_E("OTA", "Failed to cancel rollback: 0x%x", err);
+    }
+    otaPendingVerify = false;
+  }
+}
+
+struct OtaTaskParams {
+  char url[256];
+  char sha256[65];
+  char targetFw[32];
+};
+
+void otaTaskWorker(void* pvParameters) {
+  OtaTaskParams* params = (OtaTaskParams*)pvParameters;
+  LOG_I("OTA", "Starting HTTPS firmware download from: %s", params->url);
+
+  if (pStatusChar) {
+    notifyChar(pStatusChar, "{\"type\":\"ota_status\",\"status\":\"DOWNLOADING\",\"progress\":0}");
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure(); // Supabase HTTPS
+  client.setTimeout(15000);
+
+  HTTPClient https;
+  https.setReuse(false);
+  https.setTimeout(15000);
+
+  if (!https.begin(client, params->url)) {
+    LOG_E("OTA", "Failed to connect to firmware HTTPS server");
+    if (pStatusChar) {
+      notifyChar(pStatusChar, "{\"type\":\"ota_status\",\"status\":\"ERROR\",\"error\":\"CONNECT_FAILED\"}");
+    }
+    free(params);
+    vTaskDelete(NULL);
+    return;
+  }
+
+  int httpCode = https.GET();
+  if (httpCode != HTTP_CODE_OK) {
+    LOG_E("OTA", "HTTP GET failed: %d", httpCode);
+    if (pStatusChar) {
+      char errBuf[128];
+      snprintf(errBuf, sizeof(errBuf), "{\"type\":\"ota_status\",\"status\":\"ERROR\",\"error\":\"HTTP_%d\"}", httpCode);
+      notifyChar(pStatusChar, errBuf);
+    }
+    https.end();
+    free(params);
+    vTaskDelete(NULL);
+    return;
+  }
+
+  int contentLength = https.getSize();
+  if (contentLength <= 0 || contentLength > 1966080) { // Limit to 1.875MB (app partition size)
+    LOG_E("OTA", "Invalid binary size: %d bytes", contentLength);
+    if (pStatusChar) {
+      notifyChar(pStatusChar, "{\"type\":\"ota_status\",\"status\":\"ERROR\",\"error\":\"INVALID_SIZE\"}");
+    }
+    https.end();
+    free(params);
+    vTaskDelete(NULL);
+    return;
+  }
+
+  if (!Update.begin(contentLength, U_FLASH)) {
+    LOG_E("OTA", "Update.begin failed: %s", Update.errorString());
+    if (pStatusChar) {
+      notifyChar(pStatusChar, "{\"type\":\"ota_status\",\"status\":\"ERROR\",\"error\":\"UPDATE_BEGIN_FAILED\"}");
+    }
+    https.end();
+    free(params);
+    vTaskDelete(NULL);
+    return;
+  }
+
+  mbedtls_sha256_context sha_ctx;
+  mbedtls_sha256_init(&sha_ctx);
+  mbedtls_sha256_starts(&sha_ctx, 0); // 0 = SHA-256
+
+  WiFiClient *stream = https.getStreamPtr();
+  uint8_t buff[1024];
+  size_t written = 0;
+  int lastProgress = 0;
+  unsigned long lastProgressTime = millis();
+  bool writeError = false;
+
+  while (https.connected() && (written < contentLength)) {
+    size_t avail = stream->available();
+    if (avail > 0) {
+      size_t toRead = avail > sizeof(buff) ? sizeof(buff) : avail;
+      int bytesRead = stream->readBytes(buff, toRead);
+      if (bytesRead > 0) {
+        mbedtls_sha256_update(&sha_ctx, buff, bytesRead);
+        size_t bytesWritten = Update.write(buff, bytesRead);
+        if (bytesWritten != bytesRead) {
+          LOG_E("OTA", "Flash write error: expected %d, wrote %d", bytesRead, bytesWritten);
+          writeError = true;
+          break;
+        }
+        written += bytesWritten;
+
+        int progress = (int)((written * 100) / contentLength);
+        if ((progress != lastProgress && (millis() - lastProgressTime >= 400)) || progress == 100) {
+          lastProgress = progress;
+          lastProgressTime = millis();
+          if (pStatusChar) {
+            char progBuf[128];
+            snprintf(progBuf, sizeof(progBuf), "{\"type\":\"ota_progress\",\"progress\":%d,\"bytes\":%d,\"total\":%d}", progress, (int)written, contentLength);
+            notifyChar(pStatusChar, progBuf);
+          }
+        }
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(5));
+    feedWatchdog();
+  }
+
+  unsigned char shaResult[32];
+  mbedtls_sha256_finish(&sha_ctx, shaResult);
+  mbedtls_sha256_free(&sha_ctx);
+  https.end();
+
+  if (writeError || written != contentLength) {
+    LOG_E("OTA", "OTA download interrupted (%d / %d bytes)", written, contentLength);
+    Update.abort();
+    if (pStatusChar) {
+      notifyChar(pStatusChar, "{\"type\":\"ota_status\",\"status\":\"ERROR\",\"error\":\"WRITE_FAILED\"}");
+    }
+    free(params);
+    vTaskDelete(NULL);
+    return;
+  }
+
+  char calculatedSha[65];
+  for (int i = 0; i < 32; i++) {
+    sprintf(calculatedSha + (i * 2), "%02x", shaResult[i]);
+  }
+  calculatedSha[64] = 0;
+
+  LOG_I("OTA", "Calculated SHA-256: %s", calculatedSha);
+  LOG_I("OTA", "Expected   SHA-256: %s", params->sha256);
+
+  if (strcasecmp(calculatedSha, params->sha256) != 0) {
+    LOG_E("OTA", "SHA-256 checksum mismatch!");
+    Update.abort();
+    if (pStatusChar) {
+      char errBuf[256];
+      snprintf(errBuf, sizeof(errBuf), "{\"type\":\"ota_status\",\"status\":\"ERROR\",\"error\":\"SHA256_MISMATCH\",\"actual\":\"%s\"}", calculatedSha);
+      notifyChar(pStatusChar, errBuf);
+    }
+    free(params);
+    vTaskDelete(NULL);
+    return;
+  }
+
+  LOG_I("OTA", "SHA-256 checksum verified! Finalizing flash write...");
+  if (pStatusChar) {
+    notifyChar(pStatusChar, "{\"type\":\"ota_status\",\"status\":\"VERIFYING\",\"progress\":100}");
+  }
+
+  if (Update.end(true)) {
+    if (Update.isFinished()) {
+      LOG_I("OTA", "Firmware flashed successfully! Rebooting into new partition in 1s...");
+      if (pStatusChar) {
+        notifyChar(pStatusChar, "{\"type\":\"ota_status\",\"status\":\"SUCCESS\",\"message\":\"Rebooting into new firmware...\"}");
+      }
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      ESP.restart();
+    } else {
+      LOG_E("OTA", "Update.end succeeded but isFinished() is false");
+      if (pStatusChar) {
+        notifyChar(pStatusChar, "{\"type\":\"ota_status\",\"status\":\"ERROR\",\"error\":\"NOT_FINISHED\"}");
+      }
+    }
+  } else {
+    LOG_E("OTA", "Update.end failed: %s", Update.errorString());
+    if (pStatusChar) {
+      notifyChar(pStatusChar, "{\"type\":\"ota_status\",\"status\":\"ERROR\",\"error\":\"FINALIZE_FAILED\"}");
+    }
+  }
+
+  free(params);
+  vTaskDelete(NULL);
+}
+
+void startOtaUpdateTask(const char* url, const char* sha256, const char* targetFw) {
+  OtaTaskParams* params = (OtaTaskParams*)malloc(sizeof(OtaTaskParams));
+  if (!params) {
+    LOG_E("OTA", "Failed to allocate memory for OTA params");
+    return;
+  }
+  strncpy(params->url, url, sizeof(params->url) - 1);
+  params->url[sizeof(params->url) - 1] = '\0';
+
+  strncpy(params->sha256, sha256, sizeof(params->sha256) - 1);
+  params->sha256[sizeof(params->sha256) - 1] = '\0';
+
+  strncpy(params->targetFw, targetFw, sizeof(params->targetFw) - 1);
+  params->targetFw[sizeof(params->targetFw) - 1] = '\0';
+
+  xTaskCreatePinnedToCore(
+    otaTaskWorker,
+    "otaTask",
+    8192,
+    params,
+    1,
+    NULL,
+    1 // Run on core 1
+  );
+}
+
+// ============================================================================
 // 13. BLE CHARACTERISTIC CALLBACKS WITH JSON BOUNDING & VALIDATION
 // ============================================================================
 class ConfigCallbacks : public BLECharacteristicCallbacks {
@@ -1256,6 +1500,38 @@ class ProvisionCallbacks : public BLECharacteristicCallbacks {
         LOG_W("BLE", "GET_PAIRING_TOKEN rejected: Pairing window closed");
         sendAuthError(pStatusChar, "PAIRING_WINDOW_CLOSED");
       }
+    } else if (strcmp(cmd, "START_OTA") == 0) {
+      if (isRateLimited()) {
+        sendAuthError(pStatusChar, "RATE_LIMITED");
+        return;
+      }
+      const char* token = doc["token"] | "";
+      if (!validateToken(String(token))) {
+        LOG_W("OTA", "START_OTA rejected: Invalid or missing pairing token");
+        sendAuthError(pStatusChar, "UNAUTHORIZED");
+        return;
+      }
+      if (WiFi.status() != WL_CONNECTED) {
+        LOG_W("OTA", "START_OTA rejected: Device not connected to Wi-Fi");
+        if (pStatusChar) {
+          notifyChar(pStatusChar, "{\"type\":\"ota_status\",\"status\":\"ERROR\",\"error\":\"NO_WIFI\",\"message\":\"Device must be on Wi-Fi for OTA update\"}");
+        }
+        return;
+      }
+      const char* url = doc["url"] | "";
+      const char* sha256 = doc["sha256"] | "";
+      const char* targetFw = doc["fw"] | "";
+
+      if (strlen(url) == 0 || strlen(sha256) != 64) {
+        LOG_E("OTA", "START_OTA rejected: Invalid URL or SHA-256 hash length");
+        if (pStatusChar) {
+          notifyChar(pStatusChar, "{\"type\":\"ota_status\",\"status\":\"ERROR\",\"error\":\"INVALID_PARAMS\",\"message\":\"Invalid URL or SHA-256\"}");
+        }
+        return;
+      }
+
+      LOG_I("OTA", "START_OTA command accepted! Target FW: %s", targetFw);
+      startOtaUpdateTask(url, sha256, targetFw);
     } else if (strcmp(cmd, "ACK_EMERGENCY") == 0 || strcmp(cmd, "ACK") == 0) {
       const char* ackId = doc["id"] | doc["eventId"] | currentEmergencyEventId.c_str();
       LOG_I("BLE", "ACK_EMERGENCY received for event: %s", ackId);
@@ -2078,6 +2354,9 @@ void setup() {
   // Initialize Task Watchdog
   initWatchdog();
 
+  // Dual-partition OTA rollback check (validates new partition if booted pending verify)
+  initOtaRollbackCheck();
+
   // Factory reset check if emergency button held at boot for 3s
   if (digitalRead(PIN_BUTTON_EMG) == LOW) {
     LOG_I("BOOT", "Button pressed at boot. Hold for 3s to factory reset...");
@@ -2207,6 +2486,9 @@ void setup() {
 void loop() {
   // Feed Task Watchdog Timer at every loop iteration
   feedWatchdog();
+
+  // Check 60-second OTA rollback health verification timer
+  checkOtaRollbackTimer();
 
   // Handle incoming HTTP client connections (local REST API)
   server.handleClient();

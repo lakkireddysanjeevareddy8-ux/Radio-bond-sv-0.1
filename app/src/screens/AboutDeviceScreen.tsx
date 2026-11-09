@@ -11,6 +11,7 @@ import {
   Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import {
   Radio,
   Wifi,
@@ -23,6 +24,7 @@ import {
   AlertTriangle,
   RefreshCw,
   Send,
+  Sparkles,
 } from 'lucide-react-native';
 import { colors, typography, spacing, borderRadius, TOUCH_TARGET } from '../utils/theme';
 import { useConnectionStore } from '../store/useConnectionStore';
@@ -33,6 +35,7 @@ import { strings } from '../constants/strings';
 
 export const AboutDeviceScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation<any>();
   const connectionStatus = useConnectionStore((s) => s.status);
   const connectionManagerState = useConnectionStore((s) => s.connectionManagerState);
   const connectedDevice = useConnectionStore((s) => s.connectedDevice);
@@ -223,6 +226,20 @@ export const AboutDeviceScreen: React.FC = () => {
           <Text style={styles.specLabel}>{strings.aboutDevice.firmwareVersion}</Text>
           <Text style={styles.specValue}>v1.2.0-esp32</Text>
         </View>
+
+        <TouchableOpacity
+          style={[styles.specRow, { backgroundColor: colors.primarySoft, borderRadius: borderRadius.sm, paddingHorizontal: spacing.sm, marginVertical: spacing.xs }]}
+          onPress={() => navigation.navigate('FirmwareUpdate')}
+          accessible={true}
+          accessibilityRole="button"
+          accessibilityLabel="Check for firmware updates"
+        >
+          <View style={styles.specIconWrap}>
+            <Sparkles size={18} color={colors.primary} />
+          </View>
+          <Text style={[styles.specLabel, { color: colors.primaryDark, fontWeight: '700' }]}>Firmware update (OTA)</Text>
+          <Text style={[styles.specValue, { color: colors.primary, fontWeight: '700' }]}>Check $\rightarrow$</Text>
+        </TouchableOpacity>
 
         <View style={styles.specRow}>
           <View style={styles.specIconWrap}>
