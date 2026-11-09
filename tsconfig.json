@@ -1,7 +1,11 @@
 {
   "extends": "./app/tsconfig.json",
   "compilerOptions": {
-    "baseUrl": "./app"
+    "typeRoots": [
+      "./app/node_modules/@types"
+    ],
+    "skipLibCheck": true,
+    "ignoreDeprecations": "6.0"
   },
   "include": [
     "app/src/**/*",
