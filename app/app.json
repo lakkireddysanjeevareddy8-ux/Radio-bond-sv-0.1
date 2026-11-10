@@ -74,7 +74,9 @@
             "./assets/emergency_siren.wav"
           ]
         }
-      ]
+      ],
+      "expo-secure-store",
+      "@sentry/react-native"
     ],
     "web": {
       "favicon": "./assets/favicon.png"
