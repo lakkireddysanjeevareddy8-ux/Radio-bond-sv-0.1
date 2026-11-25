@@ -57,6 +57,7 @@ import {
   Info,
   ExternalLink,
   Plus,
+  Sparkles,
 } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 
@@ -1233,6 +1234,16 @@ export const DevicesScreen: React.FC = () => {
               </Text>
             </TouchableOpacity>
           )}
+          <TouchableOpacity
+            style={[styles.actionButton, { backgroundColor: '#0284C7' }]}
+            onPress={() => navigation.navigate('BathroomDesigner', { deviceId: activeDeviceId })}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="3D Bathroom Setup and radar coverage"
+          >
+            <Sparkles size={14} color="#FFFFFF" style={{ marginRight: 4 }} />
+            <Text style={styles.actionButtonText}>3D Room</Text>
+          </TouchableOpacity>
           <TouchableOpacity
             style={[styles.actionButton, { backgroundColor: colors.primary }]}
             onPress={() => navigation.navigate('Settings')}

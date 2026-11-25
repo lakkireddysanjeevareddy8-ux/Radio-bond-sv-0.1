@@ -19,6 +19,7 @@ import { TroubleshootingScreen } from '../screens/TroubleshootingScreen';
 import { AboutDeviceScreen } from '../screens/AboutDeviceScreen';
 import { FirmwareUpdateScreen } from '../screens/FirmwareUpdateScreen';
 import { SafetySetupScreen } from '../screens/SafetySetupScreen';
+import { BathroomDesignerScreen } from '../screens/BathroomDesignerScreen';
 import { colors } from '../utils/theme';
 
 const Tab = createBottomTabNavigator();
@@ -203,6 +204,15 @@ export const AppNavigator = () => {
                 headerShown: false,
                 title: 'Firmware Update',
                 headerTitle: 'Firmware Update',
+              }}
+            />
+            <Stack.Screen
+              name="BathroomDesigner"
+              component={BathroomDesignerScreen}
+              options={{
+                headerShown: false,
+                title: '3D Bathroom Designer',
+                headerTitle: '3D Bathroom Designer',
               }}
             />
           </>

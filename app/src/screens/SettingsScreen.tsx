@@ -69,6 +69,7 @@ import {
   Terminal,
   Radio,
   Cpu,
+  Sparkles,
 } from 'lucide-react-native';
 import { QuietHoursService, BypassPermissionStatus } from '../services/QuietHoursService';
 
@@ -450,6 +451,27 @@ export const SettingsScreen: React.FC = () => {
                 <Text style={styles.permissionsRowTitle}>WSG-01 Safety Setup & Permissions</Text>
                 <Text style={styles.permissionsRowSubtitle}>
                   Verify Bluetooth, Notifications, Emergency Sirens, and Background Operation
+                </Text>
+              </View>
+            </View>
+            <ChevronRight size={18} color="#64748B" />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.permissionsRowBtn, { borderTopWidth: 1, borderTopColor: '#F1F5F9' }]}
+            onPress={() => navigation.navigate('BathroomDesigner')}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="Smart Bathroom Setup 3D Designer"
+          >
+            <View style={styles.permissionsBtnLeft}>
+              <View style={[styles.permissionsIconWrapper, { backgroundColor: '#E0F2FE' }]}>
+                <Sparkles size={20} color="#0284C7" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.permissionsRowTitle}>Smart Bathroom Setup (Automatic 3D)</Text>
+                <Text style={styles.permissionsRowSubtitle}>
+                  Model your 3D bathroom, simulate 24GHz mmWave radar coverage & prevent door bleed
                 </Text>
               </View>
             </View>

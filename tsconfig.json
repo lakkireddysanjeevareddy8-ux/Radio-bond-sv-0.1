@@ -1,10 +1,15 @@
 {
-  "extends": "./app/tsconfig.json",
+  "extends": "./app/node_modules/expo/tsconfig.base",
   "compilerOptions": {
+    "baseUrl": "./app",
+    "strict": true,
+    "skipLibCheck": true,
     "typeRoots": [
       "./app/node_modules/@types"
     ],
-    "skipLibCheck": true,
+    "types": [
+      "jest"
+    ],
     "ignoreDeprecations": "6.0"
   },
   "include": [

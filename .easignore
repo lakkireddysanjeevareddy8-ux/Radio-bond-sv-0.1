@@ -79,3 +79,6 @@ installed-wsg.zip
 node_modules/
 **/node_modules/
 .git/
+
+app/android/
+app/ios/

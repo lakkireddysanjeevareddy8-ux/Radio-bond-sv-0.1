@@ -18,7 +18,7 @@ import { useConnectionStore } from '../store/useConnectionStore';
 import { DeviceConnectionService } from '../services/deviceConnectionService';
 import { DeviceCommunicationService } from '../services/DeviceCommunicationService';
 import { strings } from '../constants/strings';
-import { colors, typography, spacing, borderRadius, TOUCH_TARGET } from '../utils/theme';
+import { colors, typography, spacing, borderRadius, shadows, TOUCH_TARGET } from '../utils/theme';
 import { APP_VERSION_STRING } from '../utils/version';
 import { SafetyStatusCard } from '../components/SafetyStatusCard';
 import { DeviceHealthBar, DeviceDiagnosticsSection } from '../components/DeviceHealthBar';
@@ -50,6 +50,8 @@ import {
   AlertTriangle,
   Lock,
   RefreshCw,
+  Sparkles,
+  ChevronRight,
 } from 'lucide-react-native';
 import { ConnectionManager } from '../services/ConnectionManager';
 import { BluetoothService } from '../services/bluetoothService';
@@ -441,6 +443,33 @@ export const DashboardScreen: React.FC = () => {
               isOnline={isDeviceConnected}
               health={deviceHealth}
             />
+
+            {/* 3D Bathroom Setup & Radar Optimization Card */}
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={() => navigation.navigate('BathroomDesigner')}
+              accessibilityRole="button"
+              accessibilityLabel="Open 3D Bathroom Designer to optimize radar placement and room coverage"
+              style={styles.designerCardBanner}
+            >
+              <View style={styles.designerCardLeft}>
+                <View style={styles.designerIconBadge}>
+                  <Sparkles size={20} color="#0284C7" />
+                </View>
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={styles.designerCardTitle}>Smart Bathroom 3D Setup</Text>
+                    <View style={styles.designerNewPill}>
+                      <Text style={styles.designerNewPillText}>3D STUDIO</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.designerCardSubtitle}>
+                    Automatic 3D room generation & 24GHz mmWave radar preview
+                  </Text>
+                </View>
+                <ChevronRight size={18} color="#64748B" />
+              </View>
+            </TouchableOpacity>
 
             {/* Offline Friendly Card: NEVER shown when BLE is connected */}
             {!isDeviceConnected && !isBleConnected && (
@@ -1024,5 +1053,49 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
     color: '#1D4ED8',
+  },
+  designerCardBanner: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: borderRadius.lg,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    marginTop: spacing.md,
+    ...shadows.sm,
+  },
+  designerCardLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  designerIconBadge: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#E0F2FE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  designerCardTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  designerNewPill: {
+    backgroundColor: '#0284C7',
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 4,
+  },
+  designerNewPillText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: 0.4,
+  },
+  designerCardSubtitle: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    marginTop: 2,
+    lineHeight: 16,
   },
 });
