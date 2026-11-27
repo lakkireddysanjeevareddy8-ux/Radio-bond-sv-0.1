@@ -1,6 +1,8 @@
 import {
   BathroomDimensions,
   BathroomDoorConfig,
+  BathroomWindowConfig,
+  DEFAULT_WINDOW_CONFIG,
   DevicePlacement,
   DoorWall,
   DoorMaterial,
@@ -155,6 +157,7 @@ export class Bathroom3DMath {
       transparentWalls?: boolean;
       radarResolution?: number;
       pulsePhase?: number;
+      window?: BathroomWindowConfig;
     } = {}
   ): Polygon3D[] {
     const polygons: Polygon3D[] = [];
@@ -245,6 +248,110 @@ export class Bathroom3DMath {
           opacity: wallOpacity,
           tag: `wall-${wallId}`,
         });
+
+        // 3D Window (Frame, Glass Pane, Sill, and Cross-Mullion Dividers)
+        const win = options.window || DEFAULT_WINDOW_CONFIG;
+        if (win && win.wall === wallId) {
+          const wallLen = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+          const winW = Math.min(win.width || 0.7, wallLen - 0.3);
+          const winH = Math.min(win.height || 0.8, H - 0.6);
+          const winElev = Math.min(win.elevation || 1.35, H - winH - 0.15);
+
+          const winCenterDist = wallLen * (win.positionRatio ?? 0.8);
+          const winStartDist = Math.max(0.12, winCenterDist - winW / 2);
+          const winEndDist = Math.min(wallLen - 0.12, winCenterDist + winW / 2);
+
+          const dx = (p2.x - p1.x) / wallLen;
+          const dy = (p2.y - p1.y) / wallLen;
+
+          const w1x = p1.x + dx * winStartDist;
+          const w1y = p1.y + dy * winStartDist;
+          const w2x = p1.x + dx * winEndDist;
+          const w2y = p1.y + dy * winEndDist;
+
+          const inward = this.getInwardWallNormal(wallId);
+
+          // Window Frame (Slate Charcoal)
+          polygons.push({
+            id: `window-frame-${wallId}`,
+            points: [
+              { x: w1x, y: w1y, z: winElev },
+              { x: w2x, y: w2y, z: winElev },
+              { x: w2x, y: w2y, z: winElev + winH },
+              { x: w1x, y: w1y, z: winElev + winH },
+            ],
+            color: '#334155',
+            strokeColor: '#1E293B',
+            strokeWidth: 2,
+            opacity: 0.9,
+            tag: 'window-frame',
+          });
+
+          // Window Glass (Translucent Sky-Cyan with gentle reflection)
+          polygons.push({
+            id: `window-glass-${wallId}`,
+            points: [
+              { x: w1x + inward.x * 0.01, y: w1y + inward.y * 0.01, z: winElev + 0.04 },
+              { x: w2x + inward.x * 0.01, y: w2y + inward.y * 0.01, z: winElev + 0.04 },
+              { x: w2x + inward.x * 0.01, y: w2y + inward.y * 0.01, z: winElev + winH - 0.04 },
+              { x: w1x + inward.x * 0.01, y: w1y + inward.y * 0.01, z: winElev + winH - 0.04 },
+            ],
+            color: '#BAE6FD',
+            strokeColor: '#38BDF8',
+            strokeWidth: 1.5,
+            opacity: 0.65,
+            tag: 'window-glass',
+          });
+
+          // Window Sill (Protrudes slightly into the room)
+          polygons.push({
+            id: `window-sill-${wallId}`,
+            points: [
+              { x: w1x - dx * 0.03, y: w1y - dy * 0.03, z: winElev },
+              { x: w2x + dx * 0.03, y: w2y + dy * 0.03, z: winElev },
+              { x: w2x + dx * 0.03 + inward.x * 0.05, y: w2y + dy * 0.03 + inward.y * 0.05, z: winElev },
+              { x: w1x - dx * 0.03 + inward.x * 0.05, y: w1y - dy * 0.03 + inward.y * 0.05, z: winElev },
+            ],
+            color: '#E2E8F0',
+            strokeColor: '#94A3B8',
+            strokeWidth: 1.2,
+            tag: 'window-sill',
+          });
+
+          // Window Cross-Mullion Dividers (4-pane modern window)
+          const midX = (w1x + w2x) / 2;
+          const midY = (w1y + w2y) / 2;
+          const midZ = winElev + winH / 2;
+
+          // Vertical Mullion
+          polygons.push({
+            id: `window-mullion-v-${wallId}`,
+            points: [
+              { x: midX + inward.x * 0.015, y: midY + inward.y * 0.015, z: winElev },
+              { x: midX + inward.x * 0.015, y: midY + inward.y * 0.015, z: winElev + winH },
+            ],
+            color: '#475569',
+            strokeColor: '#334155',
+            strokeWidth: 1.8,
+            isWireframe: true,
+            tag: 'window-mullion',
+          });
+
+          // Horizontal Mullion
+          polygons.push({
+            id: `window-mullion-h-${wallId}`,
+            points: [
+              { x: w1x + inward.x * 0.015, y: w1y + inward.y * 0.015, z: midZ },
+              { x: w2x + inward.x * 0.015, y: w2y + inward.y * 0.015, z: midZ },
+            ],
+            color: '#475569',
+            strokeColor: '#334155',
+            strokeWidth: 1.8,
+            isWireframe: true,
+            tag: 'window-mullion',
+          });
+        }
+
         return;
       }
 

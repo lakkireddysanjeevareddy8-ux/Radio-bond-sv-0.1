@@ -23,6 +23,8 @@ import Svg, {
 import {
   BathroomDimensions,
   BathroomDoorConfig,
+  BathroomWindowConfig,
+  DEFAULT_WINDOW_CONFIG,
   DevicePlacement,
   DoorWall,
 } from '../types/bathroom';
@@ -68,6 +70,7 @@ const formatWallName = (wall: DoorWall): string => {
 interface Bathroom3DCanvasProps {
   dimensions: BathroomDimensions;
   door: BathroomDoorConfig;
+  window?: BathroomWindowConfig;
   device: DevicePlacement;
   showRadar?: boolean;
   showFixtures?: boolean;
@@ -79,6 +82,7 @@ interface Bathroom3DCanvasProps {
 export const Bathroom3DCanvas: React.FC<Bathroom3DCanvasProps> = ({
   dimensions,
   door,
+  window: windowConfig = DEFAULT_WINDOW_CONFIG,
   device,
   showRadar = true,
   showFixtures = true,
@@ -457,6 +461,7 @@ export const Bathroom3DCanvas: React.FC<Bathroom3DCanvasProps> = ({
         showFixtures,
         transparentWalls,
         pulsePhase,
+        window: windowConfig,
       }
     );
 
@@ -468,6 +473,7 @@ export const Bathroom3DCanvas: React.FC<Bathroom3DCanvasProps> = ({
   }, [
     animatedDims,
     door,
+    windowConfig,
     device,
     camera,
     layoutWidth,

@@ -15,6 +15,8 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import {
   BathroomDimensions,
   BathroomDoorConfig,
+  BathroomWindowConfig,
+  DEFAULT_WINDOW_CONFIG,
   DevicePlacement,
   DoorWall,
   DoorMaterial,
@@ -51,6 +53,7 @@ import {
   Layers,
   CheckCircle2,
   HelpCircle,
+  Activity,
 } from 'lucide-react-native';
 
 type SetupStep = 1 | 2 | 3 | 4 | 5 | 6;
@@ -74,8 +77,10 @@ export const BathroomDesignerScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
 
-  const { activeDeviceId } = useDeviceStore();
+  const { activeDeviceId, devices } = useDeviceStore();
   const targetDeviceId = route.params?.deviceId || activeDeviceId;
+  const activeDevice = devices.find((d) => d.deviceId === targetDeviceId) || devices[0];
+  const liveTelemetry = activeDevice?.telemetry;
 
   // Step indicator state
   const [currentStep, setCurrentStep] = useState<SetupStep>(1);
@@ -86,6 +91,7 @@ export const BathroomDesignerScreen: React.FC = () => {
   // Configuration state
   const [dimensions, setDimensions] = useState<BathroomDimensions>(DEFAULT_BATHROOM_CONFIG.dimensions);
   const [door, setDoor] = useState<BathroomDoorConfig>(DEFAULT_BATHROOM_CONFIG.door);
+  const [windowConfig, setWindowConfig] = useState<BathroomWindowConfig>(DEFAULT_WINDOW_CONFIG);
   const [device, setDevice] = useState<DevicePlacement>(DEFAULT_BATHROOM_CONFIG.device);
 
   // Dimension text inputs
@@ -102,6 +108,9 @@ export const BathroomDesignerScreen: React.FC = () => {
       if (isMounted && loaded) {
         setDimensions(loaded.dimensions);
         setDoor(loaded.door);
+        if (loaded.window) {
+          setWindowConfig(loaded.window);
+        }
         setDevice(loaded.device);
         setLengthInput(String(loaded.dimensions.length));
         setWidthInput(String(loaded.dimensions.width));
@@ -184,6 +193,7 @@ export const BathroomDesignerScreen: React.FC = () => {
       name: 'Master Bathroom',
       dimensions,
       door,
+      window: windowConfig,
       device,
       stats: coverageStats,
       createdAt: new Date().toISOString(),
@@ -281,6 +291,7 @@ export const BathroomDesignerScreen: React.FC = () => {
           <Bathroom3DCanvas
             dimensions={dimensions}
             door={door}
+            window={windowConfig}
             device={device}
             onDeviceChange={setDevice}
             showRadar={true}
@@ -497,6 +508,35 @@ export const BathroomDesignerScreen: React.FC = () => {
             {/* Door Material & Width */}
             <View style={styles.inputCard}>
               <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Door Position Along Wall</Text>
+                <View style={styles.buttonSegmentRow}>
+                  {[
+                    { ratio: 0.25, label: 'Left (25%)' },
+                    { ratio: 0.5, label: 'Center (50%)' },
+                    { ratio: 0.75, label: 'Right (75%)' },
+                  ].map((pos) => (
+                    <TouchableOpacity
+                      key={pos.ratio}
+                      style={[
+                        styles.segmentBtn,
+                        Math.abs(door.positionRatio - pos.ratio) < 0.05 && styles.segmentBtnActive,
+                      ]}
+                      onPress={() => setDoor((d) => ({ ...d, positionRatio: pos.ratio }))}
+                    >
+                      <Text
+                        style={[
+                          styles.segmentBtnText,
+                          Math.abs(door.positionRatio - pos.ratio) < 0.05 && styles.segmentBtnTextActive,
+                        ]}
+                      >
+                        {pos.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              <View style={styles.inputGroup}>
                 <Text style={styles.inputLabel}>Door Width</Text>
                 <View style={styles.inputWrapper}>
                   <TextInput
@@ -560,6 +600,88 @@ export const BathroomDesignerScreen: React.FC = () => {
                         ]}
                       >
                         {s.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            </View>
+
+            {/* Window Configuration Section */}
+            <Text style={[styles.subHeading, { marginTop: 18 }]}>Bathroom Window</Text>
+            <Text style={[styles.sectionDescription, { marginBottom: 10 }]}>
+              Position the bathroom ventilation or privacy window in 3D.
+            </Text>
+
+            <View style={styles.wallSelectorGrid}>
+              {[
+                { id: 'LEFT' as DoorWall, label: 'Left Wall' },
+                { id: 'RIGHT' as DoorWall, label: 'Right Wall' },
+                { id: 'TOP' as DoorWall, label: 'Front Wall' },
+                { id: 'BOTTOM' as DoorWall, label: 'Back Wall' },
+              ].map(({ id: w, label }) => (
+                <TouchableOpacity
+                  key={w}
+                  style={[styles.wallChoiceCard, windowConfig.wall === w && styles.wallChoiceCardActive]}
+                  onPress={() => setWindowConfig((win) => ({ ...win, wall: w }))}
+                >
+                  <Text style={[styles.wallChoiceText, windowConfig.wall === w && styles.wallChoiceTextActive]}>
+                    {label}
+                  </Text>
+                  {windowConfig.wall === w && <Check size={16} color={colors.primary} />}
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={styles.inputCard}>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Window Position Along Wall</Text>
+                <View style={styles.buttonSegmentRow}>
+                  {[
+                    { ratio: 0.25, label: 'Left (25%)' },
+                    { ratio: 0.5, label: 'Center (50%)' },
+                    { ratio: 0.8, label: 'Right (80%)' },
+                  ].map((pos) => (
+                    <TouchableOpacity
+                      key={pos.ratio}
+                      style={[
+                        styles.segmentBtn,
+                        Math.abs(windowConfig.positionRatio - pos.ratio) < 0.08 && styles.segmentBtnActive,
+                      ]}
+                      onPress={() => setWindowConfig((win) => ({ ...win, positionRatio: pos.ratio }))}
+                    >
+                      <Text
+                        style={[
+                          styles.segmentBtnText,
+                          Math.abs(windowConfig.positionRatio - pos.ratio) < 0.08 && styles.segmentBtnTextActive,
+                        ]}
+                      >
+                        {pos.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Window Width</Text>
+                <View style={styles.buttonSegmentRow}>
+                  {[0.5, 0.7, 0.9].map((w) => (
+                    <TouchableOpacity
+                      key={w}
+                      style={[
+                        styles.segmentBtn,
+                        Math.abs(windowConfig.width - w) < 0.05 && styles.segmentBtnActive,
+                      ]}
+                      onPress={() => setWindowConfig((win) => ({ ...win, width: w }))}
+                    >
+                      <Text
+                        style={[
+                          styles.segmentBtnText,
+                          Math.abs(windowConfig.width - w) < 0.05 && styles.segmentBtnTextActive,
+                        ]}
+                      >
+                        {w}m
                       </Text>
                     </TouchableOpacity>
                   ))}
@@ -754,6 +876,30 @@ export const BathroomDesignerScreen: React.FC = () => {
                   ))}
                 </View>
               </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>
+                  Sensor Vertical Tilt: {device.pitchAngleDeg > 0 ? `+${device.pitchAngleDeg}° (Up)` : `${device.pitchAngleDeg}° (Down)`}
+                </Text>
+                <View style={styles.buttonSegmentRow}>
+                  {[-20, -10, 0, 10].map((pitch) => (
+                    <TouchableOpacity
+                      key={pitch}
+                      style={[styles.segmentBtn, device.pitchAngleDeg === pitch && styles.segmentBtnActive]}
+                      onPress={() => setDevice((d) => ({ ...d, pitchAngleDeg: pitch }))}
+                    >
+                      <Text
+                        style={[
+                          styles.segmentBtnText,
+                          device.pitchAngleDeg === pitch && styles.segmentBtnTextActive,
+                        ]}
+                      >
+                        {pitch === 0 ? '0° (Level)' : `${pitch}°`}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
             </View>
 
             <View style={styles.buttonRow}>
@@ -808,6 +954,53 @@ export const BathroomDesignerScreen: React.FC = () => {
             {/* Simulated Model Technical Notice */}
             <View style={{ marginBottom: 12 }}>
               <RadarSimulatedNotice />
+            </View>
+
+            {/* Live Sensor Detection vs Conceptual 3D Model Status */}
+            <View style={styles.inputCard}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Activity size={16} color={liveTelemetry?.presence ? '#10B981' : '#0284C7'} />
+                  <Text style={styles.inputLabel}>
+                    {liveTelemetry ? 'Physical WSG-01 Sensor Live Data' : 'Conceptual Radar Field Mode'}
+                  </Text>
+                </View>
+                <View style={[
+                  styles.sensorBadgePill,
+                  liveTelemetry?.presence && styles.sensorBadgeActive,
+                ]}>
+                  <Text style={styles.sensorBadgeText}>
+                    {liveTelemetry ? (liveTelemetry.presence ? 'TARGET DETECTED' : 'AREA CLEAR') : 'THEORETICAL FOV'}
+                  </Text>
+                </View>
+              </View>
+
+              <Text style={{ fontSize: 12, color: colors.textSecondary, marginBottom: 10, lineHeight: 17 }}>
+                {liveTelemetry
+                  ? 'Real-time telemetry reported from physical LD2410C 24GHz FMCW sensor over BLE/Wi-Fi.'
+                  : 'Displaying simulated 60° azimuth theoretical coverage volume. Actual sensor sensitivity and gate energy thresholds can be fine-tuned per bathroom.'}
+              </Text>
+
+              <View style={styles.buttonSegmentRow}>
+                <View style={[styles.segmentBtn, { backgroundColor: '#F8FAFC' }]}>
+                  <Text style={{ fontSize: 10, color: colors.textMuted }}>Movement</Text>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: liveTelemetry?.movement ? '#0284C7' : '#64748B' }}>
+                    {liveTelemetry?.movement ? 'Moving' : 'Still / Clear'}
+                  </Text>
+                </View>
+                <View style={[styles.segmentBtn, { backgroundColor: '#F8FAFC' }]}>
+                  <Text style={{ fontSize: 10, color: colors.textMuted }}>Presence</Text>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: liveTelemetry?.presence ? '#10B981' : '#64748B' }}>
+                    {liveTelemetry?.presence ? 'Occupied' : 'Vacant'}
+                  </Text>
+                </View>
+                <View style={[styles.segmentBtn, { backgroundColor: '#F8FAFC' }]}>
+                  <Text style={{ fontSize: 10, color: colors.textMuted }}>Stillness</Text>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: colors.textPrimary }}>
+                    {liveTelemetry?.stillnessSeconds ? `${liveTelemetry.stillnessSeconds}s` : '0s'}
+                  </Text>
+                </View>
+              </View>
             </View>
 
             {/* Volumetric Coverage Zones Breakdown */}
@@ -905,6 +1098,12 @@ export const BathroomDesignerScreen: React.FC = () => {
                 </Text>
               </View>
               <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>Window Position</Text>
+                <Text style={styles.summaryValue}>
+                  {formatWallName(windowConfig.wall)} Wall ({windowConfig.width}m)
+                </Text>
+              </View>
+              <View style={styles.summaryRow}>
                 <Text style={styles.summaryLabel}>WSG-01 Mounting</Text>
                 <Text style={styles.summaryValue}>
                   {formatWallName(device.wall)} Wall at {device.mountingHeight}m
@@ -913,7 +1112,7 @@ export const BathroomDesignerScreen: React.FC = () => {
               <View style={styles.summaryRow}>
                 <Text style={styles.summaryLabel}>Sensor Orientation</Text>
                 <Text style={styles.summaryValue}>
-                  {device.yawAngleDeg === 0 ? 'Centered (0°)' : `${device.yawAngleDeg}° yaw`}
+                  {device.yawAngleDeg === 0 ? 'Centered (0°)' : `${device.yawAngleDeg}° yaw`} • {device.pitchAngleDeg}° tilt
                 </Text>
               </View>
               <View style={styles.summaryRow}>
@@ -1460,5 +1659,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#DC2626',
     fontWeight: '600',
+  },
+  sensorBadgePill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: '#E2E8F0',
+  },
+  sensorBadgeActive: {
+    backgroundColor: '#DCFCE7',
+  },
+  sensorBadgeText: {
+    fontSize: 9.5,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    color: '#0F172A',
   },
 });

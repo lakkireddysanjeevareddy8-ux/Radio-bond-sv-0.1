@@ -20,6 +20,22 @@ export interface BathroomDoorConfig {
   isOpen: boolean;       // for dynamic radar leak testing
 }
 
+export interface BathroomWindowConfig {
+  wall: DoorWall;
+  positionRatio: number; // 0.1 to 0.9 along the wall
+  width: number;         // in meters (e.g. 0.6)
+  height: number;        // in meters (e.g. 0.8)
+  elevation: number;     // elevation from floor in meters (e.g. 1.4)
+}
+
+export const DEFAULT_WINDOW_CONFIG: BathroomWindowConfig = {
+  wall: 'LEFT',
+  positionRatio: 0.8,
+  width: 0.7,
+  height: 0.8,
+  elevation: 1.4,
+};
+
 export interface DevicePlacement {
   wall: DoorWall;
   mountingHeight: number;  // in meters from floor (e.g. 1.8)
@@ -64,6 +80,7 @@ export interface Bathroom3DConfig {
   name: string;
   dimensions: BathroomDimensions;
   door: BathroomDoorConfig;
+  window?: BathroomWindowConfig;
   device: DevicePlacement;
   fixtures?: FixtureLayout;
   stats?: RadarCoverageReport;
@@ -88,6 +105,7 @@ export const DEFAULT_BATHROOM_CONFIG: Bathroom3DConfig = {
     material: 'WOOD',
     isOpen: false,
   },
+  window: DEFAULT_WINDOW_CONFIG,
   device: {
     wall: 'TOP',
     mountingHeight: 1.8,
