@@ -899,11 +899,28 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
         data.cmd === 'STATUS' ||
         data.type === 'status'
       ) {
-        if (data.token && targetDevice?.id) {
-          SecureTokenStorage.saveDeviceToken(targetDevice.id, data.token).catch(() => {});
+        if (data.token && (targetDevice?.id || connectedSession?.device?.id)) {
+          const mainId = targetDevice?.id || connectedSession?.device?.id || 'wsg-01';
+          const aliases = [connectedSession?.device?.id, connectedSession?.device?.name, data.device_id, targetDevice?.id].filter(Boolean);
+          SecureTokenStorage.saveDeviceToken(mainId, String(data.token).trim(), aliases).catch(() => {});
         }
         const normStatus = String(data.status || '').toUpperCase();
         const normState = String(data.state || '').toUpperCase();
+
+        if (
+          normStatus === 'ERROR' &&
+          (data.error === 'UNAUTHORIZED' || data.error === 'AUTH_FAILED')
+        ) {
+          logger.warn('WIFI_SETUP', 'Device rejected command: UNAUTHORIZED / AUTH_FAILED');
+          clearAllWifiTimers();
+          setWifiStatus('FAILED');
+          if (targetDevice?.id) {
+            SecureTokenStorage.removeDeviceToken(targetDevice.id, [connectedSession?.device?.id, connectedSession?.device?.name]).catch(() => {});
+          }
+          setErrorMessage(data.message || 'Device authentication failed: Valid device pairing token required. Please restart the ESP32 to open the 5-minute pairing window.');
+          setPhase('WIFI_FAILED');
+          return;
+        }
 
         if (
           data.error === 'FW_UPDATE_NEEDED' ||
@@ -948,7 +965,14 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
           logger.warn('WIFI_SETUP', 'Device reported AUTH_FAILED');
           clearAllWifiTimers();
           setWifiStatus('FAILED');
-          setErrorMessage('Wi-Fi connection failed: Incorrect Wi-Fi password.');
+          if (data.error === 'UNAUTHORIZED' || (data.message && String(data.message).toLowerCase().includes('token'))) {
+            if (targetDevice?.id) {
+              SecureTokenStorage.removeDeviceToken(targetDevice.id, [connectedSession?.device?.id, connectedSession?.device?.name]).catch(() => {});
+            }
+            setErrorMessage(data.message || 'Device authentication failed: Valid device pairing token required. Please restart the ESP32 within 5 minutes to pair.');
+          } else {
+            setErrorMessage('Wi-Fi connection failed: Incorrect Wi-Fi password.');
+          }
           setPhase('WIFI_FAILED');
           return;
         }
@@ -1008,7 +1032,21 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
       // 2. Handle WIFI_SCAN
       if (data.type === 'WIFI_SCAN' || data.type === 'wifi_scan') {
         const scanStatus = String(data.status || '').toUpperCase();
-        if (scanStatus === 'SCANNING') {
+        if (
+          scanStatus === 'DIAGNOSTIC_MODE' ||
+          data.error === 'DIAGNOSTIC_MODE' ||
+          data.status === 'DISABLED' ||
+          data.status === 'UNAVAILABLE'
+        ) {
+          logger.info('WIFI_SETUP', 'Wi-Fi scanning disabled or in diagnostic mode; activating manual SSID entry');
+          setIsScanningWifi(false);
+          setIsManualSsid(true);
+          setWifiScanTimedOut(false);
+          if (wifiScanTimeoutRef.current) {
+            clearTimeout(wifiScanTimeoutRef.current);
+            wifiScanTimeoutRef.current = null;
+          }
+        } else if (scanStatus === 'SCANNING') {
           setIsScanningWifi(true);
           setWifiScanTimedOut(false);
         } else if (scanStatus === 'DONE') {
@@ -1770,6 +1808,37 @@ export const AddDeviceSearchScreen: React.FC<AddDeviceSearchScreenProps> = ({
                 <Text style={[styles.statusPillLabel, { color: '#DC2626' }]}>Wi-Fi: Connection Failed</Text>
               </View>
             </View>
+
+            {/* Repair Pairing Guidance when token is expired or unauthorized */}
+            {Boolean(errorMessage.toLowerCase().includes('token') || errorMessage.toLowerCase().includes('auth')) && (
+              <View style={{ backgroundColor: '#FEF3C7', borderRadius: 8, padding: 12, marginBottom: 14, borderWidth: 1, borderColor: '#F59E0B' }}>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: '#92400E', marginBottom: 4 }}>
+                  Device Pairing Required
+                </Text>
+                <Text style={{ fontSize: 12, color: '#B45309', lineHeight: 17, marginBottom: 10 }}>
+                  For security, the ESP32 only exposes its pairing token during the first 5 minutes after startup.
+                  {'\n\n'}
+                  1. Power-cycle or restart the ESP32.
+                  {'\n'}
+                  2. Within 5 minutes, tap "Repair Device Pairing" below.
+                </Text>
+                <TouchableOpacity
+                  style={{ backgroundColor: '#D97706', paddingVertical: 10, borderRadius: 6, alignItems: 'center' }}
+                  onPress={async () => {
+                    if (targetDevice?.id) {
+                      await SecureTokenStorage.removeDeviceToken(targetDevice.id, [connectedSession?.device?.id, connectedSession?.device?.name]);
+                    }
+                    setErrorMessage('');
+                    setPhase('CHECKING_BLUETOOTH');
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 }}>
+                    Repair Device Pairing
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
 
             {/* Action 1: Retry */}
             <TouchableOpacity

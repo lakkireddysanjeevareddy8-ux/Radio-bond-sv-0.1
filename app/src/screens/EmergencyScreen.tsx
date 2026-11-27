@@ -34,6 +34,7 @@ import { EmergencySoundService } from '../services/EmergencySoundService';
 import { deviceService } from '../services/DeviceCommunicationService';
 import { EscalationEngineService } from '../services/EscalationEngineService';
 import { FalseAlarmFeedbackModal } from '../components/FalseAlarmFeedbackModal';
+import { BluetoothService } from '../services/bluetoothService';
 
 export const EmergencyScreen: React.FC = () => {
   const { activeEmergency, setActiveEmergency, deviceConfig, user } = useAppStore();
@@ -176,6 +177,13 @@ export const EmergencyScreen: React.FC = () => {
             EmergencySoundService.stopAll();
             const eventId = activeEmergency.eventId || activeEmergency.id;
             const devId = activeEmergency.deviceId;
+            if (isTest) {
+              try {
+                await BluetoothService.cancelTestEmergency();
+              } catch (e) {
+                console.warn('[EmergencyScreen] BLE cancelTestEmergency error:', e);
+              }
+            }
             await deviceService.cancelEmergency(eventId, devId);
             setActiveEmergency(null);
           },
@@ -195,10 +203,15 @@ export const EmergencyScreen: React.FC = () => {
     EmergencySoundService.stopAll();
     const eventId = activeEmergency.eventId || activeEmergency.id;
     const devId = activeEmergency.deviceId;
-    await deviceService.resolveEmergency(eventId, devId);
     if (isTest) {
+      try {
+        await BluetoothService.cancelTestEmergency();
+      } catch (e) {
+        console.warn('[EmergencyScreen] BLE cancelTestEmergency error:', e);
+      }
       setActiveEmergency(null);
     } else {
+      await deviceService.resolveEmergency(eventId, devId);
       setFeedbackModalInfo({ eventId, deviceId: devId });
     }
   };

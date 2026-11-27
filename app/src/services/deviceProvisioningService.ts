@@ -126,7 +126,35 @@ export class DeviceProvisioningService {
 
     onProgress?.('PREPARING', 'Preparing network credentials for WSG-01...');
 
-    const storedToken = (await SecureTokenStorage.getDeviceToken(session.device.id)) || undefined;
+    let storedToken = (await SecureTokenStorage.getDeviceToken(session.device.id, [session.device.name, creds.customDeviceName])) || undefined;
+
+    // If pairing token not yet cached, attempt to retrieve it from active pairing window via GET_STATUS
+    if (!storedToken && session.provisionChar) {
+      try {
+        const tokenPromise = new Promise<string | null>((resolve) => {
+          let timer: any = null;
+          const unsub = BluetoothService.addNotificationListener((resp) => {
+            if (resp?.token && typeof resp.token === 'string') {
+              clearTimeout(timer);
+              unsub();
+              resolve(resp.token.trim());
+            }
+          });
+          timer = setTimeout(() => {
+            unsub();
+            resolve(null);
+          }, 2500);
+        });
+
+        await BluetoothService.sendCommand(session, { cmd: 'GET_STATUS' });
+        const retrieved = await tokenPromise;
+        if (retrieved) {
+          storedToken = retrieved;
+          const aliases = [session.device.name, creds.customDeviceName].filter((x): x is string => Boolean(x));
+          await SecureTokenStorage.saveDeviceToken(session.device.id, retrieved, aliases);
+        }
+      } catch (err) {}
+    }
 
     // Construct provisioning payload (Espressif compatible JSON structure)
     const payload = JSON.stringify({
@@ -195,12 +223,24 @@ export class DeviceProvisioningService {
           ssid: assignedSsid,
           rssi: assignedRssi,
         });
+      } else if (
+        status === 'ERROR' &&
+        (resp.error === 'UNAUTHORIZED' || resp.error === 'AUTH_FAILED')
+      ) {
+        // Firmware rejected command due to missing or invalid device pairing token
+        SecureTokenStorage.removeDeviceToken(session.device.id, [session.device.name]).catch(() => {});
+        monitorError = resp.message || 'Valid device pairing token required. Please restart the ESP32 within 5 minutes to pair.';
       } else if (status === 'AUTH_FAILED') {
-        monitorError = 'Incorrect Wi-Fi password';
+        if (resp.error === 'UNAUTHORIZED' || (resp.message && resp.message.toLowerCase().includes('token'))) {
+          SecureTokenStorage.removeDeviceToken(session.device.id, [session.device.name]).catch(() => {});
+          monitorError = resp.message || 'Valid device pairing token required. Please restart the ESP32 within 5 minutes to pair.';
+        } else {
+          monitorError = 'Incorrect Wi-Fi password';
+        }
       } else if (status === 'NO_SSID' || status === 'SSID_NOT_FOUND') {
         monitorError = 'Network not found (make sure it is 2.4 GHz)';
       } else if (status === 'WIFI_TIMEOUT' || status === 'TIMEOUT') {
-        monitorError = 'Connection timed out';
+        monitorError = 'Wi-Fi connection timed out';
       } else if (status === 'FAILED' || state === 'WIFI_FAILED') {
         monitorError = resp.error || 'Wi-Fi connection failed';
       }

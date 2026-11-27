@@ -103,6 +103,8 @@ export const SettingsScreen: React.FC = () => {
     disconnect: connDisconnect,
   } = useConnectionStore();
 
+  const isBleConnected = connStatus === 'connected' || Boolean(BluetoothService.getActiveSession());
+
   const { getPrimaryContact } = useContactStore();
   const primaryContact = getPrimaryContact();
 
@@ -171,11 +173,47 @@ export const SettingsScreen: React.FC = () => {
     } catch (err: any) {
       console.error('[Settings] Failed to trigger TEST_EMERGENCY over BLE:', err?.message || err);
       setIsTestRunning(false);
-      Alert.alert(
-        'Device Not Connected',
-        'WSG-01 is not connected. Please reconnect the device.',
-        [{ text: 'OK' }]
-      );
+      const errCode = err?.code || '';
+      const errMsg = err?.message || String(err);
+
+      if (
+        errCode === 'AUTH_FAILED' ||
+        errCode === 'UNAUTHORIZED' ||
+        errMsg.toLowerCase().includes('token') ||
+        errMsg.toLowerCase().includes('auth')
+      ) {
+        Alert.alert(
+          'Device Authentication Failed',
+          'ESP32 rejected the test command: Valid device pairing token required.\n\nThe stale local token has been invalidated. Please restart the ESP32 to open the 5-minute pairing window and re-pair.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Repair Pairing',
+              onPress: () => {
+                navigation.navigate('AddDeviceSearch', { repairMode: true });
+              },
+            },
+          ]
+        );
+      } else if (errCode === 'RATE_LIMITED' || errMsg.includes('RATE_LIMITED')) {
+        Alert.alert(
+          'Rate Limited',
+          'ESP32 rate limit reached. Please wait a few seconds before triggering another test.',
+          [{ text: 'OK' }]
+        );
+      } else if (errCode === 'BLE_NOT_CONNECTED' || errMsg.includes('not connected')) {
+        Alert.alert(
+          'Device Not Connected',
+          'WSG-01 Bluetooth connection is not active. Please reconnect to the device.',
+          [{ text: 'OK' }]
+        );
+      } else {
+        Alert.alert(
+          'Test Emergency Failed',
+          errMsg || 'Failed to communicate with WSG-01 over Bluetooth.',
+          [{ text: 'OK' }]
+        );
+      }
     }
   };
 
@@ -577,19 +615,54 @@ export const SettingsScreen: React.FC = () => {
 
           {/* Test Emergency Alert Button */}
           <View style={styles.testAlertBox}>
-            <Text style={styles.testAlertTitle}>Verify Alert Pipeline</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+              <Text style={styles.testAlertTitle}>Verify Alert Pipeline</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                <View
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: 4,
+                    backgroundColor: isBleConnected ? '#10B981' : '#94A3B8',
+                  }}
+                />
+                <Text style={{ fontSize: 11, fontWeight: '700', color: isBleConnected ? '#10B981' : '#94A3B8' }}>
+                  {isBleConnected ? 'Bluetooth Ready' : 'Bluetooth Offline'}
+                </Text>
+              </View>
+            </View>
             <Text style={styles.testAlertSubtitle}>
-              Simulate an urgent LD2410C emergency event to test push delivery, alarm siren, vibration, and display.
+              Triggers a real hardware emergency test on WSG-01 over Bluetooth. No active Wi-Fi connection required.
             </Text>
             <TouchableOpacity
-              style={styles.testAlertBtn}
-              onPress={() => setShowTestConfirmModal(true)}
+              style={[styles.testAlertBtn, isTestRunning && { opacity: 0.7 }]}
+              onPress={() => {
+                if (!isBleConnected) {
+                  Alert.alert(
+                    'Bluetooth Disconnected',
+                    'Please connect to your WSG-01 device via Bluetooth to perform an emergency test.',
+                    [{ text: 'OK' }]
+                  );
+                  return;
+                }
+                setShowTestConfirmModal(true);
+              }}
+              disabled={isTestRunning}
               activeOpacity={0.85}
               accessibilityRole="button"
               accessibilityLabel="Test Emergency Alert"
             >
-              <ShieldAlert size={18} color="#FFFFFF" />
-              <Text style={styles.testAlertBtnText}>Test Emergency Alert</Text>
+              {isTestRunning ? (
+                <>
+                  <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} />
+                  <Text style={styles.testAlertBtnText}>Sending Test Command...</Text>
+                </>
+              ) : (
+                <>
+                  <ShieldAlert size={18} color="#FFFFFF" />
+                  <Text style={styles.testAlertBtnText}>Test Emergency Alert</Text>
+                </>
+              )}
             </TouchableOpacity>
           </View>
 

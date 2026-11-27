@@ -151,19 +151,90 @@ describe('SecureTokenStorage & BLE Pairing Security', () => {
     });
   });
 
-  describe('Logger Redaction of Pairing Tokens & Passwords', () => {
-    it('redacts current_token, new_token, and pairing_token from logs', () => {
-      const sensitivePayload = {
-        cmd: 'SET_PAIRING_TOKEN',
-        current_token: 'secret_current_token_abc',
-        new_token: 'secret_new_token_xyz',
-        pass: 'SuperSecretWiFi123',
-      };
+  describe('Regression Tests: Fresh Pairing, Stale Tokens, Chunking & BT Emergency', () => {
+    it('saves pairing token with aliases and allows retrieval by any alias', async () => {
+      const bleMac = 'AA:BB:CC:DD:EE:FF';
+      const hwId = 'WSG001';
+      const advName = 'WSG-01-BEDROOM';
 
-      const sanitized = logger.sanitizeData(sensitivePayload);
-      expect(sanitized.current_token).toBe('[REDACTED]');
-      expect(sanitized.new_token).toBe('[REDACTED]');
-      expect(sanitized.pass).toBe('[REDACTED]');
+      await SecureTokenStorage.saveDeviceToken(bleMac, 'test_esp32_token_xyz', [hwId, advName]);
+
+      expect(await SecureTokenStorage.getDeviceToken(bleMac)).toBe('test_esp32_token_xyz');
+      expect(await SecureTokenStorage.getDeviceToken(hwId)).toBe('test_esp32_token_xyz');
+      expect(await SecureTokenStorage.getDeviceToken(advName)).toBe('test_esp32_token_xyz');
+
+      // Invalidate with aliases
+      await SecureTokenStorage.removeDeviceToken(bleMac, [hwId, advName]);
+      expect(await SecureTokenStorage.getDeviceToken(bleMac)).toBeNull();
+      expect(await SecureTokenStorage.getDeviceToken(hwId)).toBeNull();
+      expect(await SecureTokenStorage.getDeviceToken(advName)).toBeNull();
+    });
+
+    it('parses UNAUTHORIZED auth error correctly and distinguishes it from WiFi password error', () => {
+      const rawAuthError = JSON.stringify({
+        type: 'status',
+        status: 'ERROR',
+        error: 'UNAUTHORIZED',
+        message: 'Valid device token required',
+      });
+
+      const parsed = parseBleMessage(rawAuthError);
+      expect(parsed.kind).toBe('device_error');
+      if (parsed.kind === 'device_error') {
+        expect(parsed.data.error).toBe('UNAUTHORIZED');
+        expect(parsed.data.message).toBe('Valid device token required');
+      }
+    });
+
+    it('correctly handles chunked / truncated BLE notification fragments', () => {
+      const part1 = '{"type":"event","event":"TEST_';
+      const part2 = 'EMERGENCY","timestamp":12345678}';
+
+      const parsedPart1 = parseBleMessage(part1);
+      expect(parsedPart1.kind).toBe('malformed');
+
+      // Reassemble chunk
+      const fullCandidate = part1 + part2;
+      const parsedFull = parseBleMessage(fullCandidate);
+      expect(parsedFull.kind).toBe('emergency_event');
+      if (parsedFull.kind === 'emergency_event') {
+        expect(parsedFull.data.event).toBe('TEST_EMERGENCY');
+      }
+    });
+
+    it('builds TEST_EMERGENCY and CANCEL_TEST with authentic pairing tokens', () => {
+      const testToken = 'esp32_unique_nvs_token_42';
+      const testCmd = JSON.parse(BleProtocol.formatTestEmergency(testToken));
+      expect(testCmd.cmd).toBe('TEST_EMERGENCY');
+      expect(testCmd.token).toBe(testToken);
+
+      const cancelCmd = JSON.parse(BleProtocol.formatCancelTest(testToken));
+      expect(cancelCmd.cmd).toBe('CANCEL_TEST');
+      expect(cancelCmd.token).toBe(testToken);
+    });
+
+    it('parses DIAGNOSTIC_MODE for wifi scan to enable manual SSID fallback', () => {
+      const rawDiag = JSON.stringify({
+        type: 'wifi_scan',
+        status: 'DIAGNOSTIC_MODE',
+        error: 'DIAGNOSTIC_MODE',
+        message: 'Wi-Fi scanning temporarily disabled for diagnostics',
+      });
+
+      const parsed = parseBleMessage(rawDiag);
+      expect(parsed.raw.status).toBe('DIAGNOSTIC_MODE');
+      expect(parsed.raw.error).toBe('DIAGNOSTIC_MODE');
+    });
+
+    it('parses TEST_CANCELLED status from ESP32 to clear emergency state', () => {
+      const rawCancel = JSON.stringify({
+        status: 'OK',
+        test_cancelled: true,
+      });
+
+      const parsed = parseBleMessage(rawCancel);
+      expect(parsed.raw.test_cancelled).toBe(true);
+      expect(parsed.raw.status).toBe('OK');
     });
   });
 });

@@ -59,6 +59,9 @@ export type BluetoothErrorCode =
   | 'SERVICE_NOT_FOUND'
   | 'CHARACTERISTIC_NOT_FOUND'
   | 'USER_CANCELLED'
+  | 'AUTH_FAILED'
+  | 'UNAUTHORIZED'
+  | 'RATE_LIMITED'
   | 'UNKNOWN_ERROR';
 
 export class BluetoothError extends Error {
@@ -977,12 +980,28 @@ export class BluetoothService {
   }
 
   /**
+   * Returns true if a BLE session is active and connected.
+   */
+  public static async isConnected(): Promise<boolean> {
+    if (!this.activeSession) return false;
+    try {
+      if (this.activeSession.server && typeof this.activeSession.server.isConnected === 'function') {
+        return await this.activeSession.server.isConnected();
+      }
+      return Boolean(this.activeSession.server?.connected);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Trigger Test Emergency sequence on the device over BLE (authenticated with pairing token).
    * MUST write exclusively to provisionChar (beb5483e-36e1-4688-b7f5-ea07361b26a8).
+   * Does NOT require an active Wi-Fi connection.
    */
   public static async triggerTestEmergency(
     session?: ConnectedBleSession | null,
-    token: string = 'wsg_secure_token'
+    token?: string
   ): Promise<boolean> {
     console.log('[WSG-01] TEST_EMERGENCY BUTTON PRESSED');
     console.log('[TEST DEBUG 2] triggerTestEmergency entered');
@@ -1014,7 +1033,7 @@ export class BluetoothService {
         console.error('[WSG-01] Error:', reconnErr?.message || reconnErr);
         throw new BluetoothError(
           'BLE_NOT_CONNECTED',
-          'WSG-01 is not connected. Please reconnect the device.'
+          'WSG-01 is not connected over Bluetooth. Please reconnect the device.'
         );
       }
     }
@@ -1065,21 +1084,118 @@ export class BluetoothService {
     console.log('[WSG-01] Command characteristic:', 'provisionChar');
     console.log('[WSG-01] Command characteristic UUID:', targetChar.uuid);
 
-    let effectiveToken = token;
-    if ((!effectiveToken || effectiveToken === 'wsg_secure_token') && targetSession?.device?.id) {
-      const stored = await SecureTokenStorage.getDeviceToken(targetSession.device.id);
-      if (stored) effectiveToken = stored;
+    // Resolve pairing token securely without using any placeholder or hardcoded tokens
+    let effectiveToken = token?.trim();
+    const devId = targetSession.device.id;
+    const devName = targetSession.device.name;
+    const fallbackIds = [devName];
+    try {
+      const { useDeviceStore } = require('../store/useDeviceStore');
+      const activeDevId = useDeviceStore.getState().activeDeviceId;
+      if (activeDevId) fallbackIds.push(activeDevId);
+      const configuredId = useAppStore.getState().deviceConfig?.deviceId;
+      if (configuredId) fallbackIds.push(configuredId);
+    } catch {}
+
+    if (!effectiveToken) {
+      effectiveToken = (await SecureTokenStorage.getDeviceToken(devId, fallbackIds)) || undefined;
+    }
+
+    // If token is missing, attempt to query GET_STATUS to retrieve token during pairing window
+    if (!effectiveToken && targetSession.provisionChar) {
+      try {
+        console.log('[WSG-01] No stored token found. Querying GET_STATUS to check pairing window...');
+        const statusPromise = new Promise<string | null>((resolve) => {
+          let timer: any = null;
+          const unsub = this.addNotificationListener((resp) => {
+            if (resp?.token && typeof resp.token === 'string') {
+              clearTimeout(timer);
+              unsub();
+              resolve(resp.token.trim());
+            }
+          });
+          timer = setTimeout(() => {
+            unsub();
+            resolve(null);
+          }, 2500);
+        });
+
+        await this.sendCommand(targetSession, { cmd: 'GET_STATUS' });
+        const retrieved = await statusPromise;
+        if (retrieved) {
+          effectiveToken = retrieved;
+          await SecureTokenStorage.saveDeviceToken(devId, retrieved, fallbackIds);
+          console.log('[WSG-01] Retrieved token from active pairing window and saved securely');
+        }
+      } catch (tokenFetchErr) {
+        console.warn('[WSG-01] Failed querying GET_STATUS for pairing token:', tokenFetchErr);
+      }
+    }
+
+    if (!effectiveToken) {
+      throw new BluetoothError(
+        'AUTH_FAILED',
+        'Valid device pairing token required. Please restart the ESP32 to open the 5-minute pairing window.'
+      );
     }
 
     const payload = BleProtocol.formatTestEmergency(effectiveToken);
     const payloadBytes = new TextEncoder().encode(payload);
     console.log('[TEST DEBUG 9] payload byte length =', payloadBytes.length);
-    console.log('[WSG-01] Payload:', payload);
+    console.log('[WSG-01] Payload (token redacted for security):', payload.replace(effectiveToken, '***'));
     console.log('[WSG-01] Sending TEST_EMERGENCY...');
 
     logger.info('BLE_CMD', `Sending TEST_EMERGENCY to ${targetSession.device.id}`, {
       deviceId: targetSession.device.id,
-      payload,
+      tokenAvailable: Boolean(effectiveToken),
+      payloadByteLength: payloadBytes.length,
+    });
+
+    // Setup listener to catch firmware response (AUTH_FAILED / UNAUTHORIZED / RATE_LIMITED / TEST_EMERGENCY)
+    let authErrorPromise: Promise<void> | null = null;
+    let authErrorReject: ((err: any) => void) | null = null;
+
+    const responseWatcher = new Promise<void>((resolve, reject) => {
+      authErrorReject = reject;
+      let watcherTimeout: any = null;
+
+      const unsub = this.addNotificationListener((resp) => {
+        if (!resp) return;
+        const normStatus = String(resp.status || '').toUpperCase();
+        const normError = String(resp.error || '').toUpperCase();
+        const normEvent = String(resp.event || '').toUpperCase();
+
+        if (normStatus === 'ERROR' && (normError === 'UNAUTHORIZED' || normError === 'AUTH_FAILED')) {
+          clearTimeout(watcherTimeout);
+          unsub();
+          // Stale or invalid token rejected by firmware; invalidate stored token
+          SecureTokenStorage.removeDeviceToken(devId, fallbackIds).catch(() => {});
+          reject(
+            new BluetoothError(
+              'AUTH_FAILED',
+              resp.message || 'ESP32 rejected command: Valid device pairing token required. Stale token removed. Please restart ESP32 within 5 minutes to re-pair.'
+            )
+          );
+        } else if (normStatus === 'ERROR' && normError === 'RATE_LIMITED') {
+          clearTimeout(watcherTimeout);
+          unsub();
+          reject(
+            new BluetoothError(
+              'RATE_LIMITED',
+              resp.message || 'ESP32 rate limit reached. Please wait before triggering another emergency test.'
+            )
+          );
+        } else if (normStatus === 'TEST_EMERGENCY' || normEvent === 'TEST_EMERGENCY') {
+          clearTimeout(watcherTimeout);
+          unsub();
+          resolve();
+        }
+      });
+
+      watcherTimeout = setTimeout(() => {
+        unsub();
+        resolve(); // proceed if firmware accepts without early error
+      }, 3500);
     });
 
     try {
@@ -1092,11 +1208,14 @@ export class BluetoothService {
         console.log('[WSG-01] BLE WRITE (writeValue)');
         await targetChar.writeValue(payload);
       }
-      logger.info('BLE_CMD', `TEST_EMERGENCY write successful for ${targetSession.device.id}`);
+      logger.info('BLE_CMD', `TEST_EMERGENCY write completed for ${targetSession.device.id}`);
       console.log('[WSG-01] BLE WRITE SUCCESS');
+
+      // Await immediate firmware ack / error
+      await responseWatcher;
       return true;
     } catch (e: any) {
-      logger.error('BLE_CMD', `TEST_EMERGENCY write failed for ${targetSession.device.id}`, logger.serializeError(e));
+      logger.error('BLE_CMD', `TEST_EMERGENCY rejected or write failed for ${targetSession.device.id}`, logger.serializeError(e));
       console.error('[WSG-01] BLE WRITE FAILED');
       console.error('[WSG-01] Error:', e?.message || e);
       throw e;
@@ -1109,7 +1228,7 @@ export class BluetoothService {
    */
   public static async cancelTestEmergency(
     session?: ConnectedBleSession | null,
-    token: string = 'wsg_secure_token'
+    token?: string
   ): Promise<boolean> {
     console.log('[WSG-01] CANCEL_TEST requested');
     const targetSession = session || this.activeSession;
@@ -1117,12 +1236,24 @@ export class BluetoothService {
       console.warn('[WSG-01] No active BLE session available for CANCEL_TEST');
       return false;
     }
-    let effectiveToken = token;
-    if ((!effectiveToken || effectiveToken === 'wsg_secure_token') && targetSession?.device?.id) {
-      const stored = await SecureTokenStorage.getDeviceToken(targetSession.device.id);
-      if (stored) effectiveToken = stored;
+
+    let effectiveToken = token?.trim();
+    const devId = targetSession.device.id;
+    const devName = targetSession.device.name;
+    const fallbackIds = [devName];
+    try {
+      const { useDeviceStore } = require('../store/useDeviceStore');
+      const activeDevId = useDeviceStore.getState().activeDeviceId;
+      if (activeDevId) fallbackIds.push(activeDevId);
+      const configuredId = useAppStore.getState().deviceConfig?.deviceId;
+      if (configuredId) fallbackIds.push(configuredId);
+    } catch {}
+
+    if (!effectiveToken && devId) {
+      effectiveToken = (await SecureTokenStorage.getDeviceToken(devId, fallbackIds)) || undefined;
     }
-    const payload = BleProtocol.formatCancelTest(effectiveToken);
+
+    const payload = BleProtocol.formatCancelTest(effectiveToken || '');
     try {
       const targetChar = targetSession.provisionChar;
       if (targetChar) {
@@ -1131,6 +1262,7 @@ export class BluetoothService {
         } else {
           await targetChar.writeValue(payload);
         }
+        logger.info('BLE_CMD', `CANCEL_TEST written to ${devId}`);
         return true;
       } else {
         console.error('[WSG-01] provisionChar not found on session for CANCEL_TEST');
@@ -1231,7 +1363,8 @@ export class BluetoothService {
 
     // If device revealed pairing token during first-pairing window, save securely in SecureStore
     if (parsed?.token && typeof parsed.token === 'string' && session?.device?.id) {
-      SecureTokenStorage.saveDeviceToken(session.device.id, parsed.token).catch((stErr) => {
+      const aliases = [session.device.name, parsed.device_id, parsed.deviceId].filter(Boolean);
+      SecureTokenStorage.saveDeviceToken(session.device.id, parsed.token.trim(), aliases).catch((stErr) => {
         logger.error('SECURE_STORE', `Could not save device token for ${session.device.id}`, logger.serializeError(stErr));
       });
     }

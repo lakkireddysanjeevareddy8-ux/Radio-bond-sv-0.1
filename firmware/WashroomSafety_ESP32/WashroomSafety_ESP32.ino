@@ -2449,7 +2449,8 @@ void setup() {
       LOG_I("SECURITY", "First boot: generated new random token: %s", pairingToken.c_str());
     } else {
       pairingToken = storedToken;
-      LOG_I("SECURITY", "Loaded existing pairing token from NVS.");
+      openPairingWindow();
+      LOG_I("SECURITY", "Loaded existing pairing token from NVS. 5-min pairing window active.");
     }
 
     savedSsid = preferences.getString("ssid", "");

@@ -508,8 +508,10 @@ export class DeviceCommunicationService {
       // Send cancel to device over BLE
       try {
         const { BluetoothService } = require('./bluetoothService');
-        await BluetoothService.sendCommand(null, { cmd: 'CANCEL_TEST' });
-      } catch {}
+        await BluetoothService.cancelTestEmergency();
+      } catch (bleErr) {
+        console.log('[DeviceCommunicationService] BLE cancelTestEmergency note:', bleErr);
+      }
       try {
         const { useConnectionStore } = require('../store/useConnectionStore');
         const connDevice = useConnectionStore.getState().connectedDevice;
@@ -524,13 +526,17 @@ export class DeviceCommunicationService {
         return true;
       }
 
-      await supabase
-        .from('emergency_events')
-        .update({
-          status: 'cancelled',
-          resolved_at: new Date().toISOString(),
-        })
-        .eq('id', eventId);
+      try {
+        await supabase
+          .from('emergency_events')
+          .update({
+            status: 'cancelled',
+            resolved_at: new Date().toISOString(),
+          })
+          .eq('id', eventId);
+      } catch (supErr) {
+        console.log('[DeviceCommunicationService] Supabase cancel note (offline/Bluetooth-only):', supErr);
+      }
 
       const numId = Number(eventId);
       const query = supabase.from('emergencies').update({
@@ -567,26 +573,38 @@ export class DeviceCommunicationService {
         return true;
       }
 
+      // If test emergency was active, ensure BLE cancellation is sent to device
+      try {
+        const { BluetoothService } = require('./bluetoothService');
+        await BluetoothService.cancelTestEmergency();
+      } catch (bleErr) {
+        console.log('[DeviceCommunicationService] BLE cancelTestEmergency note:', bleErr);
+      }
+
       // Update emergency_events
-      await supabase
-        .from('emergency_events')
-        .update({
-          status: 'resolved',
+      try {
+        await supabase
+          .from('emergency_events')
+          .update({
+            status: 'resolved',
+            resolved_at: new Date().toISOString(),
+          })
+          .eq('id', eventId);
+
+        const numId = Number(eventId);
+        const query = supabase.from('emergencies').update({
+          status: 'RESOLVED',
+          resolved: true,
           resolved_at: new Date().toISOString(),
-        })
-        .eq('id', eventId);
+        });
 
-      const numId = Number(eventId);
-      const query = supabase.from('emergencies').update({
-        status: 'RESOLVED',
-        resolved: true,
-        resolved_at: new Date().toISOString(),
-      });
-
-      if (!isNaN(numId)) {
-        await query.eq('id', numId);
-      } else {
-        await query.eq('id', eventId);
+        if (!isNaN(numId)) {
+          await query.eq('id', numId);
+        } else {
+          await query.eq('id', eventId);
+        }
+      } catch (supErr) {
+        console.log('[DeviceCommunicationService] Supabase resolve note (offline/Bluetooth-only):', supErr);
       }
       this.onEmergencyResolved?.();
       return true;

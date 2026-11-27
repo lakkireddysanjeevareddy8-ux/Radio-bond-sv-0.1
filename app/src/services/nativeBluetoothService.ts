@@ -35,6 +35,14 @@ export interface ConnectedNativeSession {
   isNative: boolean;
 }
 
+function sanitizeBlePayloadForLogging(payload: string): string {
+  if (!payload) return '';
+  return payload
+    .replace(/"token"\s*:\s*"[^"]*"/gi, '"token":"***"')
+    .replace(/"pass"\s*:\s*"[^"]*"/gi, '"pass":"***"')
+    .replace(/"password"\s*:\s*"[^"]*"/gi, '"password":"***"');
+}
+
 class NativeBluetoothServiceClass {
   private manager: BleManager | null = null;
   private isScanning = false;
@@ -485,7 +493,7 @@ class NativeBluetoothServiceClass {
           deviceID: char.deviceID,
           serviceUUID: char.serviceUUID,
           characteristicUUID: char.uuid,
-          data: dataStr,
+          data: sanitizeBlePayloadForLogging(dataStr),
           payloadByteLength: bytes.length,
         });
 
@@ -508,7 +516,7 @@ class NativeBluetoothServiceClass {
           deviceID: char.deviceID,
           serviceUUID: char.serviceUUID,
           characteristicUUID: char.uuid,
-          data: dataStr,
+          data: sanitizeBlePayloadForLogging(dataStr),
           payloadByteLength: bytes.length,
         });
 
@@ -540,8 +548,8 @@ class NativeBluetoothServiceClass {
             let decoded = '';
             try { decoded = new TextDecoder().decode(bytes); } catch {}
             logger.info('BLE_READ', `readValue SUCCESS on ${char.uuid} (${bytes.length} bytes)`, {
-              base64: val,
-              decodedText: decoded,
+              base64: '***',
+              decodedText: sanitizeBlePayloadForLogging(decoded),
               byteLength: bytes.length,
             });
             return bytes;
@@ -564,8 +572,8 @@ class NativeBluetoothServiceClass {
               let decoded = '';
               try { decoded = new TextDecoder().decode(rawBytes); } catch {}
               logger.info('BLE_MONITOR', `Notification received on ${char.uuid} (${rawBytes.length} bytes)`, {
-                rawBase64: c.value,
-                decodedText: decoded,
+                rawBase64: '***',
+                decodedText: sanitizeBlePayloadForLogging(decoded),
                 byteLength: rawBytes.length,
               });
               listener(rawBytes);
